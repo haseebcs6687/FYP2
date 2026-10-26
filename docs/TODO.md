@@ -47,9 +47,8 @@ The FYP-1 architecture diagram no longer matches. It needs:
 - Random Forest removed — the Performance Analysis Agent is now a concept-graph
   evidence classifier, and the synthetic 300-row dataset is gone
 
-**7. Update AGENTS.md**
-Its "Known Limitations" section is out of date. All three limitations listed
-there are now fixed.
+**7. Keep architecture docs aligned**
+Keep `AGENTS.md` and `docs/ARCHITECTURE.md` updated as agent behaviour evolves.
 
 ## Nice to have, not required
 

@@ -28,12 +28,11 @@ Pipeline inside this agent
         |
         v
     5. Fallback ladder  LLM fails -> local concept note (lessons)
-                                  -> static quiz bank      (quizzes)
+                                  -> quiz unavailable message (quizzes)
 
-The fallback ladder is deliberate. In a live FYP demo the network or the free
-API quota will fail at the worst possible moment; when it does, the screen
-still fills with correct content and the activity log says exactly which
-layer served it.
+In FYP-2, quizzes have no static fallback: questions are generated dynamically
+by the Concept Clarifier. If the LLM is unreachable or fails, quizzes report
+unavailable with the exact error, while lessons fall back to local notes.
 =============================================================================
 """
 
@@ -50,31 +49,41 @@ NOTES_DIR = Path(__file__).resolve().parent.parent / "rag" / "corpus" / "notes"
 class ConceptClarifierAgent(object):
 
     GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-    DEFAULT_MODEL = os.environ.get("EDUGEN_LLM_MODEL", "llama-3.3-70b-versatile")
-    FALLBACK_MODEL = os.environ.get("EDUGEN_LLM_FALLBACK_MODEL", "llama-3.1-8b-instant")
+    DEFAULT_MODEL = os.environ.get("EDUGEN_LLM_MODEL", "openai/gpt-oss-120b")
+    FALLBACK_MODEL = os.environ.get("EDUGEN_LLM_FALLBACK_MODEL", "qwen/qwen3.6-27b")
 
     def __init__(self, api_key=None, model=None, retriever=None, log=None):
         self.api_key = api_key or os.environ.get("GROQ_API_KEY", "")
-        self.model = model or self.DEFAULT_MODEL
+        self.model = model or os.environ.get("EDUGEN_LLM_MODEL") or self.DEFAULT_MODEL
+        self.fallback_model = os.environ.get("EDUGEN_LLM_FALLBACK_MODEL") or self.FALLBACK_MODEL
         self.retriever = retriever
         self.log = log
         self.client = None
+        self.last_error = None
         self._init_client()
 
     def _emit(self, message, level="info", payload=None):
         if self.log:
             self.log("Concept Clarifier", message, level, payload)
+        else:
+            try:
+                from core.agent_log import add_log
+                add_log("Concept Clarifier", message, level, payload)
+            except Exception:
+                pass
 
     def _init_client(self):
         if not self.api_key or self.api_key.strip() in ("", "your-key-here"):
+            self.last_error = "No GROQ_API_KEY set. Configure it in .env and restart."
             print("[Concept Clarifier] No GROQ_API_KEY set - running in offline mode "
-                  "(local notes + static quiz bank).")
+                  "(local notes only; quizzes require LLM).")
             return
         try:
             from openai import OpenAI
             self.client = OpenAI(base_url=self.GROQ_BASE_URL, api_key=self.api_key)
             print("[Concept Clarifier] LLM client ready (model '{}').".format(self.model))
         except Exception as exc:                                   # noqa: BLE001
+            self.last_error = "Client init failed: {}".format(exc)
             print("[Concept Clarifier] Client init failed: {}".format(exc))
             self.client = None
 
@@ -289,9 +298,11 @@ class ConceptClarifierAgent(object):
         Clarifier's job. If the LLM cannot be reached we say so plainly rather
         than silently serving stale hand-written questions.
         """
-        reason = ("No LLM API key is configured. Set GROQ_API_KEY in .env and restart."
-                  if not self.llm_available
-                  else "The language model did not return a usable quiz. Try again in a moment.")
+        reason = self.last_error or (
+            "No LLM API key is configured. Set GROQ_API_KEY in .env and restart."
+            if not self.llm_available
+            else "The language model did not return a usable quiz."
+        )
         self._emit("Quiz generation unavailable for '{}' - {}".format(
             concept_title(concept), reason), "error")
         return {
@@ -331,8 +342,14 @@ class ConceptClarifierAgent(object):
         return result
 
     def _call_llm(self, system_prompt, user_prompt):
-        """Two attempts on two models. Returns a parsed dict or None."""
-        for attempt, model in enumerate((self.model, self.FALLBACK_MODEL)):
+        """Try primary model, then fallback model. Returns a parsed dict or None."""
+        models_to_try = [self.model, self.fallback_model]
+        if len(models_to_try) > 1 and models_to_try[0] == models_to_try[1]:
+            models_to_try = [models_to_try[0]]
+
+        for attempt, model in enumerate(models_to_try):
+            temperature = 0.6 if attempt == 0 else 0.4
+            raw = None
             try:
                 response = self.client.chat.completions.create(
                     model=model,
@@ -341,26 +358,67 @@ class ConceptClarifierAgent(object):
                         {"role": "user", "content": user_prompt},
                     ],
                     response_format={"type": "json_object"},
-                    temperature=0.6 if attempt == 0 else 0.4,
-                    max_tokens=2600,
+                    temperature=temperature,
+                    max_tokens=4000,
                 )
                 raw = response.choices[0].message.content or ""
-                data = _parse_json(raw)
-                if data:
-                    if attempt > 0:
-                        self._emit("Primary model failed; fallback model '{}' answered".format(model),
-                                   "warning")
-                    return data
             except Exception as exc:                               # noqa: BLE001
-                self._emit("LLM call failed on '{}': {}".format(model, exc), "warning")
+                status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+                if status_code == 401 or "401" in str(exc):
+                    self.last_error = "Invalid API key (HTTP 401): {}".format(exc)
+                    self._emit(self.last_error, "error")
+                    return None
+
+                err_text = str(exc).lower()
+                if "response_format" in err_text or "json_object" in err_text or "json mode" in err_text:
+                    self._emit(
+                        "Model '{}' rejected json_object response_format; retrying without it".format(model),
+                        "info",
+                    )
+                    try:
+                        response = self.client.chat.completions.create(
+                            model=model,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            temperature=temperature,
+                            max_tokens=4000,
+                        )
+                        raw = response.choices[0].message.content or ""
+                    except Exception as retry_exc:                 # noqa: BLE001
+                        retry_status = getattr(retry_exc, "status_code", None) or getattr(retry_exc, "code", None)
+                        if retry_status == 401 or "401" in str(retry_exc):
+                            self.last_error = "Invalid API key (HTTP 401): {}".format(retry_exc)
+                            self._emit(self.last_error, "error")
+                            return None
+                        self.last_error = "Model '{}' failed retry without response_format: {}".format(model, retry_exc)
+                        self._emit(self.last_error, "warning")
+                        continue
+                else:
+                    self.last_error = "LLM call failed on '{}': {}".format(model, exc)
+                    self._emit(self.last_error, "warning")
+                    continue
+
+            data = _parse_json(raw)
+            if data:
+                self.last_error = None
+                if attempt > 0:
+                    self._emit("Primary model failed; fallback model '{}' answered".format(model), "warning")
+                return data
+            else:
+                self.last_error = "Model '{}' returned invalid JSON".format(model)
+                self._emit(self.last_error, "warning")
+
         return None
 
     def status(self):
         return {
             "llm_available": self.llm_available,
             "model": self.model if self.llm_available else None,
-            "fallback_model": self.FALLBACK_MODEL if self.llm_available else None,
+            "fallback_model": self.fallback_model if self.llm_available else None,
             "rag_attached": self.retriever is not None,
+            "last_error": self.last_error,
         }
 
 

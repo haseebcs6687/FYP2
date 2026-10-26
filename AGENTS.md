@@ -87,7 +87,7 @@ all tags back into the 44-tag canonical vocabulary.
   `/pipeline` (live agent execution) and `/library` (knowledge base search).
 - Added `recommendations` and `lesson_views` for adaptivity signals and
   acceptance-rate measurement.
-- Test coverage: `scripts/smoke_test.py` (52 end-to-end checks) and
+- Test coverage: `scripts/smoke_test.py` (54 end-to-end checks) and
   `scripts/test_adaptivity.py` (11 policy scenarios).
 
 ---

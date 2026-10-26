@@ -331,6 +331,7 @@ pre.code code { color: inherit; font-size: inherit; }
   background: var(--line-2); padding: 1px 5px; border-radius: 4px;
   color: var(--ink); font-size: .87em;
 }
+.prose pre.code code { background: transparent; padding: 0; border-radius: 0; color: inherit; }
 .prose p { margin-bottom: 1.05rem; }
 .prose h3 { margin-top: 1.6rem; }
 
