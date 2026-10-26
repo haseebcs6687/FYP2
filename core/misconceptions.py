@@ -74,8 +74,8 @@ MISCONCEPTIONS = OrderedDict([
         "wrong_belief": 'Two new Foo() expressions called with identical arguments yield the same object and evaluate to true with the == operator.',
         "correct_idea": 'Every invocation of the new operator allocates a distinct new object on the heap with its own unique memory address.',
     }),
-    ("object-instantiation/reassignment-modifies-original", {
-        "id": 'object-instantiation/reassignment-modifies-original',
+    ("object-instantiation/assignment-clones-object", {
+        "id": 'object-instantiation/assignment-clones-object',
         "concept": 'object-instantiation',
         "facet": 'assignment semantics',
         "title": 'Assignment Copies Object Internal Fields',
@@ -1318,8 +1318,8 @@ MISCONCEPTIONS = OrderedDict([
         "wrong_belief": 'A multi-catch block can legally catch both a subclass and its superclass in the same clause (e.g. catch (IOException | Exception e)).',
         "correct_idea": 'Java forbids combining subclass and superclass types in a single multi-catch clause because the subclass alternative is redundant.',
     }),
-    ("try-catch/catch-block-requires-exception-thrown", {
-        "id": 'try-catch/catch-block-requires-exception-thrown',
+    ("try-catch/catch-unthrown-checked-ok", {
+        "id": 'try-catch/catch-unthrown-checked-ok',
         "concept": 'try-catch',
         "facet": 'checked exception catch rule',
         "title": 'Catching Checked Exception Always Legal',
@@ -1334,8 +1334,8 @@ MISCONCEPTIONS = OrderedDict([
         "wrong_belief": 'Executing a return statement inside a try or catch block skips the execution of the finally block.',
         "correct_idea": 'The finally block always executes before the method actually returns, even when return is called in try or catch.',
     }),
-    ("finally-block/finally-always-runs-without-exception", {
-        "id": 'finally-block/finally-always-runs-without-exception',
+    ("finally-block/finally-runs-on-system-exit", {
+        "id": 'finally-block/finally-runs-on-system-exit',
         "concept": 'finally-block',
         "facet": 'jvm termination',
         "title": 'Finally Always Runs Even On System.exit',

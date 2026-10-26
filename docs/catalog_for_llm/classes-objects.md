@@ -14,7 +14,7 @@ summary: A class is the blueprint that declares the fields and methods every obj
 summary: The new keyword allocates an object on the heap, runs a constructor, and returns a reference to it.
 - object-instantiation/declaration-creates-object | reference vs object | Declaring an object reference variable automatically creates and initializes the object in memory without calling new.
 - object-instantiation/two-new-same-object | instance uniqueness | Two new Foo() expressions called with identical arguments yield the same object and evaluate to true with the == operator.
-- object-instantiation/reassignment-modifies-original | assignment semantics | Assigning one reference variable to another copies all instance fields into a separate, duplicate object.
+- object-instantiation/assignment-clones-object | assignment semantics | Assigning one reference variable to another copies all instance fields into a separate, duplicate object.
 - object-instantiation/stack-allocated-objects | memory layout | Objects instantiated inside a method body with new are allocated on the method call stack.
 
 ## static-members - Static Fields and Methods

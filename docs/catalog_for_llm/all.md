@@ -15,7 +15,7 @@ summary: A class is the blueprint that declares the fields and methods every obj
 summary: The new keyword allocates an object on the heap, runs a constructor, and returns a reference to it.
 - object-instantiation/declaration-creates-object | reference vs object | Declaring an object reference variable automatically creates and initializes the object in memory without calling new.
 - object-instantiation/two-new-same-object | instance uniqueness | Two new Foo() expressions called with identical arguments yield the same object and evaluate to true with the == operator.
-- object-instantiation/reassignment-modifies-original | assignment semantics | Assigning one reference variable to another copies all instance fields into a separate, duplicate object.
+- object-instantiation/assignment-clones-object | assignment semantics | Assigning one reference variable to another copies all instance fields into a separate, duplicate object.
 - object-instantiation/stack-allocated-objects | memory layout | Objects instantiated inside a method body with new are allocated on the method call stack.
 
 ## static-members - Static Fields and Methods
@@ -286,12 +286,12 @@ summary: Guard risky code in try and handle the failure in a catch block matched
 - try-catch/try-block-resumes-after-exception | execution flow | After a catch block handles an exception, execution resumes at the next line inside the try block.
 - try-catch/catch-blocks-mandatory | block pairing | A try block must always be accompanied by a catch block to compile.
 - try-catch/multi-catch-related-types | multi-catch hierarchy | A multi-catch block can legally catch both a subclass and its superclass in the same clause (e.g. catch (IOException | Exception e)).
-- try-catch/catch-block-requires-exception-thrown | checked exception catch rule | A try-catch block can catch any checked exception like IOException even if the try block code cannot possibly throw it.
+- try-catch/catch-unthrown-checked-ok | checked exception catch rule | A try-catch block can catch any checked exception like IOException even if the try block code cannot possibly throw it.
 
 ## finally-block - The finally Block
 summary: finally runs whether or not an exception was thrown, which makes it the place for cleanup.
 - finally-block/finally-skipped-on-return | return statement | Executing a return statement inside a try or catch block skips the execution of the finally block.
-- finally-block/finally-always-runs-without-exception | jvm termination | The finally block is guaranteed to execute even if System.exit(0) is called in the try block.
+- finally-block/finally-runs-on-system-exit | jvm termination | The finally block is guaranteed to execute even if System.exit(0) is called in the try block.
 - finally-block/finally-return-doesnt-override | finally return value | Returning a value from a finally block does not override the value returned from the preceding try block.
 - finally-block/finally-only-runs-on-error | execution trigger | The finally block only executes if an unhandled exception was thrown during the try block.
 
