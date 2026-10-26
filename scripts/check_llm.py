@@ -96,7 +96,8 @@ def main():
         sys.exit(1)
 
     primary_model = os.environ.get("EDUGEN_LLM_MODEL", "openai/gpt-oss-120b")
-    fallback_model = os.environ.get("EDUGEN_LLM_FALLBACK_MODEL", "qwen/qwen3.6-27b")
+    fallback_model = os.environ.get("EDUGEN_LLM_FALLBACK_MODEL", "openai/gpt-oss-20b")
+    extra_model = "qwen/qwen3.8-27b"
     base_url = "https://api.groq.com/openai/v1"
 
     print("==================================================")
@@ -104,6 +105,7 @@ def main():
     print(f"  Base URL        : {base_url}")
     print(f"  Primary Model   : {primary_model}")
     print(f"  Fallback Model  : {fallback_model}")
+    print(f"  Extra (Info)    : {extra_model}")
     print("==================================================")
 
     try:
@@ -116,8 +118,11 @@ def main():
     primary_ok = check_model(client, primary_model)
     fallback_ok = check_model(client, fallback_model)
 
+    print(f"\n[Informational] Testing extra model: '{extra_model}'")
+    extra_ok = check_model(client, extra_model)
+
     print("\n--------------------------------------------------")
-    print(f"Summary: Primary {'OK' if primary_ok else 'FAILED'} | Fallback {'OK' if fallback_ok else 'FAILED'}")
+    print(f"Summary: Primary {'OK' if primary_ok else 'FAILED'} | Fallback {'OK' if fallback_ok else 'FAILED'} | Extra ({extra_model}): {'OK' if extra_ok else 'FAILED'}")
     print("--------------------------------------------------")
 
     if not (primary_ok or fallback_ok):

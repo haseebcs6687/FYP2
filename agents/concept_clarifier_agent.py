@@ -39,9 +39,11 @@ unavailable with the exact error, while lessons fall back to local notes.
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 from core.concepts import CANONICAL_CONCEPT_TAGS, CONCEPTS, concept_title, normalise_tags
+from core.db_repo import record_llm_call
 
 NOTES_DIR = Path(__file__).resolve().parent.parent / "rag" / "corpus" / "notes"
 
@@ -50,7 +52,7 @@ class ConceptClarifierAgent(object):
 
     GROQ_BASE_URL = "https://api.groq.com/openai/v1"
     DEFAULT_MODEL = os.environ.get("EDUGEN_LLM_MODEL", "openai/gpt-oss-120b")
-    FALLBACK_MODEL = os.environ.get("EDUGEN_LLM_FALLBACK_MODEL", "qwen/qwen3.6-27b")
+    FALLBACK_MODEL = os.environ.get("EDUGEN_LLM_FALLBACK_MODEL", "openai/gpt-oss-20b")
 
     def __init__(self, api_key=None, model=None, retriever=None, log=None):
         self.api_key = api_key or os.environ.get("GROQ_API_KEY", "")
@@ -350,6 +352,7 @@ class ConceptClarifierAgent(object):
         for attempt, model in enumerate(models_to_try):
             temperature = 0.6 if attempt == 0 else 0.4
             raw = None
+            t0 = time.time()
             try:
                 response = self.client.chat.completions.create(
                     model=model,
@@ -362,7 +365,13 @@ class ConceptClarifierAgent(object):
                     max_tokens=4000,
                 )
                 raw = response.choices[0].message.content or ""
+                lat_ms = int((time.time() - t0) * 1000)
+                ptoks = getattr(response.usage, "prompt_tokens", None) if getattr(response, "usage", None) else None
+                ctoks = getattr(response.usage, "completion_tokens", None) if getattr(response, "usage", None) else None
+                record_llm_call(None, "concept_clarifier", "generate", model, lat_ms, True, None, ptoks, ctoks)
             except Exception as exc:                               # noqa: BLE001
+                lat_ms = int((time.time() - t0) * 1000)
+                record_llm_call(None, "concept_clarifier", "generate", model, lat_ms, False, str(exc))
                 status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
                 if status_code == 401 or "401" in str(exc):
                     self.last_error = "Invalid API key (HTTP 401): {}".format(exc)
@@ -375,6 +384,7 @@ class ConceptClarifierAgent(object):
                         "Model '{}' rejected json_object response_format; retrying without it".format(model),
                         "info",
                     )
+                    t_retry = time.time()
                     try:
                         response = self.client.chat.completions.create(
                             model=model,
@@ -386,7 +396,13 @@ class ConceptClarifierAgent(object):
                             max_tokens=4000,
                         )
                         raw = response.choices[0].message.content or ""
+                        lat_retry = int((time.time() - t_retry) * 1000)
+                        ptoks = getattr(response.usage, "prompt_tokens", None) if getattr(response, "usage", None) else None
+                        ctoks = getattr(response.usage, "completion_tokens", None) if getattr(response, "usage", None) else None
+                        record_llm_call(None, "concept_clarifier", "generate_retry", model, lat_retry, True, None, ptoks, ctoks)
                     except Exception as retry_exc:                 # noqa: BLE001
+                        lat_retry = int((time.time() - t_retry) * 1000)
+                        record_llm_call(None, "concept_clarifier", "generate_retry", model, lat_retry, False, str(retry_exc))
                         retry_status = getattr(retry_exc, "status_code", None) or getattr(retry_exc, "code", None)
                         if retry_status == 401 or "401" in str(retry_exc):
                             self.last_error = "Invalid API key (HTTP 401): {}".format(retry_exc)

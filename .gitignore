@@ -5,6 +5,7 @@ venv/
 .venv/
 .env
 data/*.db
+data/backups/
 data/rag_index/
 data/rag_cache/
 rag/corpus/books/*.pdf

@@ -25,6 +25,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from core.agent_log import add_log
 from core.db import get_db
+from core.db_repo import record_user_login
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
 MIN_PASSWORD_LENGTH = 8
@@ -122,6 +123,7 @@ def signup(name, email, password):
     conn.close()
 
     _start_session(user_id, name, student_id)
+    record_user_login(user_id)
     add_log("Coordinator", "New account created for {} (student #{})".format(name, student_id),
             "success")
     return {"user_id": user_id, "student_id": student_id, "name": name, "email": email}
@@ -148,6 +150,7 @@ def login(email, password):
     conn.close()
 
     _start_session(user["id"], user["name"], student_id)
+    record_user_login(user["id"])
     add_log("Coordinator", "{} signed in (student #{})".format(user["name"], student_id))
     return {"user_id": user["id"], "student_id": student_id,
             "name": user["name"], "email": user["email"]}

@@ -36,6 +36,11 @@ from core.concepts import (
     module_summary,
 )
 from core.db import get_db
+from core.db_repo import (
+    record_concept_mastery,
+    record_generated_questions,
+    record_submission_history,
+)
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -292,6 +297,13 @@ def api_quiz_start():
             "code": "generation_unavailable",
         }), 503
 
+    # Phase 1: Upsert generated questions into repository
+    record_generated_questions(
+        concept, difficulty, questions,
+        model=payload.get("model"),
+        source=payload.get("generated_by", "llm_rag")
+    )
+
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
@@ -398,6 +410,17 @@ def api_quiz_submit():
     cur.execute("UPDATE quiz_sessions SET consumed = 1 WHERE id = ?", (quiz_session_id,))
     conn.commit()
     conn.close()
+
+    # Phase 1: Record per-question student history and update question counters
+    record_submission_history(student_id, quiz_result_id, questions, answers, timings)
+
+    # Phase 1: Upsert concept mastery and append mastery history
+    try:
+        pa_report = agents()["pa"].analyze_student(student_id)
+        if pa_report and "concept_stats" in pa_report:
+            record_concept_mastery(student_id, pa_report["concept_stats"], quiz_result_id=quiz_result_id)
+    except Exception as exc:
+        add_log("Database", f"Concept mastery update failed: {exc}", "warning")
 
     pct = round(100.0 * score / len(questions), 1) if questions else 0.0
     add_log("Coordinator", "Quiz marked: {}/{} ({}%) on {}".format(
