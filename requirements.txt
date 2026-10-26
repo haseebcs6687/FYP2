@@ -1,0 +1,26 @@
+# ── core (required) ───────────────────────────────────────────
+flask>=3.0
+python-dotenv>=1.0
+werkzeug>=3.0
+numpy>=1.24
+
+# ── LLM generation (required for quizzes and AI lessons) ──────
+openai>=1.40           # used against Groq's OpenAI-compatible endpoint
+httpx>=0.27
+
+# ── RAG: PDF ingestion ────────────────────────────────────────
+pypdf>=4.2             # primary PDF text extractor - covers normal, born-digital PDFs
+
+# pdfplumber is an OPTIONAL fallback for awkward PDFs (unusual layouts, some
+# scanned-with-text-layer files). It pulls in pypdfium2, which fails to build
+# a wheel on some macOS/Python combinations. Install it separately only if
+# python -m rag.ingest reports a PDF that pypdf could not read:
+#   pip install pdfplumber
+
+# ── RAG: local embeddings (recommended on a MacBook) ──────────
+# Installs torch, ~2 GB. Skip it and the system falls back to the
+# dependency-free hashing embedder, which still works end to end.
+sentence-transformers>=3.0
+
+# ── optional: Ollama embedding backend ────────────────────────
+requests>=2.31

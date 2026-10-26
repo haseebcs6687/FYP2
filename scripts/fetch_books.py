@@ -1,0 +1,160 @@
+"""
+=============================================================================
+EduGen - optional textbook fetcher
+=============================================================================
+Downloads open-licence Java / OOP textbooks into rag/corpus/books/ so the
+knowledge base has real source material behind it.
+
+    python scripts/fetch_books.py            # download all
+    python scripts/fetch_books.py --list     # just show what is available
+    python scripts/fetch_books.py think-java # one book by id
+
+Every book here is published by its author under a Creative Commons licence
+that permits redistribution for non-commercial use. Attribution is written to
+rag/corpus/books/SOURCES.md so it can be cited in the FYP report.
+
+You do NOT have to use these. Drop any PDF, .txt or .md into
+rag/corpus/books/ and run `python -m rag.ingest` - the pipeline picks it up.
+=============================================================================
+"""
+
+import argparse
+import sys
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+BOOKS_DIR = Path(__file__).resolve().parent.parent / "rag" / "corpus" / "books"
+
+BOOKS = [
+    {
+        "id": "think-java",
+        "title": "Think Java: How to Think Like a Computer Scientist (2nd edition)",
+        "authors": "Allen B. Downey and Chris Mayfield",
+        "licence": "CC BY-NC-SA 4.0",
+        "url": "https://greenteapress.com/thinkjava7/thinkjava2.pdf",
+        "filename": "think-java-2e.pdf",
+        "covers": "classes and objects, constructors, inheritance, polymorphism, interfaces",
+        "home": "https://greenteapress.com/wp/think-java-2e/",
+    },
+    {
+        "id": "javanotes",
+        "title": "Introduction to Programming Using Java, Version 9 (JavaFX edition)",
+        "authors": "David J. Eck",
+        "licence": "CC BY-NC-SA 4.0",
+        "url": "https://math.hws.edu/eck/cs124/downloads/javanotes9.pdf",
+        "filename": "javanotes9-eck.pdf",
+        "covers": "the most thorough coverage of OOP, inheritance, interfaces and exceptions",
+        "home": "https://math.hws.edu/javanotes/",
+    },
+    {
+        "id": "java-java-java",
+        "title": "Java, Java, Java: Object-Oriented Problem Solving",
+        "authors": "Ralph Morelli and Ralph Walde",
+        "licence": "CC BY",
+        "url": "https://open.umn.edu/opentextbooks/formats/659",
+        "filename": "java-java-java.pdf",
+        "covers": "object-oriented design, encapsulation, abstraction, exceptions",
+        "home": "https://open.umn.edu/opentextbooks/textbooks/285",
+    },
+]
+
+
+def show_list():
+    print("\nAvailable open-licence textbooks\n" + "=" * 62)
+    for book in BOOKS:
+        print("\n  {}".format(book["id"]))
+        print("    {}".format(book["title"]))
+        print("    {}  |  {}".format(book["authors"], book["licence"]))
+        print("    covers: {}".format(book["covers"]))
+        print("    {}".format(book["home"]))
+    print("\nDownload all:  python scripts/fetch_books.py\n")
+
+
+def fetch(book):
+    target = BOOKS_DIR / book["filename"]
+    if target.exists() and target.stat().st_size > 100_000:
+        print("  = {} already present ({:.1f} MB)".format(
+            book["filename"], target.stat().st_size / 1e6))
+        return True
+
+    print("  > {} ...".format(book["title"][:56]), end=" ", flush=True)
+    try:
+        request = Request(book["url"], headers={"User-Agent": "EduGen-FYP/1.0"})
+        with urlopen(request, timeout=180) as response:
+            data = response.read()
+        if len(data) < 100_000:
+            print("failed (response too small - the link may have moved)")
+            print("    open {} and download it manually".format(book["home"]))
+            return False
+        target.write_bytes(data)
+        print("done ({:.1f} MB)".format(len(data) / 1e6))
+        return True
+    except Exception as exc:                                    # noqa: BLE001
+        print("failed ({})".format(exc))
+        print("    open {} and save the PDF into {}".format(book["home"], BOOKS_DIR))
+        return False
+
+
+def write_sources(succeeded):
+    lines = [
+        "# Sources in this knowledge base",
+        "",
+        "Every document below is redistributed under the licence shown. Cite these",
+        "in the FYP report as the source material for the retrieval-augmented",
+        "generation pipeline.",
+        "",
+    ]
+    for book in BOOKS:
+        if book["id"] not in succeeded:
+            continue
+        lines += [
+            "## {}".format(book["title"]),
+            "",
+            "- Authors: {}".format(book["authors"]),
+            "- Licence: {}".format(book["licence"]),
+            "- Source: {}".format(book["home"]),
+            "- File: `{}`".format(book["filename"]),
+            "",
+        ]
+    lines += [
+        "## Concept notes",
+        "",
+        "- `rag/corpus/notes/` holds 44 concept notes written for this project,",
+        "  one per canonical concept tag. They are generated by",
+        "  `python scripts/build_corpus.py` and are also the offline fallback",
+        "  the Concept Clarifier Agent serves when no LLM key is configured.",
+        "",
+    ]
+    (BOOKS_DIR / "SOURCES.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Download open-licence Java textbooks")
+    parser.add_argument("book_id", nargs="?", help="download one book by id")
+    parser.add_argument("--list", action="store_true", help="show available books")
+    args = parser.parse_args()
+
+    if args.list:
+        show_list()
+        return
+
+    BOOKS_DIR.mkdir(parents=True, exist_ok=True)
+    wanted = [b for b in BOOKS if not args.book_id or b["id"] == args.book_id]
+    if not wanted:
+        print("No book with id '{}'. Use --list to see the options.".format(args.book_id))
+        sys.exit(1)
+
+    print("\nDownloading into {}\n".format(BOOKS_DIR))
+    succeeded = [b["id"] for b in wanted if fetch(b)]
+    write_sources(succeeded)
+
+    print("\n{} of {} downloaded.".format(len(succeeded), len(wanted)))
+    if succeeded:
+        print("Now rebuild the index:  python -m rag.ingest --rebuild\n")
+    else:
+        print("Download the PDFs manually into that folder, then run:")
+        print("  python -m rag.ingest --rebuild\n")
+
+
+if __name__ == "__main__":
+    main()

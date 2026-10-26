@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Take a quiz &mdash; EduGen{% endblock %}
+
+{% block content %}
+<div class="wrap page">
+
+  <div class="page-head">
+    <h1>Take a quiz</h1>
+    <p>
+      Questions are written for one concept at one level by the Concept Clarifier Agent,
+      grounded in your knowledge base. Nothing is pulled from a fixed question bank.
+    </p>
+  </div>
+
+  <div id="suggestion" style="margin-bottom:24px"></div>
+
+  <div class="grid grid-2" style="align-items:start">
+    <div class="card">
+      <h3>Choose what to be tested on</h3>
+
+      <div class="field">
+        <label for="concept">Concept</label>
+        <select class="input" id="concept">
+          <option value="">Pick a concept...</option>
+          {% for module in modules %}
+          <optgroup label="{{ module.title }}">
+            {% for c in module.concepts %}
+            <option value="{{ c.tag }}" {{ 'selected' if c.tag == preselect_concept }}>{{ c.title }}</option>
+            {% endfor %}
+          </optgroup>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Difficulty</label>
+        <div class="chip-row" id="difficulty-row">
+          {% for d in difficulties %}
+          <button type="button" class="chip {{ 'on' if d == preselect_difficulty }}" data-difficulty="{{ d }}">{{ d }}</button>
+          {% endfor %}
+        </div>
+        <div class="field-hint" id="difficulty-hint">Easy tests recall, Medium tests application, Hard tests edge cases.</div>
+      </div>
+
+      <div class="field">
+        <label for="count">Number of questions</label>
+        <select class="input" id="count">
+          <option value="5" selected>5 questions</option>
+          <option value="8">8 questions</option>
+          <option value="10">10 questions</option>
+        </select>
+      </div>
+
+      <div class="notice notice-crit form-error" id="err" style="margin-bottom:14px"></div>
+
+      <button class="btn btn-lg btn-block" id="start" disabled>Generate my quiz</button>
+      <div class="field-hint center" style="margin-top:10px">
+        Generation takes a few seconds &mdash; the agent retrieves source passages first.
+      </div>
+    </div>
+
+    <div class="stack">
+      <div class="card" id="concept-info">
+        <p class="muted small" style="margin:0">Pick a concept to see what it covers and how you have done on it so far.</p>
+      </div>
+      <div class="card">
+        <h4 style="margin-bottom:8px">How this quiz is built</h4>
+        <ol class="small muted" style="margin:0;padding-left:18px;line-height:1.8">
+          <li>The concept and level go to the Concept Clarifier Agent.</li>
+          <li>It searches your knowledge base for passages on that concept.</li>
+          <li>It writes questions grounded in those passages, plus distractors based on mistakes you have actually made.</li>
+          <li>Correct answers stay on the server until you submit.</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let difficulty = {{ (preselect_difficulty or '') | tojson }};
+
+function refreshButton() {
+  EG.$('#start').disabled = !(EG.$('#concept').value && difficulty);
+}
+
+EG.$$('[data-difficulty]').forEach(btn => btn.addEventListener('click', () => {
+  EG.$$('[data-difficulty]').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on');
+  difficulty = btn.dataset.difficulty;
+  refreshButton();
+}));
+
+EG.$('#concept').addEventListener('change', () => { refreshButton(); loadConceptInfo(); });
+
+async function loadConceptInfo() {
+  const tag = EG.$('#concept').value;
+  const slot = EG.$('#concept-info');
+  if (!tag) { slot.innerHTML = '<p class="muted small" style="margin:0">Pick a concept to see details.</p>'; return; }
+
+  const label = EG.$('#concept').selectedOptions[0].textContent;
+  slot.innerHTML = '<h4 style="margin-bottom:6px">' + EG.esc(label) + '</h4>' +
+    '<code class="tiny muted">' + EG.esc(tag) + '</code>' +
+    '<div id="concept-stat" style="margin-top:14px"></div>' +
+    '<a class="btn btn-ghost btn-sm" style="margin-top:14px" href="/learn/' + tag + '">Read the lesson first</a>';
+
+  try {
+    const r = await EG.get('/api/analysis');
+    const s = (r.concept_stats || {})[tag];
+    const box = EG.$('#concept-stat');
+    if (!box) return;
+    box.innerHTML = s
+      ? EG.meter('Your mastery', s.mastery, Math.round(s.mastery) + '% over ' + s.attempts + ' question(s)') +
+        '<div class="small muted" style="margin-top:9px">Trend: ' + EG.esc(s.trend) + '</div>'
+      : '<div class="small muted">You have not been tested on this yet.</div>';
+  } catch (_) {}
+}
+
+async function loadSuggestion() {
+  try {
+    const d = await EG.get('/api/recommendation?mode=quiz');
+    EG.$('#suggestion').innerHTML =
+      '<div class="card card-agent"><div class="row-between">' +
+        '<div><div class="row" style="margin-bottom:6px">' +
+          '<span class="badge badge-agent badge-dot">Adaptive Content Agent</span>' +
+          '<span class="badge">Rule ' + EG.esc(d.rule) + '</span></div>' +
+        '<h3 style="margin-bottom:4px">' + EG.esc(d.focus_title) + ' at ' +
+          EG.esc(d.recommended_difficulty) + '</h3>' +
+        '<p class="small" style="margin:0;color:var(--ink-2);max-width:62ch">' +
+          EG.esc(d.reasoning) + '</p></div>' +
+        '<button class="btn btn-agent" id="use-suggestion">Use this</button>' +
+      '</div></div>';
+
+    EG.$('#use-suggestion').addEventListener('click', () => {
+      EG.$('#concept').value = d.focus_concept;
+      EG.$$('[data-difficulty]').forEach(b => {
+        b.classList.toggle('on', b.dataset.difficulty === d.recommended_difficulty);
+      });
+      difficulty = d.recommended_difficulty;
+      refreshButton(); loadConceptInfo();
+      EG.post('/api/recommendation/respond', {
+        accepted: true, concept: d.focus_concept, difficulty: d.recommended_difficulty
+      }).catch(() => {});
+      EG.$('#start').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  } catch (_) { EG.$('#suggestion').innerHTML = ''; }
+}
+
+EG.$('#start').addEventListener('click', async () => {
+  const btn = EG.$('#start'), err = EG.$('#err');
+  err.classList.remove('show');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Generating questions...';
+
+  try {
+    const quiz = await EG.post('/api/quiz/start', {
+      concept: EG.$('#concept').value,
+      difficulty: difficulty,
+      count: parseInt(EG.$('#count').value, 10)
+    });
+    EG.store.set('quiz', quiz);
+    window.location.href = '/quiz/attempt';
+  } catch (e) {
+    err.innerHTML = '<strong>Could not build the quiz.</strong> ' + EG.esc(e.message);
+    err.classList.add('show');
+    btn.disabled = false;
+    btn.textContent = 'Generate my quiz';
+  }
+});
+
+refreshButton();
+loadConceptInfo();
+loadSuggestion();
+</script>
+{% endblock %}

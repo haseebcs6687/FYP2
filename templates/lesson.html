@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}{{ concept_title }} &mdash; EduGen{% endblock %}
+
+{% block content %}
+<div class="wrap page">
+
+  <div class="row small muted" style="margin-bottom:14px">
+    <a href="{{ url_for('pages.learn') }}">Concept map</a>
+    <span>/</span>
+    <span>{{ module.title }}</span>
+  </div>
+
+  <div class="page-head">
+    <div class="row" style="margin-bottom:8px">
+      <span class="badge badge-signal">{{ module.title }}</span>
+      <code class="tiny muted">{{ concept }}</code>
+    </div>
+    <h1>{{ concept_title }}</h1>
+    <p>{{ concept_meta.summary }}</p>
+  </div>
+
+  {% if concept_meta.prerequisites %}
+  <div class="notice" style="margin-bottom:22px">
+    <strong>Builds on:</strong>
+    {% for p in concept_meta.prerequisites %}
+      <a href="{{ url_for('pages.learn_concept', concept=p) }}">{{ p.replace('-', ' ') }}</a>{% if not loop.last %}, {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="row" style="margin-bottom:24px">
+    <span class="small muted">Level:</span>
+    {% for d in difficulties %}
+      <button class="chip {{ 'on' if d == difficulty }}" data-difficulty="{{ d }}">{{ d }}</button>
+    {% endfor %}
+    <span class="spacer" style="flex:1"></span>
+    <span id="origin"></span>
+  </div>
+
+  <div id="lesson"></div>
+
+  <div class="card" style="margin-top:28px;background:var(--signal-50);border-color:var(--signal-100)">
+    <div class="row-between">
+      <div>
+        <h3 style="margin-bottom:3px">Ready to test it?</h3>
+        <p class="small muted" style="margin:0">
+          A quiz on this exact concept is the only way the agents learn what you understood.
+        </p>
+      </div>
+      <a class="btn" id="quiz-link" href="{{ url_for('pages.quiz') }}?concept={{ concept }}&difficulty={{ difficulty }}">
+        Take the quiz
+      </a>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CONCEPT = {{ concept | tojson }};
+let difficulty = {{ difficulty | tojson }};
+
+function lessonHtml(l) {
+  let html = '<article class="card prose">';
+  html += '<h2>' + EG.esc(l.title) + '</h2>';
+  html += EG.richText(l.explanation);
+
+  if (l.code_example) {
+    html += '<h3>Example</h3><pre class="code"><code>' + EG.esc(l.code_example) + '</code></pre>';
+  }
+  if (l.code_walkthrough && l.code_walkthrough.length) {
+    html += '<ul class="small">' + l.code_walkthrough.map(s => '<li>' + EG.esc(s) + '</li>').join('') + '</ul>';
+  }
+  if (l.key_points && l.key_points.length) {
+    html += '<h3>Key points</h3><ul>' + l.key_points.map(p => '<li>' + EG.esc(p) + '</li>').join('') + '</ul>';
+  }
+  if (l.common_mistake) {
+    html += '<div class="notice notice-attn" style="margin-top:18px"><strong>Where students slip:</strong> ' +
+      EG.esc(l.common_mistake) + '</div>';
+  }
+  if (l.offline_reason) {
+    html += '<div class="notice" style="margin-top:18px"><strong>Served offline.</strong> ' +
+      EG.esc(l.offline_reason) + '. Content is from the built-in concept notes.</div>';
+  }
+  html += EG.sourcesHtml(l.sources, 'Passages this lesson was grounded in');
+  html += '</article>';
+  return html;
+}
+
+async function load() {
+  const slot = EG.$('#lesson');
+  slot.innerHTML = '<div class="card">' +
+    EG.loading('Concept Clarifier is retrieving sources and writing your lesson...') + '</div>';
+  EG.$('#origin').innerHTML = '';
+  try {
+    const l = await EG.get('/api/lesson/' + CONCEPT + '/' + difficulty);
+    slot.innerHTML = lessonHtml(l);
+    EG.$('#origin').innerHTML = EG.originBadge(l);
+    EG.$('#quiz-link').href = '/quiz?concept=' + CONCEPT + '&difficulty=' + difficulty;
+  } catch (e) {
+    slot.innerHTML = EG.errorBox(e.message, 'Try again');
+  }
+}
+
+EG.$$('[data-difficulty]').forEach(btn => btn.addEventListener('click', () => {
+  EG.$$('[data-difficulty]').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on');
+  difficulty = btn.dataset.difficulty;
+  history.replaceState({}, '', '?difficulty=' + difficulty);
+  load();
+}));
+
+load();
+</script>
+{% endblock %}

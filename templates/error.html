@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} &mdash; EduGen{% endblock %}
+{% block content %}
+<div class="wrap page">
+  <div class="empty" style="margin-top:40px">
+    <h1 style="font-size:3rem;margin-bottom:4px">{{ code }}</h1>
+    <p>{{ message }}</p>
+    <a href="/" class="btn">Back to the start</a>
+  </div>
+</div>
+{% endblock %}

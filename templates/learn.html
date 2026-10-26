@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Learn &mdash; EduGen{% endblock %}
+
+{% block content %}
+<div class="wrap page">
+
+  <div class="page-head">
+    <h1>The concept map</h1>
+    <p>
+      Object-oriented programming broken into {{ concept_count }} concepts across 8 modules.
+      Pick any one and a lesson is written for it on the spot, at the level you choose.
+    </p>
+  </div>
+
+  <div class="card" style="margin-bottom:26px" id="mastery-strip">
+    <div class="loading"><span class="spinner"></span><span>Loading your mastery...</span></div>
+  </div>
+
+  <div class="grid grid-2">
+    {% for module in modules %}
+    <div class="card module-card">
+      <div class="card-head">
+        <div>
+          <h3 style="margin-bottom:3px">{{ module.title }}</h3>
+          <div class="module-count">{{ module.concepts | length }} concepts</div>
+        </div>
+        <span class="badge">Module {{ module.order }}</span>
+      </div>
+      <p class="small muted" style="margin:0">{{ module.blurb }}</p>
+      <ul class="concept-list">
+        {% for c in module.concepts %}
+        <li>
+          <a href="{{ url_for('pages.learn_concept', concept=c.tag) }}" title="{{ c.summary }}">
+            <span>{{ c.title }}</span>
+            <span class="row" style="gap:7px">
+              <span class="badge tiny" data-mastery="{{ c.tag }}" style="display:none"></span>
+              <span class="cl-arrow">&rarr;</span>
+            </span>
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endfor %}
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async function () {
+  const strip = EG.$('#mastery-strip');
+  try {
+    const r = await EG.get('/api/analysis');
+    const stats = r.concept_stats || {};
+    const seen = Object.keys(stats).length;
+
+    if (!seen) {
+      strip.innerHTML = '<div class="row-between">' +
+        '<div><h3 style="margin-bottom:3px">Nothing measured yet</h3>' +
+        '<p class="small muted" style="margin:0">Take one quiz and this strip fills with your mastery per concept.</p></div>' +
+        '<a class="btn" href="/quiz">Take a quiz</a></div>';
+      return;
+    }
+
+    Object.values(stats).forEach(s => {
+      const badge = document.querySelector('[data-mastery="' + s.concept_tag + '"]');
+      if (!badge) return;
+      badge.style.display = 'inline-flex';
+      badge.textContent = Math.round(s.mastery) + '%';
+      badge.className = 'badge tiny ' + (s.mastery < 50 ? 'badge-attn' : s.mastery >= 80 ? 'badge-good' : '');
+    });
+
+    const weak = (r.weak_topics || []).slice(0, 6);
+    strip.innerHTML = '<div class="row-between" style="margin-bottom:' + (weak.length ? '14px' : '0') + '">' +
+      '<div><h3 style="margin-bottom:3px">' + seen + ' of {{ concept_count }} concepts assessed</h3>' +
+      '<p class="small muted" style="margin:0">Overall accuracy ' + r.overall_performance +
+      '% across ' + r.total_quizzes_taken + ' quizzes.</p></div>' +
+      '<a class="btn btn-ghost" href="/analysis">Full analysis</a></div>' +
+      (weak.length
+        ? '<div class="small muted" style="margin-bottom:7px">Weakest right now &mdash; click to work on one:</div>' +
+          '<div class="chip-row">' + weak.map(w =>
+            '<a class="chip chip-weak" href="/learn/' + w.concept_tag + '">' +
+            EG.esc(w.title) + ' &middot; ' + Math.round(w.mastery) + '%</a>').join('') + '</div>'
+        : '');
+  } catch (e) {
+    strip.innerHTML = '<div class="row-between">' +
+      '<div><h3 style="margin-bottom:3px">Nothing measured yet</h3>' +
+      '<p class="small muted" style="margin:0">Take a quiz to start building your profile.</p></div>' +
+      '<a class="btn" href="/quiz">Take a quiz</a></div>';
+  }
+})();
+</script>
+{% endblock %}

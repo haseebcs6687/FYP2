@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Quiz in progress &mdash; EduGen{% endblock %}
+
+{% block content %}
+<div class="wrap-narrow page">
+  <div id="head" class="page-head"></div>
+  <div id="questions"></div>
+  <div id="footer-bar" style="margin-top:26px"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const quiz = EG.store.get('quiz');
+if (!quiz) { window.location.href = '/quiz'; }
+
+const answers = {};
+const timings = {};
+let currentIndex = 0;
+let questionEnteredAt = Date.now();
+const startedAt = Date.now();
+
+function renderHead() {
+  EG.$('#head').innerHTML =
+    '<div class="row" style="margin-bottom:8px">' +
+      '<span class="badge badge-signal">' + EG.esc(quiz.difficulty) + '</span>' +
+      EG.originBadge(quiz) +
+      (quiz.sources && quiz.sources.length
+        ? '<span class="badge">grounded in ' + quiz.sources.length + ' passage(s)</span>' : '') +
+    '</div>' +
+    '<h1 style="font-size:1.85rem">' + EG.esc(quiz.concept_title) + '</h1>' +
+    '<p>' + quiz.questions.length + ' questions. Your answers are graded on the server when you submit.</p>';
+}
+
+function renderQuestions() {
+  EG.$('#questions').innerHTML = quiz.questions.map(q =>
+    '<div class="q-card" data-q="' + q.index + '">' +
+      '<div class="q-num">Question ' + (q.index + 1) + ' of ' + quiz.questions.length + '</div>' +
+      '<div class="q-text">' + EG.questionHtml(q.question) + '</div>' +
+      q.options.map((opt, i) =>
+        '<label class="opt" data-opt="' + i + '">' +
+          '<input type="radio" name="q' + q.index + '" value="' + i + '">' +
+          '<span class="opt-letter">' + 'ABCD'[i] + '</span>' +
+          '<span class="opt-body">' + EG.esc(opt) + '</span>' +
+        '</label>').join('') +
+    '</div>').join('');
+
+  EG.$$('.opt input').forEach(input => input.addEventListener('change', (evt) => {
+    const card = evt.target.closest('.q-card');
+    const idx = parseInt(card.dataset.q, 10);
+
+    if (idx !== currentIndex) { questionEnteredAt = Date.now(); currentIndex = idx; }
+    timings[idx] = (timings[idx] || 0) + (Date.now() - questionEnteredAt);
+    questionEnteredAt = Date.now();
+
+    answers[idx] = parseInt(evt.target.value, 10);
+    EG.$$('.opt', card).forEach(o => o.classList.remove('picked'));
+    evt.target.closest('.opt').classList.add('picked');
+    renderFooter();
+  }));
+}
+
+function renderFooter() {
+  const done = Object.keys(answers).length;
+  const total = quiz.questions.length;
+  EG.$('#footer-bar').innerHTML =
+    '<div class="card"><div class="row-between">' +
+      '<div style="flex:1;min-width:200px">' +
+        EG.meter('Answered', (done / total) * 100, done + ' of ' + total) +
+      '</div>' +
+      '<button class="btn btn-lg" id="submit"' + (done < total ? ' disabled' : '') + '>' +
+        (done < total ? 'Answer all ' + total + ' questions' : 'Submit quiz') +
+      '</button>' +
+    '</div></div>';
+
+  const btn = EG.$('#submit');
+  if (btn && !btn.disabled) btn.addEventListener('click', submit);
+}
+
+async function submit() {
+  const btn = EG.$('#submit');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Marking...';
+  timings[currentIndex] = (timings[currentIndex] || 0) + (Date.now() - questionEnteredAt);
+
+  try {
+    const result = await EG.post('/api/quiz/submit', {
+      quiz_session_id: quiz.quiz_session_id,
+      answers: answers,
+      timings: timings,
+      duration_ms: Date.now() - startedAt
+    });
+    EG.store.set('result', result);
+    EG.store.clear('quiz');
+    window.location.href = '/quiz/result/' + result.quiz_result_id;
+  } catch (e) {
+    EG.$('#footer-bar').innerHTML = EG.errorBox(e.message, 'Reload');
+  }
+}
+
+renderHead();
+renderQuestions();
+renderFooter();
+</script>
+{% endblock %}

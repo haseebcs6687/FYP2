@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Analysis &mdash; EduGen{% endblock %}
+
+{% block content %}
+<div class="wrap page">
+  <div class="page-head">
+    <h1>Performance analysis</h1>
+    <p>
+      What the Performance Analysis Agent measured, concept by concept. Mastery is
+      recency-weighted, so your recent answers count more than your first attempt.
+    </p>
+  </div>
+
+  <div id="body">{{ '' }}</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function trendBadge(trend) {
+  const map = { improving: 'badge-good', declining: 'badge-crit', steady: '', new: '' };
+  return '<span class="badge ' + (map[trend] || '') + ' tiny">' + EG.esc(trend) + '</span>';
+}
+
+function conceptRow(s) {
+  return '<div style="padding:13px 0;border-bottom:1px solid var(--line-2)">' +
+    '<div class="row-between" style="margin-bottom:6px">' +
+      '<a href="/learn/' + s.concept_tag + '" style="font-family:var(--font-ui);font-weight:500">' +
+        EG.esc(s.title) + '</a>' +
+      '<div class="row" style="gap:6px">' + trendBadge(s.trend) +
+        (s.fragile ? '<span class="badge badge-attn tiny">slow but correct</span>' : '') +
+        '<span class="badge tiny">' + s.attempts + ' question(s)</span></div>' +
+    '</div>' +
+    '<div class="meter-track"><div class="meter-fill ' + EG.masteryClass(s.mastery) +
+      '" style="width:' + Math.max(2, s.mastery) + '%"></div></div>' +
+    '<div class="row-between tiny muted" style="margin-top:5px">' +
+      '<span>mastery ' + Math.round(s.mastery) + '% &middot; raw accuracy ' + s.accuracy + '%</span>' +
+      '<span>' + EG.esc(s.module_title) + '</span>' +
+    '</div>' +
+    (s.misconceptions && s.misconceptions.length
+      ? '<div class="notice notice-attn" style="margin-top:9px;font-size:.83rem">' +
+        '<strong>Repeated mistake:</strong> you chose &ldquo;' + EG.esc(s.misconceptions[0].answer) +
+        '&rdquo; ' + s.misconceptions[0].times + ' times.</div>' : '') +
+  '</div>';
+}
+
+function render(r) {
+  if (!r.total_quizzes_taken) {
+    return '<div class="empty"><h3>Nothing to analyse yet</h3>' +
+      '<p>Take one quiz and this page fills with mastery per concept, trends, and the ' +
+      'prerequisite chain behind any weakness.</p>' +
+      '<a class="btn" href="/quiz">Take your first quiz</a></div>';
+  }
+
+  let html = '<div class="grid grid-4" style="margin-bottom:28px">' +
+    ['Overall accuracy|' + r.overall_performance + '%|' + r.total_questions_correct + ' of ' + r.total_questions_attempted,
+     'Quizzes taken|' + r.total_quizzes_taken + '|across all concepts',
+     'Concepts assessed|' + Object.keys(r.concept_stats).length + '|of {{ concept_count }}',
+     'Weak concepts|' + r.weak_topics.length + '|mastery below 50%']
+      .map(s => { const [l, v, sub] = s.split('|');
+        return '<div class="stat"><div class="stat-value">' + v + '</div>' +
+          '<div class="stat-label">' + l + '</div><div class="stat-sub">' + sub + '</div></div>'; })
+      .join('') + '</div>';
+
+  if (r.root_causes && r.root_causes.length) {
+    html += '<div class="card card-agent" style="margin-bottom:26px">' +
+      '<div class="row" style="margin-bottom:10px">' +
+        '<span class="badge badge-agent badge-dot">Root cause analysis</span></div>' +
+      '<p class="small" style="color:var(--ink-2)">The agent walked the prerequisite graph. ' +
+      'These weaknesses are symptoms of something earlier:</p>' +
+      r.root_causes.map(c =>
+        '<div class="notice notice-attn" style="margin-top:10px">' +
+        '<strong>' + EG.esc(c.symptom_title) + '</strong> (' + c.symptom_mastery + '% mastery) ' +
+        'depends on <strong>' + EG.esc(c.teach_first_title) + '</strong>, which is not solid yet. ' +
+        '<a href="/learn/' + c.teach_first + '">Fix the prerequisite first &rarr;</a></div>').join('') +
+      '</div>';
+  }
+
+  if (r.due_for_review && r.due_for_review.length) {
+    html += '<div class="card" style="margin-bottom:26px">' +
+      '<h3 style="margin-bottom:8px">Due for review</h3>' +
+      '<p class="small muted">Mastered, but going stale. A quick quiz keeps them.</p>' +
+      '<div class="chip-row">' + r.due_for_review.map(d =>
+        '<a class="chip" href="/quiz?concept=' + d.concept_tag + '&difficulty=Medium">' +
+        EG.esc(d.title) + ' &middot; ' + d.days_since + 'd ago</a>').join('') + '</div></div>';
+  }
+
+  if (r.module_breakdown && r.module_breakdown.length) {
+    html += '<div class="card" style="margin-bottom:26px"><h3>By module</h3>' +
+      r.module_breakdown.map(m =>
+        EG.meter(m.title, m.mastery, Math.round(m.mastery) + '% over ' + m.attempts + ' question(s)')).join('') +
+      '</div>';
+  }
+
+  const groups = [
+    ['Weak', r.weak_topics, 'Mastery under 50%. These drive your recommendations.'],
+    ['Needs consolidation', r.moderate_topics, 'Between 50% and 80%.'],
+    ['Mastered', r.strong_topics, '80% or above.'],
+    ['Not enough evidence', r.insufficient_data, 'Fewer than 2 questions seen so far.']
+  ];
+
+  html += '<div class="grid grid-2" style="align-items:start">';
+  groups.forEach(([title, list, blurb]) => {
+    if (!list || !list.length) return;
+    html += '<div class="card"><div class="card-head"><h3>' + title + '</h3>' +
+      '<span class="badge">' + list.length + '</span></div>' +
+      '<p class="small muted" style="margin-bottom:6px">' + blurb + '</p>' +
+      list.map(conceptRow).join('') + '</div>';
+  });
+  html += '</div>';
+
+  html += '<details class="payload" style="margin-top:24px"><summary>How this was computed</summary>' +
+    '<pre>' + EG.esc(JSON.stringify(r.model_info, null, 2)) + '</pre></details>';
+
+  return html;
+}
+
+(async function () {
+  EG.$('#body').innerHTML = EG.loading('Performance Analysis Agent is scoring your concepts...');
+  try {
+    EG.$('#body').innerHTML = render(await EG.get('/api/analysis'));
+  } catch (e) {
+    EG.$('#body').innerHTML = EG.errorBox(e.message);
+  }
+})();
+</script>
+{% endblock %}

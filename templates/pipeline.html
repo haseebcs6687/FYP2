@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}Agent pipeline &mdash; EduGen{% endblock %}
+
+{% block content %}
+<div class="wrap page">
+
+  <div class="page-head">
+    <h1>Agent pipeline</h1>
+    <p>
+      One request, four agents, in order. This page runs the real pipeline against your
+      own data and shows what each agent produced and passed on.
+    </p>
+  </div>
+
+  <div class="row" style="margin-bottom:22px">
+    <button class="btn btn-agent" id="run">Run the pipeline</button>
+    <button class="btn btn-ghost" id="run-quiz">Run it in quiz mode</button>
+    <span class="muted small" id="timing"></span>
+  </div>
+
+  <div class="rail" id="rail" style="margin-bottom:30px">
+    <div class="rail-node idle"><h4>Coordinator</h4><div class="rail-role">Routes the session</div></div>
+    <span class="rail-arrow">&rarr;</span>
+    <div class="rail-node idle"><h4>Performance Analysis</h4><div class="rail-role">Measures concept mastery</div></div>
+    <span class="rail-arrow">&rarr;</span>
+    <div class="rail-node idle"><h4>Adaptive Content</h4><div class="rail-role">Decides the next step</div></div>
+    <span class="rail-arrow">&rarr;</span>
+    <div class="rail-node idle"><h4>Concept Clarifier</h4><div class="rail-role">Retrieves sources, writes content</div></div>
+  </div>
+
+  <div class="grid grid-2" style="align-items:start">
+    <div class="card">
+      <div class="card-head"><h3>Execution trace</h3><span class="badge badge-agent">live</span></div>
+      <div id="trace"><p class="muted small" style="margin:0">Press <strong>Run the pipeline</strong> to start.</p></div>
+    </div>
+
+    <div class="stack">
+      <div class="card">
+        <div class="card-head"><h3>Retrieval brief</h3></div>
+        <p class="small muted">
+          The instruction object the Adaptive Content Agent hands to the Concept Clarifier.
+          This is what turns a vague "teach inheritance" into a targeted search.
+        </p>
+        <div id="brief"><p class="muted small" style="margin:0">Not issued yet.</p></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>Passages retrieved</h3></div>
+        <div id="passages"><p class="muted small" style="margin:0">Not retrieved yet.</p></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const railNodes = EG.$$('#rail .rail-node');
+const agentIndex = {
+  'Coordinator': 0, 'Performance Analysis': 1, 'Adaptive Content': 2, 'Concept Clarifier': 3
+};
+
+function resetRail() {
+  railNodes.forEach(n => {
+    n.className = 'rail-node idle';
+    const out = n.querySelector('.rail-out');
+    if (out) out.remove();
+  });
+}
+
+function markStage(stage, active) {
+  const idx = agentIndex[stage.agent];
+  if (idx === undefined) return;
+  const node = railNodes[idx];
+  node.className = 'rail-node ' + (active ? 'active' : 'done');
+  let out = node.querySelector('.rail-out');
+  if (!out) { out = document.createElement('div'); out.className = 'rail-out'; node.appendChild(out); }
+  out.textContent = stage.summary;
+}
+
+function traceHtml(trace) {
+  return trace.map((s, i) =>
+    '<div class="trace-step">' +
+      '<div class="trace-dot">' + (i + 1) + '</div>' +
+      '<div class="trace-body">' +
+        '<div class="trace-agent">' + EG.esc(s.agent) + '</div>' +
+        '<div class="trace-action">' + EG.esc(s.action) + ' &middot; ' + EG.esc(s.at) + '</div>' +
+        '<div class="trace-summary">' + EG.esc(s.summary) + '</div>' +
+        (s.payload && Object.keys(s.payload).length
+          ? '<details class="payload"><summary>payload</summary><pre>' +
+            EG.esc(JSON.stringify(s.payload, null, 2)) + '</pre></details>' : '') +
+      '</div>' +
+    '</div>'
+  ).join('');
+}
+
+function briefHtml(brief) {
+  if (!brief) return '<p class="muted small" style="margin:0">No brief was issued.</p>';
+  const notes = (brief.focus_notes || []).map(n => '<li>' + EG.esc(n) + '</li>').join('');
+  return '<div class="stack">' +
+    '<div class="row">' +
+      '<span class="badge badge-agent">' + EG.esc(brief.concept) + '</span>' +
+      '<span class="badge badge-signal">' + EG.esc(brief.difficulty) + '</span>' +
+      '<span class="badge">' + EG.esc(brief.mode) + '</span>' +
+      (brief.rule ? '<span class="badge">from rule ' + EG.esc(brief.rule) + '</span>' : '') +
+    '</div>' +
+    '<div><div class="small muted">Search query</div><div class="passage mono tiny">' +
+      EG.esc(brief.query) + '</div></div>' +
+    '<div><div class="small muted">Tag filter</div><div class="chip-row">' +
+      (brief.concept_tags || []).map(t => '<span class="chip">' + EG.esc(t) + '</span>').join('') +
+    '</div></div>' +
+    (notes ? '<div><div class="small muted">Personalised focus</div><ul class="small" style="margin:6px 0 0;padding-left:18px">' +
+      notes + '</ul></div>' : '') +
+  '</div>';
+}
+
+async function loadPassages(brief) {
+  const slot = EG.$('#passages');
+  if (!brief) { slot.innerHTML = '<p class="muted small" style="margin:0">No brief.</p>'; return; }
+  slot.innerHTML = EG.loading('Searching the knowledge base...');
+  try {
+    const r = await EG.get('/api/rag/brief/' + brief.concept + '/' + brief.difficulty + '?mode=' + brief.mode);
+    const ret = r.retrieval;
+    if (!ret.ready || !ret.passages.length) {
+      slot.innerHTML = '<div class="notice notice-attn"><strong>Nothing retrieved.</strong> ' +
+        EG.esc(ret.error || 'The knowledge base has no passages for this concept yet.') +
+        ' Build it with <code>python -m rag.ingest</code>.</div>';
+      return;
+    }
+    slot.innerHTML = ret.passages.map((p, i) =>
+      '<div style="margin-bottom:14px">' +
+        '<div class="row" style="margin-bottom:5px">' +
+          '<span class="source-n">' + (i + 1) + '</span>' +
+          '<strong class="small">' + EG.esc(p.heading || p.source) + '</strong>' +
+          '<span class="spacer" style="flex:1"></span>' +
+          '<span class="badge badge-agent tiny">' + p.score.toFixed(3) + '</span>' +
+        '</div>' +
+        '<div class="passage">' + EG.esc(p.text.slice(0, 700)) + (p.text.length > 700 ? '...' : '') + '</div>' +
+        '<div class="tiny muted" style="margin-top:4px">vector ' + p.vector_score.toFixed(2) +
+        ' &middot; lexical ' + p.lexical_score.toFixed(2) + ' &middot; tags ' + p.tag_score.toFixed(2) + '</div>' +
+      '</div>').join('');
+  } catch (e) {
+    slot.innerHTML = EG.errorBox(e.message);
+  }
+}
+
+async function run(mode) {
+  resetRail();
+  EG.$('#trace').innerHTML = EG.loading('Running the pipeline...');
+  EG.$('#brief').innerHTML = EG.loading('Waiting for the Adaptive Content Agent...');
+  EG.$('#timing').textContent = '';
+
+  try {
+    const s = await EG.get('/api/session?mode=' + mode);
+    (s.trace || []).forEach((stage, i) => {
+      setTimeout(() => markStage(stage, i === s.trace.length - 1), i * 260);
+    });
+    EG.$('#trace').innerHTML = traceHtml(s.trace || []);
+    EG.$('#brief').innerHTML = briefHtml(s.retrieval_brief);
+    EG.$('#timing').textContent = 'completed in ' + s.elapsed_ms + ' ms via ' +
+      (s.pipeline_flow || []).join(' -> ');
+    loadPassages(s.retrieval_brief);
+  } catch (e) {
+    EG.$('#trace').innerHTML = EG.errorBox(e.message);
+    EG.$('#brief').innerHTML = '';
+  }
+}
+
+EG.$('#run').addEventListener('click', () => run('lesson'));
+EG.$('#run-quiz').addEventListener('click', () => run('quiz'));
+run('lesson');
+</script>
+{% endblock %}

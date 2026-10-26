@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Quiz result &mdash; EduGen{% endblock %}
+
+{% block content %}
+<div class="wrap-narrow page">
+  <div id="summary"></div>
+  <h2 style="font-size:1.2rem;margin:32px 0 14px">Answer review</h2>
+  <div id="review"></div>
+  <div id="next" style="margin-top:30px"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const RESULT_ID = {{ result_id }};
+
+function summaryHtml(r) {
+  const pct = r.percentage;
+  const verdict = pct >= 80 ? 'Solid.' : pct >= 50 ? 'Getting there.' : 'This one needs another pass.';
+  return '<div class="card"><div class="score-ring">' +
+    EG.ring(pct) +
+    '<div><h1 style="font-size:1.6rem;margin-bottom:4px">' + verdict + '</h1>' +
+    '<p style="margin-bottom:10px;color:var(--ink-2)">' + r.score + ' of ' + r.total +
+      ' correct on <strong>' + EG.esc(r.concept_title) + '</strong> at ' + EG.esc(r.difficulty) + '.</p>' +
+    '<div class="row"><span class="badge">Attempt #' + r.attempt_number + '</span>' +
+    '<span class="badge badge-agent badge-dot">Recorded &mdash; your mastery has been recomputed</span></div>' +
+    '</div></div></div>';
+}
+
+function reviewHtml(review) {
+  return review.map(item => {
+    const opts = (item.options || []).map((opt, i) => {
+      let cls = 'opt';
+      if (i === item.correct_answer) cls += ' correct';
+      else if (i === item.student_answer) cls += ' wrong';
+      return '<div class="' + cls + '"><span class="opt-letter">' + 'ABCD'[i] + '</span>' +
+        '<span class="opt-body">' + EG.esc(opt) + '</span></div>';
+    }).join('');
+
+    return '<div class="q-card">' +
+      '<div class="row-between" style="margin-bottom:8px">' +
+        '<span class="q-num" style="margin:0">Question ' + (item.index + 1) + '</span>' +
+        '<span class="badge ' + (item.is_correct ? 'badge-good' : 'badge-crit') + '">' +
+          (item.is_correct ? 'Correct' : 'Wrong') + '</span>' +
+      '</div>' +
+      '<div class="q-text">' + EG.questionHtml(item.question) + '</div>' + opts +
+      (item.explanation
+        ? '<div class="notice" style="margin-top:12px"><strong>Why:</strong> ' +
+          EG.esc(item.explanation) + '</div>' : '') +
+      (item.concept_tags && item.concept_tags.length
+        ? '<div class="chip-row" style="margin-top:12px">' + item.concept_tags.map(t =>
+            '<a class="chip" href="/learn/' + t + '">' + EG.esc(t.replace(/-/g, ' ')) + '</a>').join('') +
+          '</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+async function loadNext() {
+  const slot = EG.$('#next');
+  slot.innerHTML = '<div class="card card-agent">' +
+    EG.loading('The agents are deciding what comes next...') + '</div>';
+  try {
+    const d = await EG.get('/api/recommendation');
+    slot.innerHTML = '<div class="card card-agent">' +
+      '<div class="row" style="margin-bottom:8px">' +
+        '<span class="badge badge-agent badge-dot">What to do next</span>' +
+        '<span class="badge">Rule ' + EG.esc(d.rule) + '</span></div>' +
+      '<h3 style="margin-bottom:6px">' + EG.esc(d.focus_title) + ' at ' +
+        EG.esc(d.recommended_difficulty) + '</h3>' +
+      '<p style="color:var(--ink-2)">' + EG.esc(d.reasoning) + '</p>' +
+      '<div class="row">' +
+        '<a class="btn btn-agent" href="/learn/' + d.focus_concept + '?difficulty=' +
+          d.recommended_difficulty + '">Read that lesson</a>' +
+        '<a class="btn btn-ghost" href="/quiz?concept=' + d.focus_concept + '&difficulty=' +
+          d.recommended_difficulty + '">Quiz me on it</a>' +
+        '<a class="btn btn-ghost" href="/analysis">See full analysis</a>' +
+      '</div></div>';
+  } catch (e) {
+    slot.innerHTML = '<a class="btn" href="/quiz">Take another quiz</a>';
+  }
+}
+
+(async function () {
+  EG.$('#summary').innerHTML = EG.loading('Loading your result...');
+  try {
+    const cached = EG.store.get('result');
+    const r = (cached && cached.quiz_result_id === RESULT_ID)
+      ? cached : await EG.get('/api/quiz/result/' + RESULT_ID);
+    EG.$('#summary').innerHTML = summaryHtml(r);
+    EG.$('#review').innerHTML = reviewHtml(r.review || []);
+    loadNext();
+  } catch (e) {
+    EG.$('#summary').innerHTML = EG.errorBox(e.message);
+  }
+})();
+</script>
+{% endblock %}

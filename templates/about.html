@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}How EduGen works{% endblock %}
+
+{% block content %}
+<div class="wrap page">
+  <div class="page-head">
+    <h1>How EduGen works</h1>
+    <p>The architecture, written for someone evaluating the project rather than using it.</p>
+  </div>
+
+  <div class="card" style="margin-bottom:26px">
+    <h2 style="font-size:1.2rem">The pipeline</h2>
+    <p class="small muted">One student request passes through four agents. Each has one job and a
+    documented input and output, so any of them can be replaced without touching the others.</p>
+    <div class="rail" style="margin-top:18px">
+      <div class="rail-node done"><h4>Coordinator</h4>
+        <div class="rail-role">Routing and orchestration</div>
+        <div class="rail-out">in: student id &middot; out: pipeline route + trace</div></div>
+      <span class="rail-arrow">&rarr;</span>
+      <div class="rail-node done"><h4>Performance Analysis</h4>
+        <div class="rail-role">Measures mastery per concept</div>
+        <div class="rail-out">in: question attempts &middot; out: weakness report</div></div>
+      <span class="rail-arrow">&rarr;</span>
+      <div class="rail-node done"><h4>Adaptive Content</h4>
+        <div class="rail-role">Chooses concept and difficulty</div>
+        <div class="rail-out">in: weakness report &middot; out: decision + retrieval brief</div></div>
+      <span class="rail-arrow">&rarr;</span>
+      <div class="rail-node active"><h4>Concept Clarifier</h4>
+        <div class="rail-role">Retrieves sources, generates content</div>
+        <div class="rail-out">in: retrieval brief &middot; out: lesson or quiz + citations</div></div>
+    </div>
+  </div>
+
+  <div class="grid grid-2" style="align-items:start">
+    <div class="card">
+      <h3>Why concept-level instead of topic-level</h3>
+      <p class="small">"Inheritance" is not one skill. A student can understand <code>extends</code>
+      perfectly and still fail every question about <code>super()</code>. EduGen models
+      {{ concept_count }} concepts across 8 modules, tags every question with the concepts it tests,
+      and scores each concept separately.</p>
+    </div>
+
+    <div class="card">
+      <h3>Why a prerequisite graph</h3>
+      <p class="small">The concepts are connected by dependency edges. When a student fails
+      <code>method-overriding</code>, the Performance Analysis Agent checks its prerequisites; if
+      <code>inheritance-basics</code> is also shaky, the Adaptive Content Agent teaches the
+      prerequisite instead. Treating the cause beats repeating the symptom.</p>
+    </div>
+
+    <div class="card">
+      <h3>Signals beyond right and wrong</h3>
+      <ul class="small" style="margin:0;padding-left:18px;line-height:1.8">
+        <li><strong>Recency-weighted mastery</strong> &mdash; an EWMA so improvement is visible immediately</li>
+        <li><strong>Trend</strong> &mdash; improving, declining or steady across the attempt history</li>
+        <li><strong>Response time</strong> &mdash; correct but slow is flagged as fragile knowledge</li>
+        <li><strong>Distractor analysis</strong> &mdash; a repeated wrong option is a named misconception, and it is fed into the next prompt</li>
+        <li><strong>Review decay</strong> &mdash; mastered concepts become due again after a week</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Retrieval-augmented generation</h3>
+      <p class="small">The Adaptive Content Agent does not send a vague instruction. It writes a
+      <em>retrieval brief</em>: concept, difficulty, query terms, tag filter and the student's own
+      misconceptions. The Concept Clarifier runs that against a hybrid index (vector similarity +
+      lexical overlap + concept-tag match) and grounds the generated lesson in the passages it gets
+      back, citing each one.</p>
+    </div>
+
+    <div class="card">
+      <h3>Student agency</h3>
+      <p class="small">Every recommendation shows the rule that fired and the evidence. The student
+      can accept it or pick something else, and both are recorded. The acceptance rate is reported
+      on the history page, which turns "did students trust the agent" into a measurable result.</p>
+    </div>
+
+    <div class="card">
+      <h3>Security</h3>
+      <p class="small">The student identity comes from a signed server-side session, never from the
+      request. There is no endpoint where changing a number in the URL exposes another student's
+      record. Passwords are stored as PBKDF2 hashes.</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:26px">
+    <h3>Stack</h3>
+    <p class="small muted" style="margin:0">
+      Python 3.10+ &middot; Flask &middot; SQLite &middot; server-rendered Jinja2 with vanilla JavaScript &middot;
+      a file-backed vector store built on NumPy &middot; sentence-transformers, Ollama or a
+      dependency-free hashing embedder &middot; an OpenAI-compatible LLM endpoint for generation.
+    </p>
+  </div>
+</div>
+{% endblock %}

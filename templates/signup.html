@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Create an account &mdash; EduGen{% endblock %}
+{% block footer %}{% endblock %}
+
+{% block content %}
+<div class="auth-shell">
+  <div class="auth-card">
+    <h1>Create your account</h1>
+    <p>Your quiz history is what makes the recommendations personal, so it is kept under your login.</p>
+
+    <div class="notice notice-crit form-error" id="err"></div>
+
+    <form id="signup-form" novalidate>
+      <div class="field">
+        <label for="name">Full name</label>
+        <input class="input" type="text" id="name" name="name" autocomplete="name" required>
+      </div>
+      <div class="field">
+        <label for="email">Email</label>
+        <input class="input" type="email" id="email" name="email" autocomplete="email" required>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input class="input" type="password" id="password" name="password" autocomplete="new-password" required>
+        <div class="field-hint">At least 8 characters.</div>
+      </div>
+      <button class="btn btn-block btn-lg" type="submit" id="submit">Create account</button>
+    </form>
+
+    <div class="auth-alt">
+      Already registered? <a href="{{ url_for('pages.login') }}">Sign in</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+EG.$('#signup-form').addEventListener('submit', async (evt) => {
+  evt.preventDefault();
+  const btn = EG.$('#submit'), err = EG.$('#err');
+  err.classList.remove('show');
+  btn.disabled = true; btn.textContent = 'Creating...';
+  try {
+    await EG.post('/api/auth/signup', {
+      name: EG.$('#name').value.trim(),
+      email: EG.$('#email').value.trim(),
+      password: EG.$('#password').value
+    });
+    window.location.href = '/dashboard';
+  } catch (e) {
+    err.textContent = e.message;
+    err.classList.add('show');
+    btn.disabled = false; btn.textContent = 'Create account';
+  }
+});
+</script>
+{% endblock %}

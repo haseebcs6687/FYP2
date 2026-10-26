@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Knowledge base &mdash; EduGen{% endblock %}
+
+{% block content %}
+<div class="wrap page">
+  <div class="page-head">
+    <h1>Knowledge base</h1>
+    <p>
+      Everything the Concept Clarifier Agent can cite. Search it the same way the agent
+      does &mdash; the scores you see are the exact scores retrieval ranks on.
+    </p>
+  </div>
+
+  <div id="status" style="margin-bottom:22px"></div>
+
+  <div class="card" style="margin-bottom:22px">
+    <div class="row">
+      <input class="input" id="q" placeholder="e.g. what happens if a constructor calls super() second"
+             style="flex:1;min-width:260px">
+      <select class="input" id="concept" style="max-width:230px">
+        <option value="">Any concept</option>
+        {% for module in modules %}
+        <optgroup label="{{ module.title }}">
+          {% for c in module.concepts %}<option value="{{ c.tag }}">{{ c.title }}</option>{% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+      <button class="btn" id="search">Search</button>
+    </div>
+    <div class="field-hint" style="margin-top:10px">
+      Ranking is hybrid: vector similarity, lexical overlap and concept-tag match combined.
+    </div>
+  </div>
+
+  <div id="results"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadStatus() {
+  try {
+    const s = await EG.get('/api/rag/status');
+    if (!s.ready) {
+      EG.$('#status').innerHTML = '<div class="notice notice-attn">' +
+        '<strong>The index has not been built yet.</strong> Put PDFs, .txt or .md files into ' +
+        '<code>rag/corpus/books/</code> and run <code>python -m rag.ingest</code> in the project folder, ' +
+        'then reload this page.' +
+        (s.error ? '<div class="tiny" style="margin-top:6px">' + EG.esc(s.error) + '</div>' : '') + '</div>';
+      return;
+    }
+    const sources = Object.entries(s.sources || {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, n]) => '<span class="chip">' + EG.esc(name) + ' &middot; ' + n + '</span>').join('');
+
+    EG.$('#status').innerHTML = '<div class="card">' +
+      '<div class="grid grid-4" style="margin-bottom:14px">' +
+        '<div><div class="stat-value" style="font-size:1.4rem">' + s.chunk_count + '</div><div class="stat-label">passages</div></div>' +
+        '<div><div class="stat-value" style="font-size:1.4rem">' + Object.keys(s.sources || {}).length + '</div><div class="stat-label">documents</div></div>' +
+        '<div><div class="stat-value" style="font-size:1.4rem">' + s.covered_concepts + '/{{ concept_count }}</div><div class="stat-label">concepts covered</div></div>' +
+        '<div><div class="stat-value" style="font-size:1.4rem">' + s.dimension + '</div><div class="stat-label">vector dimensions</div></div>' +
+      '</div>' +
+      '<div class="small muted" style="margin-bottom:8px">Embedder <code>' + EG.esc(s.embedder) +
+        '</code> &middot; built ' + EG.esc(s.built_at) + '</div>' +
+      '<div class="chip-row">' + sources + '</div></div>';
+  } catch (e) {
+    EG.$('#status').innerHTML = EG.errorBox(e.message);
+  }
+}
+
+async function search() {
+  const q = EG.$('#q').value.trim();
+  const concept = EG.$('#concept').value;
+  if (!q && !concept) return;
+
+  EG.$('#results').innerHTML = EG.loading('Searching...');
+  try {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (concept) params.set('concept', concept);
+    const r = await EG.get('/api/rag/search?' + params.toString());
+
+    if (!r.ready) { EG.$('#results').innerHTML = EG.errorBox(r.error || 'Index not ready.'); return; }
+    if (!r.results.length) {
+      EG.$('#results').innerHTML = '<div class="empty"><h3>Nothing matched</h3>' +
+        '<p>Try different words, or add more source documents to the corpus.</p></div>';
+      return;
+    }
+
+    EG.$('#results').innerHTML = r.results.map((p, i) =>
+      '<div class="card" style="margin-bottom:14px">' +
+        '<div class="row-between" style="margin-bottom:9px">' +
+          '<div class="row"><span class="source-n">' + (i + 1) + '</span>' +
+          '<strong class="small">' + EG.esc(p.heading || p.title || p.source) + '</strong></div>' +
+          '<span class="badge badge-agent">score ' + p.score.toFixed(3) + '</span>' +
+        '</div>' +
+        '<div class="passage">' + EG.esc(p.text) + '</div>' +
+        '<div class="row-between" style="margin-top:10px">' +
+          '<div class="chip-row">' + (p.concept_tags || []).map(t =>
+            '<a class="chip" href="/learn/' + t + '">' + EG.esc(t.replace(/-/g, ' ')) + '</a>').join('') + '</div>' +
+          '<span class="tiny muted">' + EG.esc(p.source) + ' &middot; vector ' + p.vector_score.toFixed(2) +
+            ' &middot; lexical ' + p.lexical_score.toFixed(2) + ' &middot; tags ' + p.tag_score.toFixed(2) + '</span>' +
+        '</div></div>').join('');
+  } catch (e) {
+    EG.$('#results').innerHTML = EG.errorBox(e.message);
+  }
+}
+
+EG.$('#search').addEventListener('click', search);
+EG.$('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter') search(); });
+EG.$('#concept').addEventListener('change', search);
+loadStatus();
+</script>
+{% endblock %}

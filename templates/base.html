@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}EduGen{% endblock %}</title>
+  <meta name="description" content="EduGen - an agentic AI learning system for Java and object-oriented programming.">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/edugen.css') }}">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%231F4FE0'/><path d='M12 9v14h10' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/></svg>">
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <a class="brand" href="{{ url_for('pages.dashboard') if user else url_for('pages.index') }}">
+      <span class="brand-mark"></span> EduGen
+    </a>
+
+    {% if user %}
+    <nav class="nav">
+      <a href="{{ url_for('pages.dashboard') }}" class="{{ 'on' if page == 'dashboard' }}">Dashboard</a>
+      <a href="{{ url_for('pages.pipeline') }}"  class="{{ 'on' if page == 'pipeline' }}">Agent pipeline</a>
+      <a href="{{ url_for('pages.learn') }}"     class="{{ 'on' if page == 'learn' }}">Learn</a>
+      <a href="{{ url_for('pages.quiz') }}"      class="{{ 'on' if page == 'quiz' }}">Quiz</a>
+      <a href="{{ url_for('pages.analysis') }}"  class="{{ 'on' if page == 'analysis' }}">Analysis</a>
+      <a href="{{ url_for('pages.history') }}"   class="{{ 'on' if page == 'history' }}">History</a>
+      <a href="{{ url_for('pages.library') }}"   class="{{ 'on' if page == 'library' }}">Library</a>
+    </nav>
+    <button class="nav-toggle" aria-label="Open menu">&#9776;</button>
+    <div class="topbar-user">
+      <span class="avatar">{{ user.name[:1] | upper }}</span>
+      <a href="#" data-action="logout" class="small muted">Sign out</a>
+    </div>
+    {% else %}
+    <nav class="nav">
+      <a href="{{ url_for('pages.about') }}" class="{{ 'on' if page == 'about' }}">How it works</a>
+    </nav>
+    <button class="nav-toggle" aria-label="Open menu">&#9776;</button>
+    <div class="topbar-user">
+      <a href="{{ url_for('pages.login') }}" class="btn btn-ghost btn-sm">Sign in</a>
+      <a href="{{ url_for('pages.signup') }}" class="btn btn-sm">Create account</a>
+    </div>
+    {% endif %}
+  </div>
+</header>
+
+<main>
+  {% block content %}{% endblock %}
+</main>
+
+{% block footer %}
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <span>EduGen &middot; Agentic AI Learning System for Java OOP</span>
+    <span>COMSATS University Islamabad, Lahore Campus &middot; BS Software Engineering &middot; FYP 2023&ndash;2027</span>
+  </div>
+</footer>
+{% endblock %}
+
+{% if show_logs %}
+<div class="console" id="console">
+  <div class="console-head" id="console-head">
+    <span class="console-pulse"></span>
+    <span class="console-title">Agent activity</span>
+    <span class="console-count" id="console-count">0 events</span>
+    <button class="console-btn" data-console-action="hide" title="Hide during presentation">&times;</button>
+  </div>
+  <div class="console-body" id="console-body"></div>
+  <div class="console-foot">
+    <span>Live feed of the four agents</span>
+    <span class="spacer" style="flex:1"></span>
+    <button data-console-action="clear">Clear</button>
+  </div>
+</div>
+<div class="console-pill" id="console-pill">
+  <span class="console-pulse"></span> Show agent activity
+</div>
+{% endif %}
+
+<script src="{{ url_for('static', filename='js/edugen.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

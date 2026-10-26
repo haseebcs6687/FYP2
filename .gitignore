@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.pyc
+venv/
+.venv/
+.env
+data/*.db
+data/rag_index/
+data/rag_cache/
+rag/corpus/books/*.pdf
+rag/corpus/books/*.txt
+.DS_Store

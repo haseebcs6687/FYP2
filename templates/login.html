@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Sign in &mdash; EduGen{% endblock %}
+{% block footer %}{% endblock %}
+
+{% block content %}
+<div class="auth-shell">
+  <div class="auth-card">
+    <h1>Welcome back</h1>
+    <p>Sign in to pick up where the agents left off.</p>
+
+    <div class="notice notice-crit form-error" id="err"></div>
+
+    <form id="login-form" novalidate>
+      <div class="field">
+        <label for="email">Email</label>
+        <input class="input" type="email" id="email" name="email" autocomplete="email" required>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input class="input" type="password" id="password" name="password" autocomplete="current-password" required>
+      </div>
+      <button class="btn btn-block btn-lg" type="submit" id="submit">Sign in</button>
+    </form>
+
+    <div class="auth-alt">
+      New here? <a href="{{ url_for('pages.signup') }}">Create an account</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const nextUrl = {{ (next_url or '/dashboard') | tojson }};
+EG.$('#login-form').addEventListener('submit', async (evt) => {
+  evt.preventDefault();
+  const btn = EG.$('#submit'), err = EG.$('#err');
+  err.classList.remove('show');
+  btn.disabled = true; btn.textContent = 'Signing in...';
+  try {
+    await EG.post('/api/auth/login', {
+      email: EG.$('#email').value.trim(),
+      password: EG.$('#password').value
+    });
+    window.location.href = nextUrl || '/dashboard';
+  } catch (e) {
+    err.textContent = e.message;
+    err.classList.add('show');
+    btn.disabled = false; btn.textContent = 'Sign in';
+  }
+});
+</script>
+{% endblock %}

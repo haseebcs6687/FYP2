@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}History &mdash; EduGen{% endblock %}
+
+{% block content %}
+<div class="wrap page">
+  <div class="page-head">
+    <h1>Quiz history</h1>
+    <p>Every attempt, newest first. This is the evidence the Performance Analysis Agent works from.</p>
+  </div>
+  <div id="stats" class="grid grid-3" style="margin-bottom:24px"></div>
+  <div id="body"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(async function () {
+  EG.$('#body').innerHTML = EG.loading('Loading your attempts...');
+  try {
+    const [h, rec] = await Promise.all([
+      EG.get('/api/history'),
+      EG.get('/api/recommendation/stats').catch(() => null)
+    ]);
+
+    if (!h.total) {
+      EG.$('#body').innerHTML = '<div class="empty"><h3>No attempts yet</h3>' +
+        '<p>Once you take a quiz it shows up here with the concept, level and score.</p>' +
+        '<a class="btn" href="/quiz">Take a quiz</a></div>';
+      return;
+    }
+
+    const avg = h.history.reduce((a, x) => a + x.percentage, 0) / h.total;
+    EG.$('#stats').innerHTML =
+      '<div class="stat"><div class="stat-value">' + h.total + '</div><div class="stat-label">Quizzes taken</div></div>' +
+      '<div class="stat"><div class="stat-value">' + avg.toFixed(0) + '%</div><div class="stat-label">Average score</div></div>' +
+      (rec && rec.acceptance_rate !== null
+        ? '<div class="stat"><div class="stat-value">' + rec.acceptance_rate + '%</div>' +
+          '<div class="stat-label">Agent suggestions accepted</div>' +
+          '<div class="stat-sub">' + rec.accepted + ' accepted, ' + rec.overridden + ' overridden</div></div>'
+        : '<div class="stat"><div class="stat-value">&mdash;</div><div class="stat-label">Agent suggestions accepted</div></div>');
+
+    EG.$('#body').innerHTML = '<div class="table-wrap"><table class="data">' +
+      '<thead><tr><th>#</th><th>Concept</th><th>Level</th><th>Score</th><th>Attempt</th><th>Source</th><th>When</th><th></th></tr></thead><tbody>' +
+      h.history.map((row, i) => {
+        const cls = row.percentage >= 80 ? 'badge-good' : row.percentage >= 50 ? 'badge-signal' : 'badge-crit';
+        return '<tr>' +
+          '<td class="muted tiny">' + (h.total - i) + '</td>' +
+          '<td><a href="/learn/' + (row.concept || '') + '">' + EG.esc(row.concept_title || row.topic) + '</a></td>' +
+          '<td><span class="badge tiny">' + EG.esc(row.difficulty) + '</span></td>' +
+          '<td><span class="badge ' + cls + '">' + row.score + '/' + row.total_questions +
+            ' (' + row.percentage + '%)</span></td>' +
+          '<td class="muted tiny">#' + row.attempt_number + '</td>' +
+          '<td class="muted tiny">' + EG.esc(row.source || 'llm') + '</td>' +
+          '<td class="muted tiny">' + EG.esc(EG.timeAgo(row.timestamp)) + '</td>' +
+          '<td><a class="small" href="/quiz/result/' + row.id + '">Review</a></td>' +
+        '</tr>';
+      }).join('') + '</tbody></table></div>';
+  } catch (e) {
+    EG.$('#body').innerHTML = EG.errorBox(e.message);
+  }
+})();
+</script>
+{% endblock %}

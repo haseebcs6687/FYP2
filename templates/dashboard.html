@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}Dashboard &mdash; EduGen{% endblock %}
+
+{% block content %}
+<div class="wrap page">
+
+  <div class="page-head">
+    <h1>Hello, {{ user.name.split()[0] }}</h1>
+    <p>Here is what the agents know about you right now, and what they suggest doing next.</p>
+  </div>
+
+  <!-- Recommendation -->
+  <div id="rec-slot" class="stack" style="margin-bottom:30px">
+    {{ '' }}
+  </div>
+
+  <!-- Snapshot -->
+  <h2 style="font-size:1.15rem;margin-bottom:12px">Your snapshot</h2>
+  <div class="grid grid-4" id="stats" style="margin-bottom:34px">
+    <div class="stat"><div class="stat-value skeleton" style="width:60px;height:30px"></div><div class="stat-label">Overall accuracy</div></div>
+    <div class="stat"><div class="stat-value skeleton" style="width:40px;height:30px"></div><div class="stat-label">Quizzes taken</div></div>
+    <div class="stat"><div class="stat-value skeleton" style="width:40px;height:30px"></div><div class="stat-label">Concepts assessed</div></div>
+    <div class="stat"><div class="stat-value skeleton" style="width:40px;height:30px"></div><div class="stat-label">Weak concepts</div></div>
+  </div>
+
+  <!-- Quick actions -->
+  <h2 style="font-size:1.15rem;margin-bottom:12px">Jump in</h2>
+  <div class="grid grid-4" style="margin-bottom:34px">
+    <a class="card card-link" href="{{ url_for('pages.learn') }}">
+      <h3 style="font-size:1rem">Learn a concept</h3>
+      <p class="small muted" style="margin:0">Browse all {{ concept_count }} concepts across 8 modules.</p>
+    </a>
+    <a class="card card-link" href="{{ url_for('pages.quiz') }}">
+      <h3 style="font-size:1rem">Take a quiz</h3>
+      <p class="small muted" style="margin:0">Questions written for one concept at one level.</p>
+    </a>
+    <a class="card card-link" href="{{ url_for('pages.analysis') }}">
+      <h3 style="font-size:1rem">See your analysis</h3>
+      <p class="small muted" style="margin:0">Mastery per concept, trends and root causes.</p>
+    </a>
+    <a class="card card-link" href="{{ url_for('pages.pipeline') }}">
+      <h3 style="font-size:1rem">Watch the pipeline</h3>
+      <p class="small muted" style="margin:0">Every hand-off between the four agents, step by step.</p>
+    </a>
+  </div>
+
+  <!-- System status -->
+  <h2 style="font-size:1.15rem;margin-bottom:12px">System status</h2>
+  <div class="grid grid-2" id="status">
+    <div class="card">{{ '' }}<div class="loading"><span class="spinner"></span><span>Checking agents...</span></div></div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadRecommendation() {
+  const slot = EG.$('#rec-slot');
+  slot.innerHTML = '<div class="card card-agent">' +
+    EG.loading('Coordinator is routing your session through the agents...') + '</div>';
+  try {
+    const s = await EG.get('/api/session?generate=0');
+    EG.store.set('session', s);
+    slot.innerHTML = recommendationCard(s);
+    wireRecommendation(s);
+  } catch (e) {
+    slot.innerHTML = EG.errorBox(e.message, 'Retry');
+  }
+}
+
+function recommendationCard(s) {
+  const first = s.first_visit;
+  const alts = (s.alternatives || []).map(a =>
+    '<a class="chip" href="/learn/' + a.concept + '?difficulty=' + s.recommended_difficulty + '" title="' +
+    EG.esc(a.why) + '">' + EG.esc(a.title) + '</a>').join('');
+
+  return '<div class="card card-agent">' +
+    '<div class="row" style="margin-bottom:10px">' +
+      '<span class="badge badge-agent badge-dot">Adaptive Content Agent</span>' +
+      (s.rule ? '<span class="badge">Rule ' + EG.esc(s.rule) + '</span>' : '') +
+      '<span class="badge">' + EG.esc(s.action.replace(/_/g, ' ')) + '</span>' +
+    '</div>' +
+    '<h2 style="margin-bottom:6px">' + (first ? 'Start here: ' : 'Work on ') +
+      EG.esc(s.focus_title) + ' <span class="badge badge-signal">' +
+      EG.esc(s.recommended_difficulty) + '</span></h2>' +
+    '<p style="color:var(--ink-2);margin-bottom:16px">' + EG.esc(s.reasoning) + '</p>' +
+    '<div class="row">' +
+      '<a class="btn btn-agent" href="/learn/' + s.focus_concept + '?difficulty=' +
+        s.recommended_difficulty + '" data-accept="lesson">Read the lesson</a>' +
+      '<a class="btn btn-ghost" href="/quiz?concept=' + s.focus_concept + '&difficulty=' +
+        s.recommended_difficulty + '" data-accept="quiz">Skip to the quiz</a>' +
+      '<a class="btn btn-ghost" href="/quiz" data-override="1">Choose something else</a>' +
+    '</div>' +
+    (alts ? '<div style="margin-top:16px"><div class="small muted" style="margin-bottom:7px">' +
+      'Other concepts the agent considered:</div><div class="chip-row">' + alts + '</div></div>' : '') +
+    (s.evidence && Object.keys(s.evidence).length
+      ? '<details class="payload" style="margin-top:14px"><summary>Evidence behind this decision</summary>' +
+        '<pre>' + EG.esc(JSON.stringify(s.evidence, null, 2)) + '</pre></details>'
+      : '') +
+  '</div>';
+}
+
+function wireRecommendation(s) {
+  EG.$$('[data-accept]').forEach(el => el.addEventListener('click', () => {
+    EG.post('/api/recommendation/respond', {
+      accepted: true, concept: s.focus_concept, difficulty: s.recommended_difficulty
+    }).catch(() => {});
+  }));
+  const ov = EG.$('[data-override]');
+  if (ov) ov.addEventListener('click', () => {
+    EG.post('/api/recommendation/respond', {
+      accepted: false, concept: null, difficulty: null
+    }).catch(() => {});
+  });
+}
+
+async function loadStats() {
+  try {
+    const r = await EG.get('/api/analysis');
+    const weak = r.weak_topics.length;
+    EG.$('#stats').innerHTML = [
+      ['Overall accuracy', r.overall_performance + '%', r.total_questions_correct + ' of ' + r.total_questions_attempted + ' questions'],
+      ['Quizzes taken', r.total_quizzes_taken, r.total_quizzes_taken ? 'keep going' : 'take your first quiz'],
+      ['Concepts assessed', Object.keys(r.concept_stats).length + ' / {{ concept_count }}', 'across 8 modules'],
+      ['Weak concepts', weak, weak ? 'shown in your analysis' : 'nothing failing right now']
+    ].map(([label, value, sub]) =>
+      '<div class="stat"><div class="stat-value">' + EG.esc(value) + '</div>' +
+      '<div class="stat-label">' + EG.esc(label) + '</div>' +
+      '<div class="stat-sub">' + EG.esc(sub) + '</div></div>').join('');
+  } catch (e) {
+    EG.$('#stats').innerHTML = '<div class="card" style="grid-column:1/-1">' +
+      '<p class="muted small" style="margin:0">Take one quiz and your numbers will appear here.</p></div>';
+  }
+}
+
+async function loadStatus() {
+  try {
+    const st = await EG.get('/api/status');
+    const agents = Object.entries(st.agents).map(([, a]) =>
+      '<div class="row" style="justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line-2)">' +
+      '<div><div style="font-family:var(--font-ui);font-weight:500;font-size:.92rem">' + EG.esc(a.role) + '</div></div>' +
+      '<span class="badge ' + (a.state === 'active' ? 'badge-good' : 'badge-attn') + ' badge-dot">' +
+      EG.esc(a.state) + '</span></div>').join('');
+
+    const rag = st.rag;
+    const ragBody = rag.ready
+      ? '<div class="row" style="gap:18px;flex-wrap:wrap">' +
+          '<div><div class="stat-value" style="font-size:1.35rem">' + rag.chunks + '</div><div class="stat-label">passages indexed</div></div>' +
+          '<div><div class="stat-value" style="font-size:1.35rem">' + rag.sources + '</div><div class="stat-label">source documents</div></div>' +
+          '<div><div class="stat-value" style="font-size:1.35rem">' + rag.covered_concepts + '</div><div class="stat-label">concepts covered</div></div>' +
+        '</div><div class="small muted" style="margin-top:12px">Embedder: <code>' + EG.esc(rag.embedder) + '</code></div>'
+      : '<div class="notice notice-attn"><strong>Knowledge base not built yet.</strong> ' +
+        'Run <code>python -m rag.ingest</code> in the project folder, then reload. ' +
+        'Until then lessons come from the built-in notes.' +
+        (rag.error ? '<div class="tiny" style="margin-top:6px">' + EG.esc(rag.error) + '</div>' : '') + '</div>';
+
+    EG.$('#status').innerHTML =
+      '<div class="card"><div class="card-head"><h3>Agents</h3>' +
+        '<a class="small" href="/pipeline">See the pipeline</a></div>' + agents + '</div>' +
+      '<div class="card"><div class="card-head"><h3>Knowledge base</h3>' +
+        '<a class="small" href="/library">Search it</a></div>' + ragBody + '</div>';
+  } catch (e) {
+    EG.$('#status').innerHTML = EG.errorBox(e.message);
+  }
+}
+
+loadRecommendation();
+loadStats();
+loadStatus();
+</script>
+{% endblock %}

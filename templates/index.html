@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}EduGen &mdash; adaptive Java OOP tutoring{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <div class="wrap">
+    <span class="badge badge-agent badge-dot reveal">Four agents, one learning path</span>
+    <h1 class="reveal" style="animation-delay:.06s">A Java tutor that reads your quiz answers before it decides what to teach.</h1>
+    <p class="hero-lede reveal" style="animation-delay:.12s">
+      EduGen breaks object-oriented programming into {{ concept_count }} concepts, measures which ones you
+      have actually mastered, and generates the next lesson from a knowledge base of
+      real Java textbooks &mdash; not a fixed syllabus.
+    </p>
+    <div class="row reveal" style="animation-delay:.18s">
+      <a href="{{ url_for('pages.signup') }}" class="btn btn-lg">Start learning</a>
+      <a href="{{ url_for('pages.about') }}" class="btn btn-lg btn-ghost">See how the agents work</a>
+    </div>
+
+    <div class="hero-rail reveal" style="animation-delay:.26s">
+      <div class="hero-rail-caption">What happens the moment you open a session:</div>
+      <div class="rail">
+        <div class="rail-node done">
+          <h4>Coordinator</h4>
+          <div class="rail-role">Checks your history and routes the session.</div>
+          <div class="rail-out">4 quizzes on record &rarr; run the full pipeline</div>
+        </div>
+        <span class="rail-arrow">&rarr;</span>
+        <div class="rail-node done">
+          <h4>Performance Analysis</h4>
+          <div class="rail-role">Scores every concept you have been tested on.</div>
+          <div class="rail-out"><code>method-overriding</code> at 33% mastery</div>
+        </div>
+        <span class="rail-arrow">&rarr;</span>
+        <div class="rail-node done">
+          <h4>Adaptive Content</h4>
+          <div class="rail-role">Finds the root cause and picks the next step.</div>
+          <div class="rail-out">Its prerequisite <code>inheritance-basics</code> is weak &mdash; teach that first</div>
+        </div>
+        <span class="rail-arrow">&rarr;</span>
+        <div class="rail-node active">
+          <h4>Concept Clarifier</h4>
+          <div class="rail-role">Retrieves source passages, then writes the lesson.</div>
+          <div class="rail-out">6 passages retrieved &rarr; lesson generated</div>
+        </div>
+      </div>
+      <p class="hero-note">
+        <span class="badge badge-agent">Note</span>
+        You can override any of it. Every override is recorded, because a tutor that
+        cannot be argued with is not a tutor.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" style="padding-bottom:20px">
+  <div class="grid grid-3">
+    <div class="card">
+      <h3>Concept-level, not topic-level</h3>
+      <p class="small muted" style="margin:0">
+        "Inheritance" is eight different ideas. EduGen tracks each one separately, so a
+        student who understands <code>extends</code> but not <code>super()</code> gets help with
+        <code>super()</code> specifically.
+      </p>
+    </div>
+    <div class="card">
+      <h3>Answers grounded in real books</h3>
+      <p class="small muted" style="margin:0">
+        Lessons and quiz questions are retrieved from an indexed corpus of open-licence
+        Java textbooks and concept notes, then cited. You can open the exact passage
+        each claim came from.
+      </p>
+    </div>
+    <div class="card">
+      <h3>The reasoning is visible</h3>
+      <p class="small muted" style="margin:0">
+        Every recommendation comes with the rule that fired and the evidence behind it.
+        The agent activity console shows the hand-offs as they happen.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" style="padding:46px 24px 10px">
+  <div class="card" style="background:var(--agent-50);border-color:var(--agent-100)">
+    <div class="row-between">
+      <div>
+        <h3 style="margin-bottom:4px">The {{ concept_count }} concepts are already mapped</h3>
+        <p class="small muted" style="margin:0">
+          Eight modules from classes and objects through to exception handling, wired
+          together by a prerequisite graph the agents walk.
+        </p>
+      </div>
+      <a href="{{ url_for('pages.signup') }}" class="btn btn-agent">Create a free account</a>
+    </div>
+  </div>
+</section>
+{% endblock %}
