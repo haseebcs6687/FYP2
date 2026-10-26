@@ -88,14 +88,21 @@ def main():
 
         mig_rows = conn.execute("SELECT version, name FROM schema_migrations ORDER BY version").fetchall()
         applied_versions = [r["version"] for r in mig_rows]
-        check("all migrations applied", applied_versions == [1, 2], f"applied: {applied_versions}")
+        check("all migrations applied", applied_versions == [1, 2, 3], f"applied: {applied_versions}")
 
         # Check altered columns on fresh DB
         student_cols = get_columns(conn, "students")
         user_cols = get_columns(conn, "users")
+        qa_cols = get_columns(conn, "question_attempts")
+        sqh_cols = get_columns(conn, "student_question_history")
+        q_cols = get_columns(conn, "questions")
+
         check("students.lesson_style exists", "lesson_style" in student_cols)
         check("students.total_study_seconds exists", "total_study_seconds" in student_cols)
         check("users.last_login_at exists", "last_login_at" in user_cols)
+        check("question_attempts.misconception_id exists", "misconception_id" in qa_cols)
+        check("student_question_history.misconception_id exists", "misconception_id" in sqh_cols)
+        check("questions.facet exists", "facet" in q_cols)
         conn.close()
 
         # -----------------------------------------------------------------

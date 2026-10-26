@@ -1,0 +1,1584 @@
+"""
+=============================================================================
+EduGen - Concept Misconception Catalog
+=============================================================================
+Canonical catalog of authentic student misconceptions across all 44 Java / OOP
+concepts. Serves as the domain source of truth for:
+  - MCQ distractor generation and tagging
+  - Adaptive diagnostic tracking (student misconception capture)
+  - Focused remediation briefs
+
+Format per item:
+  "id"           : "<concept-tag>/<short-kebab-slug>"
+  "concept"      : "<concept-tag>"
+  "facet"        : "<2-4 word sub-topic>"
+  "title"        : "<max 8 words>"
+  "wrong_belief" : "<one sentence: what the student wrongly believes>"
+  "correct_idea" : "<one sentence: Java-accurate fact>"
+=============================================================================
+"""
+
+from collections import OrderedDict
+from core.concepts import CONCEPTS
+
+MISCONCEPTIONS = OrderedDict([
+    # =========================================================================
+    # Module 1: Classes & Objects (9 concepts)
+    # =========================================================================
+
+    # 1. class-definition
+    ("class-definition/class-stores-instance-data", {
+        "id": "class-definition/class-stores-instance-data",
+        "concept": "class-definition",
+        "facet": "blueprint instantiation",
+        "title": "Class Stores Instance Field Data Directly",
+        "wrong_belief": "Declaring a class allocates storage for instance variables in the class itself rather than in individual instances.",
+        "correct_idea": "A class definition is only a blueprint; each instantiated object gets its own distinct copy of instance fields in heap memory.",
+    }),
+    ("class-definition/multiple-public-classes", {
+        "id": "class-definition/multiple-public-classes",
+        "concept": "class-definition",
+        "facet": "compilation unit",
+        "title": "Multiple Public Classes In One File",
+        "wrong_belief": "A single Java source file can contain definitions for multiple top-level public classes.",
+        "correct_idea": "A Java source compilation unit can contain at most one top-level public class, which must match the file name.",
+    }),
+    ("class-definition/filename-independent", {
+        "id": "class-definition/filename-independent",
+        "concept": "class-definition",
+        "facet": "file naming",
+        "title": "Source Filename Independent Of Class Name",
+        "wrong_belief": "A public class name does not need to match the name of the containing .java file.",
+        "correct_idea": "Java requires the name of a public top-level class to exactly match the filename before the .java extension, case-sensitively.",
+    }),
+    ("class-definition/executable-without-main", {
+        "id": "class-definition/executable-without-main",
+        "concept": "class-definition",
+        "facet": "program entry",
+        "title": "Classes Directly Executable Without Main",
+        "wrong_belief": "Any class definition can be run directly as a standalone application without declaring a public static void main method.",
+        "correct_idea": "The JVM requires a standard public static void main(String[] args) entry point to launch execution of a class.",
+    }),
+
+    # 2. object-instantiation
+    ("object-instantiation/declaration-creates-object", {
+        "id": "object-instantiation/declaration-creates-object",
+        "concept": "object-instantiation",
+        "facet": "reference vs object",
+        "title": "Declaring Reference Instantiates The Object",
+        "wrong_belief": "Declaring an object reference variable automatically creates and initializes the object in memory without calling new.",
+        "correct_idea": "Declaring a reference variable merely reserves space for an address; the object is only created when the new operator executes.",
+    }),
+    ("object-instantiation/new-returns-object-not-reference", {
+        "id": "object-instantiation/new-returns-object-not-reference",
+        "concept": "object-instantiation",
+        "facet": "reference values",
+        "title": "Operator New Returns The Object Itself",
+        "wrong_belief": "The new operator directly produces the entire object value rather than a reference pointing to it on the heap.",
+        "correct_idea": "The new operator allocates memory on the heap and returns a reference value pointing to the newly constructed object.",
+    }),
+    ("object-instantiation/reassignment-modifies-original", {
+        "id": "object-instantiation/reassignment-modifies-original",
+        "concept": "object-instantiation",
+        "facet": "assignment semantics",
+        "title": "Assignment Copies Object Internal Fields",
+        "wrong_belief": "Assigning one reference variable to another copies all instance fields into a separate, duplicate object.",
+        "correct_idea": "Assigning one reference to another copies only the reference pointer, meaning both variables point to the same object.",
+    }),
+    ("object-instantiation/stack-allocated-objects", {
+        "id": "object-instantiation/stack-allocated-objects",
+        "concept": "object-instantiation",
+        "facet": "memory layout",
+        "title": "Local Objects Allocated On Call Stack",
+        "wrong_belief": "Objects instantiated inside a method body with new are allocated on the method call stack.",
+        "correct_idea": "All objects in Java are allocated on the heap; only the reference variable holding the pointer lives on the call stack.",
+    }),
+
+    # 3. static-members
+    ("static-members/instance-copy-of-static", {
+        "id": "static-members/instance-copy-of-static",
+        "concept": "static-members",
+        "facet": "static memory",
+        "title": "Instances Hold Separate Static Copies",
+        "wrong_belief": "Each instantiated object maintains its own independent copy of a static class field.",
+        "correct_idea": "Static fields belong to the class itself and are shared globally across all instances of that class.",
+    }),
+    ("static-members/static-accesses-this", {
+        "id": "static-members/static-accesses-this",
+        "concept": "static-members",
+        "facet": "static context",
+        "title": "Static Methods Can Access This",
+        "wrong_belief": "Static methods possess an implicit this reference and can directly read or write instance fields.",
+        "correct_idea": "Static methods run without any enclosing instance and therefore cannot use the this keyword or directly access instance members.",
+    }),
+    ("static-members/static-methods-overridable", {
+        "id": "static-members/static-methods-overridable",
+        "concept": "static-members",
+        "facet": "method dispatch",
+        "title": "Static Methods Dispatch Polymorphically",
+        "wrong_belief": "Declaring a static method with the same signature in a subclass overrides the superclass static method polymorphically.",
+        "correct_idea": "Static methods are hidden rather than overridden; they are dispatched at compile time based strictly on the declared reference type.",
+    }),
+    ("static-members/static-requires-instance", {
+        "id": "static-members/static-requires-instance",
+        "concept": "static-members",
+        "facet": "static invocation",
+        "title": "Static Members Require Prior Instantiation",
+        "wrong_belief": "Static fields and methods cannot be accessed unless at least one instance of the declaring class has been instantiated.",
+        "correct_idea": "Static members can be accessed directly using the class name even when zero instances of the class exist.",
+    }),
+
+    # 4. this-keyword
+    ("this-keyword/this-refers-to-class", {
+        "id": "this-keyword/this-refers-to-class",
+        "concept": "this-keyword",
+        "facet": "reference target",
+        "title": "This Refers To The Class Blueprint",
+        "wrong_belief": "The this keyword refers to the class definition itself rather than the current instance invoking the method.",
+        "correct_idea": "The this reference refers strictly to the current object instance whose method or constructor is being executed.",
+    }),
+    ("this-keyword/this-in-static-methods", {
+        "id": "this-keyword/this-in-static-methods",
+        "concept": "this-keyword",
+        "facet": "context validity",
+        "title": "This Usable Inside Static Methods",
+        "wrong_belief": "The this keyword can be legally referenced inside static methods to refer to current state.",
+        "correct_idea": "Static methods are not bound to any instance, so referencing this in a static method results in a compilation error.",
+    }),
+    ("this-keyword/this-call-anywhere-in-constructor", {
+        "id": "this-keyword/this-call-anywhere-in-constructor",
+        "concept": "this-keyword",
+        "facet": "constructor delegation",
+        "title": "This Call Allowed On Any Line",
+        "wrong_belief": "A this(...) constructor delegation call can appear on any line inside a constructor body.",
+        "correct_idea": "An explicit constructor call using this(...) must be the very first statement in a constructor body.",
+    }),
+    ("this-keyword/this-creates-new-instance", {
+        "id": "this-keyword/this-creates-new-instance",
+        "concept": "this-keyword",
+        "facet": "instance identity",
+        "title": "Evaluating This Instantiates A Copy",
+        "wrong_belief": "Passing or returning this creates a new cloned copy of the current object.",
+        "correct_idea": "Evaluating this yields the address of the existing instance without allocating or copying anything.",
+    }),
+
+    # 5. reference-semantics
+    ("reference-semantics/pass-by-reference", {
+        "id": "reference-semantics/pass-by-reference",
+        "concept": "reference-semantics",
+        "facet": "argument passing",
+        "title": "Java Passes Objects By Reference",
+        "wrong_belief": "Java passes object arguments using true pass-by-reference parameter passing.",
+        "correct_idea": "Java is strictly pass-by-value; when an object is passed as an argument, a copy of the reference pointer is passed.",
+    }),
+    ("reference-semantics/reassignment-mutates-caller", {
+        "id": "reference-semantics/reassignment-mutates-caller",
+        "concept": "reference-semantics",
+        "facet": "parameter reassignment",
+        "title": "Parameter Reassignment Mutates Caller Variable",
+        "wrong_belief": "Reassigning a method parameter variable to point to a new object changes the caller's reference variable.",
+        "correct_idea": "Reassigning a parameter changes only the local copy of the pointer within the method; the caller's variable remains unchanged.",
+    }),
+    ("reference-semantics/double-equals-compares-content", {
+        "id": "reference-semantics/double-equals-compares-content",
+        "concept": "reference-semantics",
+        "facet": "equality comparison",
+        "title": "Double Equals Compares Object Content",
+        "wrong_belief": "The == operator on reference variables compares the internal values of the two objects.",
+        "correct_idea": "The == operator on references checks reference identity (memory address); .equals() must be used to compare contents.",
+    }),
+    ("reference-semantics/aliases-are-independent", {
+        "id": "reference-semantics/aliases-are-independent",
+        "concept": "reference-semantics",
+        "facet": "aliasing mutation",
+        "title": "Aliased Reference Variables Are Independent",
+        "wrong_belief": "Modifying an object's fields through one reference does not affect the data seen when reading through another alias reference.",
+        "correct_idea": "Because both alias variables point to the identical heap object, mutations through one reference are instantly visible through all aliases.",
+    }),
+
+    # 6. object-composition
+    ("object-composition/composition-requires-inheritance", {
+        "id": "object-composition/composition-requires-inheritance",
+        "concept": "object-composition",
+        "facet": "has-a vs is-a",
+        "title": "Composition Requires Class Inheritance",
+        "wrong_belief": "A class cannot hold references to other classes unless it explicitly extends them using inheritance.",
+        "correct_idea": "Composition is a 'has-a' relationship created simply by declaring fields of other types, requiring no inheritance relationship.",
+    }),
+    ("object-composition/cascade-deletion", {
+        "id": "object-composition/cascade-deletion",
+        "concept": "object-composition",
+        "facet": "lifecycle dependency",
+        "title": "Outer Nullification Destroys Inner Objects",
+        "wrong_belief": "Setting the outer composite object reference to null immediately destroys all member objects it pointed to.",
+        "correct_idea": "Inner objects are only garbage collected when no remaining active references point to them anywhere in the program.",
+    }),
+    ("object-composition/direct-private-access", {
+        "id": "object-composition/direct-private-access",
+        "concept": "object-composition",
+        "facet": "member visibility",
+        "title": "Composite Classes Bypass Private Modifiers",
+        "wrong_belief": "An enclosing composite class can directly read and write private fields of its composed member instances.",
+        "correct_idea": "Composition does not grant visibility privileges; private members of composed classes remain strictly hidden.",
+    }),
+    ("object-composition/composite-automatic-delegation", {
+        "id": "object-composition/composite-automatic-delegation",
+        "concept": "object-composition",
+        "facet": "method delegation",
+        "title": "Composite Exposes Member Methods Automatically",
+        "wrong_belief": "A composite class automatically inherits and exposes all public methods of its inner member objects.",
+        "correct_idea": "A composite class must explicitly write forwarding or wrapper methods to expose behaviour provided by its member objects.",
+    }),
+
+    # 7. garbage-collection
+    ("garbage-collection/system-gc-forces-immediate-collection", {
+        "id": "garbage-collection/system-gc-forces-immediate-collection",
+        "concept": "garbage-collection",
+        "facet": "gc invocation",
+        "title": "System.gc Guarantees Immediate Collection",
+        "wrong_belief": "Calling System.gc() guarantees that the JVM immediately runs garbage collection and cleans all eligible heap memory.",
+        "correct_idea": "System.gc() is merely a suggestion to the JVM runtime; the JVM is free to delay or ignore the request entirely.",
+    }),
+    ("garbage-collection/nulling-destroys-object", {
+        "id": "garbage-collection/nulling-destroys-object",
+        "concept": "garbage-collection",
+        "facet": "deallocation timing",
+        "title": "Assigning Null Destroys Heap Object",
+        "wrong_belief": "Setting a reference variable to null immediately deletes the referenced object from memory.",
+        "correct_idea": "Nulling a reference variable makes an object eligible for collection only if no other live references point to it, with collection occurring later.",
+    }),
+    ("garbage-collection/stack-variables-garbage-collected", {
+        "id": "garbage-collection/stack-variables-garbage-collected",
+        "concept": "garbage-collection",
+        "facet": "memory reclamation",
+        "title": "Stack Variables Managed By GC",
+        "wrong_belief": "Local primitive variables and stack frames are cleaned up by the garbage collector.",
+        "correct_idea": "Stack memory is automatically pushed and popped as method frames enter and exit; only heap-allocated objects are subject to garbage collection.",
+    }),
+    ("garbage-collection/circular-references-leak", {
+        "id": "garbage-collection/circular-references-leak",
+        "concept": "garbage-collection",
+        "facet": "reachability analysis",
+        "title": "Circular References Prevent Garbage Collection",
+        "wrong_belief": "Two unreferenced objects pointing to each other can never be collected by the Java garbage collector.",
+        "correct_idea": "Java uses root reachability analysis; unreferenced islands of isolated objects are collected even if they reference each other.",
+    }),
+
+    # 8. local-vs-instance-variables
+    ("local-vs-instance-variables/local-variables-default-initialized", {
+        "id": "local-vs-instance-variables/local-variables-default-initialized",
+        "concept": "local-vs-instance-variables",
+        "facet": "variable initialization",
+        "title": "Local Variables Receive Default Values",
+        "wrong_belief": "Uninitialized local variables declared inside a method automatically receive default values like 0 or null.",
+        "correct_idea": "Local variables must be explicitly initialized before use; attempting to read an uninitialized local variable causes a compile error.",
+    }),
+    ("local-vs-instance-variables/local-shadows-permanently", {
+        "id": "local-vs-instance-variables/local-shadows-permanently",
+        "concept": "local-vs-instance-variables",
+        "facet": "variable shadowing",
+        "title": "Shadowed Fields Are Completely Inaccessible",
+        "wrong_belief": "Declaring a local variable with the same name as an instance field destroys access to the field throughout the method.",
+        "correct_idea": "A shadowed instance field remains fully accessible within the method by qualifying it with this.fieldName.",
+    }),
+    ("local-vs-instance-variables/locals-retain-state-across-calls", {
+        "id": "local-vs-instance-variables/locals-retain-state-across-calls",
+        "concept": "local-vs-instance-variables",
+        "facet": "variable lifetime",
+        "title": "Local Variables Retain State Across Calls",
+        "wrong_belief": "Local variables retain their assigned values from one invocation of a method to the next.",
+        "correct_idea": "Local variables are created when their scope is entered and destroyed when the method returns, retaining nothing across calls.",
+    }),
+    ("local-vs-instance-variables/access-modifiers-on-locals", {
+        "id": "local-vs-instance-variables/access-modifiers-on-locals",
+        "concept": "local-vs-instance-variables",
+        "facet": "variable declaration",
+        "title": "Local Variables Support Access Modifiers",
+        "wrong_belief": "Local variables can be declared with access modifiers such as public, protected, or private.",
+        "correct_idea": "Local variables cannot have access modifiers because their scope is already restricted to the enclosing block (only final is permitted).",
+    }),
+
+    # 9. default-values
+    ("default-values/boolean-defaults-to-true", {
+        "id": "default-values/boolean-defaults-to-true",
+        "concept": "default-values",
+        "facet": "primitive defaults",
+        "title": "Boolean Instance Fields Default To True",
+        "wrong_belief": "Uninitialized boolean instance fields default to true in Java.",
+        "correct_idea": "All uninitialized boolean instance and static fields default to false in Java.",
+    }),
+    ("default-values/strings-default-to-empty", {
+        "id": "default-values/strings-default-to-empty",
+        "concept": "default-values",
+        "facet": "reference defaults",
+        "title": "String Fields Default To Empty String",
+        "wrong_belief": "Uninitialized String instance fields default to an empty string (\"\") instead of null.",
+        "correct_idea": "Every object reference field, including String, defaults to null when not explicitly initialized.",
+    }),
+    ("default-values/numeric-defaults-undefined", {
+        "id": "default-values/numeric-defaults-undefined",
+        "concept": "default-values",
+        "facet": "field initialization",
+        "title": "Numeric Fields Hold Random Undefined Values",
+        "wrong_belief": "Uninitialized numeric instance fields hold unpredictable garbage memory values like in C/C++.",
+        "correct_idea": "Java guarantees deterministic zero initialization for all numeric instance fields (0, 0.0, or '\\u0000').",
+    }),
+    ("default-values/local-primitives-zeroed", {
+        "id": "default-values/local-primitives-zeroed",
+        "concept": "default-values",
+        "facet": "scope initialization",
+        "title": "Local Primitives Receive Zero Defaults",
+        "wrong_belief": "Local primitive variables declared in method bodies default to zero if left unassigned.",
+        "correct_idea": "Default initialization applies strictly to instance and static fields; local variables have no default values and must be assigned.",
+    }),
+
+    # =========================================================================
+    # Module 2: Constructors (6 concepts)
+    # =========================================================================
+
+    # 10. constructor-basics
+    ("constructor-basics/constructors-return-void", {
+        "id": "constructor-basics/constructors-return-void",
+        "concept": "constructor-basics",
+        "facet": "constructor signature",
+        "title": "Constructors Require Void Return Type",
+        "wrong_belief": "Constructor declarations must specify a return type such as void in their method header.",
+        "correct_idea": "Constructors have no return type; adding void turns the declaration into a regular instance method with the class name.",
+    }),
+    ("constructor-basics/constructor-creates-memory", {
+        "id": "constructor-basics/constructor-creates-memory",
+        "concept": "constructor-basics",
+        "facet": "constructor execution",
+        "title": "Constructor Allocates Object Memory",
+        "wrong_belief": "The constructor code itself allocates the object memory on the heap.",
+        "correct_idea": "The new operator allocates memory on the heap; the constructor merely initializes the state within that allocated memory.",
+    }),
+    ("constructor-basics/constructors-inherited", {
+        "id": "constructor-basics/constructors-inherited",
+        "concept": "constructor-basics",
+        "facet": "constructor inheritance",
+        "title": "Subclasses Inherit Parent Constructors",
+        "wrong_belief": "Subclasses automatically inherit all constructors defined in their superclass.",
+        "correct_idea": "Constructors are never inherited by subclasses; each subclass must define its own constructors and invoke a superclass constructor.",
+    }),
+    ("constructor-basics/constructor-callable-like-method", {
+        "id": "constructor-basics/constructor-callable-like-method",
+        "concept": "constructor-basics",
+        "facet": "constructor invocation",
+        "title": "Constructors Callable On Existing Objects",
+        "wrong_belief": "A constructor can be called directly on an existing object reference like a standard method (e.g. obj.MyClass()).",
+        "correct_idea": "Constructors can only be invoked during object creation with new, or from another constructor using this() or super().",
+    }),
+
+    # 11. constructor-overloading
+    ("constructor-overloading/overload-by-return-type", {
+        "id": "constructor-overloading/overload-by-return-type",
+        "concept": "constructor-overloading",
+        "facet": "overload resolution",
+        "title": "Constructors Overloaded By Return Type",
+        "wrong_belief": "Constructors can be overloaded by assigning different return types to each declaration.",
+        "correct_idea": "Constructors have no return types; overloading is achieved strictly by varying the parameter list types and counts.",
+    }),
+    ("constructor-overloading/must-have-different-body", {
+        "id": "constructor-overloading/must-have-different-body",
+        "concept": "constructor-overloading",
+        "facet": "overload signatures",
+        "title": "Overloading Requires Distinct Logic Bodies",
+        "wrong_belief": "Constructors cannot be overloaded unless their internal logic or parameter names differ, regardless of parameter types.",
+        "correct_idea": "The compiler differentiates overloaded constructors solely by parameter list types and order, regardless of body code or parameter names.",
+    }),
+    ("constructor-overloading/default-constructor-preserved", {
+        "id": "constructor-overloading/default-constructor-preserved",
+        "concept": "constructor-overloading",
+        "facet": "compiler default generation",
+        "title": "Default Constructor Retained When Overloading",
+        "wrong_belief": "Defining an overloaded parameterized constructor preserves the compiler-generated zero-argument constructor.",
+        "correct_idea": "Declaring any constructor causes the compiler to withdraw the default zero-argument constructor unless explicitly written.",
+    }),
+    ("constructor-overloading/parameter-order-irrelevant", {
+        "id": "constructor-overloading/parameter-order-irrelevant",
+        "concept": "constructor-overloading",
+        "facet": "parameter list matching",
+        "title": "Parameter Type Order Cannot Overload",
+        "wrong_belief": "Changing the sequence of parameter types (e.g. (int, String) vs (String, int)) does not create valid distinct constructor overloads.",
+        "correct_idea": "Changing the order of different parameter types constitutes a completely valid constructor overload in Java.",
+    }),
+
+    # 12. constructor-chaining
+    ("constructor-chaining/multiple-this-calls", {
+        "id": "constructor-chaining/multiple-this-calls",
+        "concept": "constructor-chaining",
+        "facet": "delegation limits",
+        "title": "Multiple This Delegations In One Constructor",
+        "wrong_belief": "A constructor can invoke multiple other constructors in the same class using several this(...) statements.",
+        "correct_idea": "A constructor can make at most one constructor call using this(...), and it must be the very first statement.",
+    }),
+    ("constructor-chaining/this-after-statements", {
+        "id": "constructor-chaining/this-after-statements",
+        "concept": "constructor-chaining",
+        "facet": "chaining placement",
+        "title": "This Call Allowed After Initialization Logic",
+        "wrong_belief": "A this(...) constructor delegation call can be placed after logging or parameter validation statements.",
+        "correct_idea": "Any explicit this(...) delegation call must be the first statement in the constructor before any other code.",
+    }),
+    ("constructor-chaining/recursive-chaining-allowed", {
+        "id": "constructor-chaining/recursive-chaining-allowed",
+        "concept": "constructor-chaining",
+        "facet": "chain recursion",
+        "title": "Recursive Constructor Chaining Allowed",
+        "wrong_belief": "Two constructors can mutually delegate to one another in an alternating chain using this(...).",
+        "correct_idea": "Recursive constructor invocation is strictly detected and rejected at compile time in Java.",
+    }),
+    ("constructor-chaining/chaining-both-this-and-super", {
+        "id": "constructor-chaining/chaining-both-this-and-super",
+        "concept": "constructor-chaining",
+        "facet": "constructor dispatch",
+        "title": "Constructor Can Call Both This And Super",
+        "wrong_belief": "A single constructor body can explicitly invoke both this(...) and super(...).",
+        "correct_idea": "A constructor can call either this(...) or super(...), never both in the same constructor body.",
+    }),
+
+    # 13. default-constructor
+    ("default-constructor/always-provided-by-compiler", {
+        "id": "default-constructor/always-provided-by-compiler",
+        "concept": "default-constructor",
+        "facet": "compiler synthesis",
+        "title": "Default Constructor Always Synthesized",
+        "wrong_belief": "The compiler always generates a zero-argument default constructor for every class.",
+        "correct_idea": "The compiler only synthesizes a default constructor if the class contains absolutely no explicit constructor declarations.",
+    }),
+    ("default-constructor/custom-no-arg-is-default", {
+        "id": "default-constructor/custom-no-arg-is-default",
+        "concept": "default-constructor",
+        "facet": "terminology",
+        "title": "Any No-Arg Constructor Is The Default Constructor",
+        "wrong_belief": "Writing an explicit zero-argument constructor produces what Java technically defines as the default constructor.",
+        "correct_idea": "The 'default constructor' refers exclusively to the compiler-generated zero-arg constructor provided when no constructors are written.",
+    }),
+    ("default-constructor/default-constructor-sets-non-defaults", {
+        "id": "default-constructor/default-constructor-sets-non-defaults",
+        "concept": "default-constructor",
+        "facet": "default behavior",
+        "title": "Default Constructor Populates Custom Values",
+        "wrong_belief": "The default constructor initializes numeric fields to non-zero defaults like 1 or custom initializers.",
+        "correct_idea": "The default constructor merely calls super() and lets fields take their explicit initializers or language default values (0, false, null).",
+    }),
+    ("default-constructor/private-classes-get-public-default", {
+        "id": "default-constructor/private-classes-get-public-default",
+        "concept": "default-constructor",
+        "facet": "modifier propagation",
+        "title": "Default Constructor Always Has Public Visibility",
+        "wrong_belief": "The default constructor always receives public visibility regardless of the class's access modifier.",
+        "correct_idea": "The synthesized default constructor inherits the same access modifier as its enclosing class.",
+    }),
+
+    # 14. super-keyword
+    ("super-keyword/super-calls-anywhere", {
+        "id": "super-keyword/super-calls-anywhere",
+        "concept": "super-keyword",
+        "facet": "super invocation position",
+        "title": "Super Call Can Appear Anywhere",
+        "wrong_belief": "An explicit super(...) constructor call can be executed anywhere in the subclass constructor body.",
+        "correct_idea": "The super(...) call must be the very first statement of the subclass constructor body.",
+    }),
+    ("super-keyword/super-accesses-private-parent", {
+        "id": "super-keyword/super-accesses-private-parent",
+        "concept": "super-keyword",
+        "facet": "access control",
+        "title": "Super Bypasses Parent Private Modifiers",
+        "wrong_belief": "Using super.field allows a subclass to bypass access control and read private fields of its parent.",
+        "correct_idea": "The super keyword cannot bypass access rules; private members in the parent class remain strictly inaccessible.",
+    }),
+    ("super-keyword/super-replaces-this", {
+        "id": "super-keyword/super-replaces-this",
+        "concept": "super-keyword",
+        "facet": "reference semantics",
+        "title": "Super Operates On Separate Parent Object",
+        "wrong_belief": "The super keyword refers to a distinct, separate parent object created alongside the child object.",
+        "correct_idea": "There is only one object in memory; super merely references the superclass view of the current this instance.",
+    }),
+    ("super-keyword/super-super-allowed", {
+        "id": "super-keyword/super-super-allowed",
+        "concept": "super-keyword",
+        "facet": "hierarchy traversal",
+        "title": "Chaining Super.super Accesses Grandparent",
+        "wrong_belief": "A subclass can chain super.super to access overridden methods in a grandparent class.",
+        "correct_idea": "Java syntax does not permit super.super; a subclass can only directly access members of its immediate parent.",
+    }),
+
+    # 15. copy-constructor
+    ("copy-constructor/java-provides-default-copy", {
+        "id": "copy-constructor/java-provides-default-copy",
+        "concept": "copy-constructor",
+        "facet": "language support",
+        "title": "Java Automatically Generates Copy Constructors",
+        "wrong_belief": "Java automatically synthesizes a default copy constructor for any class that does not declare one.",
+        "correct_idea": "Java never automatically generates a copy constructor; developers must explicitly define one.",
+    }),
+    ("copy-constructor/shallow-copy-is-deep", {
+        "id": "copy-constructor/shallow-copy-is-deep",
+        "concept": "copy-constructor",
+        "facet": "copy depth",
+        "title": "Shallow Assignment Produces Independent Deep Copy",
+        "wrong_belief": "Assigning mutable reference fields in a copy constructor (this.arr = other.arr) creates an independent deep copy.",
+        "correct_idea": "Assigning references merely copies pointers; true deep copying requires explicitly cloning or re-instantiating mutable nested objects.",
+    }),
+    ("copy-constructor/copy-constructor-must-clone", {
+        "id": "copy-constructor/copy-constructor-must-clone",
+        "concept": "copy-constructor",
+        "facet": "cloning relationship",
+        "title": "Copy Constructor Requires Cloneable Interface",
+        "wrong_belief": "Writing a copy constructor requires the class to implement the Cloneable interface.",
+        "correct_idea": "Copy constructors are standard Java constructors and have no dependency on the Cloneable interface or Object.clone().",
+    }),
+    ("copy-constructor/self-copy-always-safe", {
+        "id": "copy-constructor/self-copy-always-safe",
+        "concept": "copy-constructor",
+        "facet": "aliasing edge case",
+        "title": "Passing Self To Copy Constructor Safe Unchecked",
+        "wrong_belief": "Passing null or the object itself to a copy constructor requires no defensive checks.",
+        "correct_idea": "A robust copy constructor must check for null arguments to prevent throwing a NullPointerException during field reading.",
+    }),
+
+    # =========================================================================
+    # Module 3: Inheritance (4 concepts)
+    # =========================================================================
+
+    # 16. inheritance-basics
+    ("inheritance-basics/private-members-inherited", {
+        "id": "inheritance-basics/private-members-inherited",
+        "concept": "inheritance-basics",
+        "facet": "member inheritance",
+        "title": "Private Superclass Members Directly Accessible",
+        "wrong_belief": "Private fields and methods of a parent class are directly accessible by name in the subclass body.",
+        "correct_idea": "Private members exist in the parent state but are not directly accessible by name in the subclass.",
+    }),
+    ("inheritance-basics/inheritance-copies-parent-code", {
+        "id": "inheritance-basics/inheritance-copies-parent-code",
+        "concept": "inheritance-basics",
+        "facet": "inheritance mechanism",
+        "title": "Inheritance Copies Superclass Code",
+        "wrong_belief": "Inheritance functions by textually copying the superclass code into the child class bytecode.",
+        "correct_idea": "Inheritance establishes an 'is-a' hierarchy link where methods and fields are resolved via class metadata and lookup.",
+    }),
+    ("inheritance-basics/subclass-smaller-than-superclass", {
+        "id": "inheritance-basics/subclass-smaller-than-superclass",
+        "concept": "inheritance-basics",
+        "facet": "instance footprint",
+        "title": "Subclass Objects Consume Less Memory",
+        "wrong_belief": "A subclass object occupies less memory than a superclass object because it is more specialized.",
+        "correct_idea": "A subclass object contains all superclass fields plus any additional fields declared in the subclass, making it larger or equal.",
+    }),
+    ("inheritance-basics/is-a-interchangeable-with-has-a", {
+        "id": "inheritance-basics/is-a-interchangeable-with-has-a",
+        "concept": "inheritance-basics",
+        "facet": "design semantics",
+        "title": "Inheritance Interchangeable With Composition",
+        "wrong_belief": "Inheritance should be chosen over composition whenever a class needs utility functionality from another class.",
+        "correct_idea": "Inheritance should only model genuine 'is-a' relationships; composition should be preferred for code reuse without subtyping.",
+    }),
+
+    # 17. inheritance-hierarchy
+    ("inheritance-hierarchy/object-class-optional", {
+        "id": "inheritance-hierarchy/object-class-optional",
+        "concept": "inheritance-hierarchy",
+        "facet": "root class",
+        "title": "Classes Without Extends Do Not Inherit Object",
+        "wrong_belief": "A Java class that does not declare an extends clause has no superclass and does not inherit from Object.",
+        "correct_idea": "Any class without an explicit extends clause automatically extends java.lang.Object as its direct superclass.",
+    }),
+    ("inheritance-hierarchy/downcasting-always-safe", {
+        "id": "inheritance-hierarchy/downcasting-always-safe",
+        "concept": "inheritance-hierarchy",
+        "facet": "type casting",
+        "title": "Downcasting Always Succeeds At Runtime",
+        "wrong_belief": "Casting a superclass reference variable to a subclass type always succeeds if it compiles.",
+        "correct_idea": "Downcasting throws a ClassCastException at runtime if the actual object on the heap is not an instance of the target subclass.",
+    }),
+    ("inheritance-hierarchy/parent-constructor-not-called", {
+        "id": "inheritance-hierarchy/parent-constructor-not-called",
+        "concept": "inheritance-hierarchy",
+        "facet": "construction sequence",
+        "title": "Superclass Constructor Skipped Unless Explicit",
+        "wrong_belief": "Instantiating a subclass does not execute superclass constructors unless super() is explicitly written.",
+        "correct_idea": "The compiler automatically inserts super() as the first line of any constructor that does not explicitly invoke super() or this().",
+    }),
+    ("inheritance-hierarchy/sibling-classes-interchangeable", {
+        "id": "inheritance-hierarchy/sibling-classes-interchangeable",
+        "concept": "inheritance-hierarchy",
+        "facet": "type compatibility",
+        "title": "Sibling Classes Are Type-Compatible",
+        "wrong_belief": "Two distinct subclasses that share the same direct parent class can be assigned to each other's references.",
+        "correct_idea": "Sibling classes share a common ancestor but have no inheritance relationship between each other, so casting between them fails.",
+    }),
+
+    # 18. multiple-inheritance
+    ("multiple-inheritance/java-supports-multiple-class-inheritance", {
+        "id": "multiple-inheritance/java-supports-multiple-class-inheritance",
+        "concept": "multiple-inheritance",
+        "facet": "class extension",
+        "title": "Classes Can Extend Multiple Concrete Parents",
+        "wrong_belief": "A Java class can extend multiple classes simultaneously using a comma-separated extends clause.",
+        "correct_idea": "Java supports single inheritance of classes; a class can extend at most one direct superclass.",
+    }),
+    ("multiple-inheritance/interfaces-solve-diamond-without-rules", {
+        "id": "multiple-inheritance/interfaces-solve-diamond-without-rules",
+        "concept": "multiple-inheritance",
+        "facet": "default method conflict",
+        "title": "Default Method Conflicts Resolve Automatically",
+        "wrong_belief": "Implementing two interfaces with identical default method signatures causes no conflict in Java.",
+        "correct_idea": "Implementing multiple interfaces with conflicting default methods causes a compiler error unless the class overrides the method explicitly.",
+    }),
+    ("multiple-inheritance/interface-fields-multiply-inherited", {
+        "id": "multiple-inheritance/interface-fields-multiply-inherited",
+        "concept": "multiple-inheritance",
+        "facet": "interface constant conflict",
+        "title": "Conflicting Interface Constants Combine Cleanly",
+        "wrong_belief": "A class implementing two interfaces containing fields with the same name inherits both transparently.",
+        "correct_idea": "Referencing an ambiguous field inherited from two interfaces results in a compile-time ambiguity error unless qualified.",
+    }),
+    ("multiple-inheritance/extends-interfaces-syntax", {
+        "id": "multiple-inheritance/extends-interfaces-syntax",
+        "concept": "multiple-inheritance",
+        "facet": "class declaration syntax",
+        "title": "Classes Use Extends Keyword For Interfaces",
+        "wrong_belief": "Classes use the extends keyword to implement interfaces in Java.",
+        "correct_idea": "Classes use implements to adopt interfaces; only interfaces use extends to derive from other interfaces.",
+    }),
+
+    # 19. method-overriding
+    ("method-overriding/static-methods-override", {
+        "id": "method-overriding/static-methods-override",
+        "concept": "method-overriding",
+        "facet": "static dispatch",
+        "title": "Static Methods Can Be Overridden",
+        "wrong_belief": "Declaring an identical static method in a subclass overrides the superclass static method polymorphically.",
+        "correct_idea": "Static methods are hidden rather than overridden; they are dispatched at compile time based strictly on the declared reference type.",
+    }),
+    ("method-overriding/can-reduce-visibility", {
+        "id": "method-overriding/can-reduce-visibility",
+        "concept": "method-overriding",
+        "facet": "visibility rules",
+        "title": "Overriding Methods Can Reduce Visibility",
+        "wrong_belief": "An overriding method in a subclass can have a more restrictive access modifier than the superclass method.",
+        "correct_idea": "An overriding method cannot reduce the visibility of the superclass method (e.g. public cannot become protected or private).",
+    }),
+    ("method-overriding/override-annotation-required", {
+        "id": "method-overriding/override-annotation-required",
+        "concept": "method-overriding",
+        "facet": "compiler annotation",
+        "title": "Override Annotation Mandatory For Overriding",
+        "wrong_belief": "Method overriding does not take effect at runtime unless the method is annotated with @Override.",
+        "correct_idea": "The @Override annotation is a compiler check that catches typo mistakes; overriding occurs regardless of whether the annotation is present.",
+    }),
+    ("method-overriding/overriding-by-return-type-only", {
+        "id": "method-overriding/overriding-by-return-type-only",
+        "concept": "method-overriding",
+        "facet": "method signature",
+        "title": "Changing Return Type Alone Overrides Method",
+        "wrong_belief": "Changing only the return type to an unrelated type without altering parameter types produces a valid override.",
+        "correct_idea": "Overriding requires identical parameter lists; changing the return type to an incompatible type causes a compilation error.",
+    }),
+
+    # =========================================================================
+    # Module 4: Polymorphism (3 concepts)
+    # =========================================================================
+
+    # 20. method-overloading
+    ("method-overloading/overloading-resolved-at-runtime", {
+        "id": "method-overloading/overloading-resolved-at-runtime",
+        "concept": "method-overloading",
+        "facet": "dispatch phase",
+        "title": "Overloading Resolved Dynamically At Runtime",
+        "wrong_belief": "Overloaded method calls are chosen at runtime based on the actual object type passed as argument.",
+        "correct_idea": "Overloading resolution occurs entirely at compile time based on the static types of the argument expressions.",
+    }),
+    ("method-overloading/overload-by-return-type-only", {
+        "id": "method-overloading/overload-by-return-type-only",
+        "concept": "method-overloading",
+        "facet": "signature definition",
+        "title": "Methods Overloadable By Return Type Alone",
+        "wrong_belief": "Two methods in the same class can share the same name and parameters as long as they return different types.",
+        "correct_idea": "Return type is not part of the method signature; declaring two methods with identical parameters but different return types causes a compile error.",
+    }),
+    ("method-overloading/varargs-preferred-over-exact", {
+        "id": "method-overloading/varargs-preferred-over-exact",
+        "concept": "method-overloading",
+        "facet": "overload priority",
+        "title": "Compiler Prefers Varargs Over Exact Matches",
+        "wrong_belief": "The compiler prefers variable-arity (varargs) overloads in preference to exact-match parameter types.",
+        "correct_idea": "Java's overload resolution algorithm tests exact matching and widening before falling back to varargs as a last resort.",
+    }),
+    ("method-overloading/autoboxing-beats-widening", {
+        "id": "method-overloading/autoboxing-beats-widening",
+        "concept": "method-overloading",
+        "facet": "primitive conversion",
+        "title": "Autoboxing Preferred Over Primitive Widening",
+        "wrong_belief": "When calling an overloaded method with an int, the compiler chooses an Integer overload before a long overload.",
+        "correct_idea": "Java prioritizes primitive widening (int to long) over boxing conversion (int to Integer) during overload resolution.",
+    }),
+
+    # 21. dynamic-method-dispatch
+    ("dynamic-method-dispatch/fields-dispatched-dynamically", {
+        "id": "dynamic-method-dispatch/fields-dispatched-dynamically",
+        "concept": "dynamic-method-dispatch",
+        "facet": "field polymorphism",
+        "title": "Field Access Dispatches Dynamically",
+        "wrong_belief": "Accessing a field through a superclass reference variable accesses the overridden subclass field at runtime.",
+        "correct_idea": "Fields in Java are not polymorphic; field access is resolved at compile time based strictly on the declared reference type.",
+    }),
+    ("dynamic-method-dispatch/reference-type-decides-method", {
+        "id": "dynamic-method-dispatch/reference-type-decides-method",
+        "concept": "dynamic-method-dispatch",
+        "facet": "dispatch mechanism",
+        "title": "Reference Type Decides Executing Overridden Method",
+        "wrong_belief": "When calling an overridden instance method, the compile-time type of the reference decides which method version runs.",
+        "correct_idea": "Virtual method calls dispatch dynamically at runtime based on the actual class of the object instance on the heap.",
+    }),
+    ("dynamic-method-dispatch/private-methods-dispatched-dynamically", {
+        "id": "dynamic-method-dispatch/private-methods-dispatched-dynamically",
+        "concept": "dynamic-method-dispatch",
+        "facet": "virtual method qualification",
+        "title": "Private Methods Dispatch Polymorphically",
+        "wrong_belief": "Private and final methods participate in runtime dynamic method dispatch.",
+        "correct_idea": "Private, static, and final methods cannot be overridden and are bound statically at compile time.",
+    }),
+    ("dynamic-method-dispatch/compile-time-checks-runtime-type", {
+        "id": "dynamic-method-dispatch/compile-time-checks-runtime-type",
+        "concept": "dynamic-method-dispatch",
+        "facet": "static type checking",
+        "title": "Compiler Allows Subclass Methods On Parent Reference",
+        "wrong_belief": "The compiler allows calling subclass-only methods on a parent reference if the underlying runtime object is the subclass.",
+        "correct_idea": "The compiler verifies method existence solely against the declared reference type; subclass-specific methods cannot be invoked without a cast.",
+    }),
+
+    # 22. runtime-polymorphism
+    ("runtime-polymorphism/downcast-changes-underlying-object", {
+        "id": "runtime-polymorphism/downcast-changes-underlying-object",
+        "concept": "runtime-polymorphism",
+        "facet": "type casting semantics",
+        "title": "Downcasting Modifies Heap Object Structure",
+        "wrong_belief": "Casting a superclass reference to a subclass type alters or transforms the underlying object on the heap.",
+        "correct_idea": "A cast never modifies the object on the heap; it merely changes the compile-time lens through which the object is addressed.",
+    }),
+    ("runtime-polymorphism/instanceof-checks-reference-type", {
+        "id": "runtime-polymorphism/instanceof-checks-reference-type",
+        "concept": "runtime-polymorphism",
+        "facet": "instanceof operator",
+        "title": "Instanceof Tests Declared Reference Type",
+        "wrong_belief": "The instanceof operator tests the compile-time declared type of the reference variable.",
+        "correct_idea": "The instanceof operator tests the actual runtime class of the object instance currently referenced.",
+    }),
+    ("runtime-polymorphism/polymorphism-requires-interfaces", {
+        "id": "runtime-polymorphism/polymorphism-requires-interfaces",
+        "concept": "runtime-polymorphism",
+        "facet": "polymorphic prerequisites",
+        "title": "Polymorphism Exclusively Uses Interfaces",
+        "wrong_belief": "Runtime polymorphism can only be achieved using interfaces and cannot be achieved through class inheritance.",
+        "correct_idea": "Runtime polymorphism applies equally to subclassing abstract or concrete classes via method overriding.",
+    }),
+    ("runtime-polymorphism/constructors-dispatched-polymorphically", {
+        "id": "runtime-polymorphism/constructors-dispatched-polymorphically",
+        "concept": "runtime-polymorphism",
+        "facet": "constructor polymorphism",
+        "title": "Methods In Parent Constructors Safely Dispatched",
+        "wrong_belief": "Calling an overridable method inside a parent constructor runs safely with the subclass fields already initialized.",
+        "correct_idea": "Calling an overridable method from a parent constructor invokes the subclass override before subclass fields are initialized, reading zeroes or nulls.",
+    }),
+
+    # =========================================================================
+    # Module 5: Encapsulation (6 concepts)
+    # =========================================================================
+
+    # 23. access-modifiers
+    ("access-modifiers/default-means-public", {
+        "id": "access-modifiers/default-means-public",
+        "concept": "access-modifiers",
+        "facet": "package-private access",
+        "title": "Default Modifier Equivalent To Public",
+        "wrong_belief": "Omitting an access modifier on a class member makes it public and accessible to classes across all packages.",
+        "correct_idea": "Omitting an access modifier grants package-private access, restricting visibility strictly to classes in the same package.",
+    }),
+    ("access-modifiers/protected-means-subclass-anywhere-unrestricted", {
+        "id": "access-modifiers/protected-means-subclass-anywhere-unrestricted",
+        "concept": "access-modifiers",
+        "facet": "protected scope",
+        "title": "Protected Visible To All Classes Everywhere",
+        "wrong_belief": "A protected member is accessible by any class anywhere in the application without restriction.",
+        "correct_idea": "Protected members are accessible only within the same package, or by subclasses located in other packages.",
+    }),
+    ("access-modifiers/private-visible-to-subclasses", {
+        "id": "access-modifiers/private-visible-to-subclasses",
+        "concept": "access-modifiers",
+        "facet": "private inheritance",
+        "title": "Private Members Accessible In Subclasses",
+        "wrong_belief": "Private members of a class can be accessed directly by its subclasses.",
+        "correct_idea": "Private members are accessible strictly within the declaring top-level class body and are hidden from subclasses.",
+    }),
+    ("access-modifiers/classes-can-be-protected", {
+        "id": "access-modifiers/classes-can-be-protected",
+        "concept": "access-modifiers",
+        "facet": "top-level visibility",
+        "title": "Top-Level Classes Can Be Protected",
+        "wrong_belief": "Top-level classes can be declared with private or protected access modifiers.",
+        "correct_idea": "Top-level classes in Java can only be declared public or package-private (default).",
+    }),
+
+    # 24. data-hiding
+    ("data-hiding/getters-make-fields-public", {
+        "id": "data-hiding/getters-make-fields-public",
+        "concept": "data-hiding",
+        "facet": "encapsulation purpose",
+        "title": "Getters Negate Data Hiding Entirely",
+        "wrong_belief": "Providing getter and setter methods provides no encapsulation benefit over making fields public.",
+        "correct_idea": "Getters and setters allow classes to validate inputs, enforce read-only semantics, and decouple internal storage from API.",
+    }),
+    ("data-hiding/data-hiding-is-security-encryption", {
+        "id": "data-hiding/data-hiding-is-security-encryption",
+        "concept": "data-hiding",
+        "facet": "data protection",
+        "title": "Data Hiding Encrypts Memory From Attackers",
+        "wrong_belief": "Data hiding is a cryptographic security feature designed to encrypt variables in computer memory against attackers.",
+        "correct_idea": "Data hiding is a software design discipline that prevents accidental coupling and protects invariants between classes.",
+    }),
+    ("data-hiding/final-fields-dont-need-private", {
+        "id": "data-hiding/final-fields-dont-need-private",
+        "concept": "data-hiding",
+        "facet": "immutability vs visibility",
+        "title": "Public Final References Protect State",
+        "wrong_belief": "Making a mutable object reference public and final provides complete data hiding because the reference cannot be reassigned.",
+        "correct_idea": "While a public final reference cannot point to a new object, callers can still mutate the internal fields of the referenced object.",
+    }),
+    ("data-hiding/private-methods-are-illegal", {
+        "id": "data-hiding/private-methods-are-illegal",
+        "concept": "data-hiding",
+        "facet": "method visibility",
+        "title": "Methods Must Always Be Public",
+        "wrong_belief": "Methods represent behavior and therefore should never be made private.",
+        "correct_idea": "Private methods encapsulate internal helper logic and prevent internal implementation details from leaking into the public API.",
+    }),
+
+    # 25. getters-setters
+    ("getters-setters/every-field-needs-both", {
+        "id": "getters-setters/every-field-needs-both",
+        "concept": "getters-setters",
+        "facet": "accessor necessity",
+        "title": "Every Field Requires Getter And Setter",
+        "wrong_belief": "Proper object-oriented design mandates writing a getter and a setter for every private field in a class.",
+        "correct_idea": "Only fields that truly need external access or modification should expose accessors, preserving minimal surface area.",
+    }),
+    ("getters-setters/setters-cannot-validate", {
+        "id": "getters-setters/setters-cannot-validate",
+        "concept": "getters-setters",
+        "facet": "mutator logic",
+        "title": "Setters Must Only Perform Assignment",
+        "wrong_belief": "Setters must only perform trivial assignment (this.x = x) and should not validate inputs or throw exceptions.",
+        "correct_idea": "A primary purpose of setters is validating incoming data to guarantee the object never enters an invalid state.",
+    }),
+    ("getters-setters/getter-returns-clone-automatically", {
+        "id": "getters-setters/getter-returns-clone-automatically",
+        "concept": "getters-setters",
+        "facet": "reference leakage",
+        "title": "Getters Automatically Protect Mutable References",
+        "wrong_belief": "Returning a mutable reference field from a getter automatically creates a safe independent copy.",
+        "correct_idea": "Returning a reference to a mutable object directly allows callers to modify private state from the outside without using setters.",
+    }),
+    ("getters-setters/boolean-getter-prefixed-with-get", {
+        "id": "getters-setters/boolean-getter-prefixed-with-get",
+        "concept": "getters-setters",
+        "facet": "naming convention",
+        "title": "Boolean Getters Must Use Get Prefix",
+        "wrong_belief": "Java conventions require boolean accessor methods to be prefixed with 'get' rather than 'is'.",
+        "correct_idea": "The standard JavaBeans specification specifies that boolean properties should use the 'is' prefix (e.g. isActive()).",
+    }),
+
+    # 26. defensive-copying
+    ("defensive-copying/immutable-objects-need-copying", {
+        "id": "defensive-copying/immutable-objects-need-copying",
+        "concept": "defensive-copying",
+        "facet": "immutable types",
+        "title": "Immutable Objects Require Defensive Copies",
+        "wrong_belief": "Defensive copying is necessary when accepting or returning immutable objects such as String or Integer.",
+        "correct_idea": "Immutable objects cannot be modified after creation, so sharing their references directly is completely safe.",
+    }),
+    ("defensive-copying/clone-is-always-safe", {
+        "id": "defensive-copying/clone-is-always-safe",
+        "concept": "defensive-copying",
+        "facet": "clone method",
+        "title": "Clone Is Always Safe For Defensive Copying",
+        "wrong_belief": "Calling .clone() on constructor arguments is always safe for creating defensive copies of non-final classes.",
+        "correct_idea": "An untrusted subclass can override .clone() to return a malicious instance; constructor defensive copies should use constructors or factories.",
+    }),
+    ("defensive-copying/copying-reference-is-defensive", {
+        "id": "defensive-copying/copying-reference-is-defensive",
+        "concept": "defensive-copying",
+        "facet": "copy depth",
+        "title": "Reference Assignment Constitutes Defensive Copy",
+        "wrong_belief": "Assigning an incoming array parameter to an instance variable constitutes a defensive copy.",
+        "correct_idea": "Assigning an array reference creates an alias; the array contents must be cloned or copied element-by-element.",
+    }),
+    ("defensive-copying/only-needed-on-output", {
+        "id": "defensive-copying/only-needed-on-output",
+        "concept": "defensive-copying",
+        "facet": "input vs output",
+        "title": "Defensive Copies Only Needed On Getters",
+        "wrong_belief": "Defensive copies are only required when returning data in getters, not when accepting parameters in constructors.",
+        "correct_idea": "Defensive copies are required on both incoming parameters and outgoing return values for any mutable object fields.",
+    }),
+
+    # 27. immutability
+    ("immutability/final-class-makes-all-fields-immutable", {
+        "id": "immutability/final-class-makes-all-fields-immutable",
+        "concept": "immutability",
+        "facet": "final class",
+        "title": "Final Class Automatically Immutabilizes Fields",
+        "wrong_belief": "Declaring a class final automatically makes all of its instance fields final and immutable.",
+        "correct_idea": "A final class simply prevents subclassing; its fields can still be non-final and modified unless explicitly declared private and final.",
+    }),
+    ("immutability/final-reference-means-immutable-object", {
+        "id": "immutability/final-reference-means-immutable-object",
+        "concept": "immutability",
+        "facet": "reference immutability",
+        "title": "Final Variable Means Object Content Is Frozen",
+        "wrong_belief": "Declaring a reference variable final prevents the fields of the referenced object from being altered.",
+        "correct_idea": "A final reference cannot be made to point to another object, but the object it points to can still have its state mutated.",
+    }),
+    ("immutability/immutable-classes-cannot-have-methods", {
+        "id": "immutability/immutable-classes-cannot-have-methods",
+        "concept": "immutability",
+        "facet": "immutable operations",
+        "title": "Immutable Classes Cannot Offer Transformations",
+        "wrong_belief": "Immutable classes cannot provide operations that transform or compute new values from their data.",
+        "correct_idea": "Immutable classes frequently offer transformation methods (like String.toUpperCase()) by returning new immutable instances.",
+    }),
+    ("immutability/no-setters-equals-immutable", {
+        "id": "immutability/no-setters-equals-immutable",
+        "concept": "immutability",
+        "facet": "class immutability",
+        "title": "Omitting Setters Guarantees Immutability",
+        "wrong_belief": "A class is guaranteed to be immutable as long as it declares no setter methods.",
+        "correct_idea": "If a class contains mutable fields (like Date or array) and returns them directly, callers can mutate its state without setters.",
+    }),
+
+    # 28. javabeans
+    ("javabeans/requires-special-interface", {
+        "id": "javabeans/requires-special-interface",
+        "concept": "javabeans",
+        "facet": "javabean contract",
+        "title": "JavaBeans Require Special Marker Interface",
+        "wrong_belief": "A class must implement a specific interface called JavaBean to be recognized as a valid JavaBean.",
+        "correct_idea": "JavaBeans is a convention (no-arg constructor, private fields, standard accessors, Serializable), not an interface implementation.",
+    }),
+    ("javabeans/must-not-have-logic", {
+        "id": "javabeans/must-not-have-logic",
+        "concept": "javabeans",
+        "facet": "bean methods",
+        "title": "JavaBeans Cannot Contain Business Logic",
+        "wrong_belief": "JavaBeans are restricted to being pure data holders and cannot contain domain business methods.",
+        "correct_idea": "While beans emphasize accessor conventions for tooling, they are standard Java classes and can contain business methods.",
+    }),
+    ("javabeans/constructor-arguments-mandatory", {
+        "id": "javabeans/constructor-arguments-mandatory",
+        "concept": "javabeans",
+        "facet": "bean instantiation",
+        "title": "JavaBeans Require Parameterized Constructor",
+        "wrong_belief": "A JavaBean must have a constructor that initializes all properties at creation time.",
+        "correct_idea": "The fundamental requirement of a JavaBean is a public zero-argument constructor so frameworks can instantiate it reflectively.",
+    }),
+    ("javabeans/property-name-capitalization", {
+        "id": "javabeans/property-name-capitalization",
+        "concept": "javabeans",
+        "facet": "property naming",
+        "title": "Property Name Retains Getter Capitalization",
+        "wrong_belief": "In JavaBeans convention, a getter getAge() corresponds to a property whose logical name is capitalized as 'Age'.",
+        "correct_idea": "The JavaBeans specification decodes getAge() to a lowercase property name 'age' following decapitalization rules.",
+    }),
+
+    # =========================================================================
+    # Module 6: Abstraction (5 concepts)
+    # =========================================================================
+
+    # 29. abstraction-basics
+    ("abstraction-basics/abstraction-equals-information-hiding", {
+        "id": "abstraction-basics/abstraction-equals-information-hiding",
+        "concept": "abstraction-basics",
+        "facet": "concept definition",
+        "title": "Abstraction And Encapsulation Are Synonyms",
+        "wrong_belief": "Abstraction and encapsulation are identical concepts that describe the same programming mechanism.",
+        "correct_idea": "Encapsulation binds data and hides internal state; abstraction hides complexity by focusing on high-level behavior rather than implementation.",
+    }),
+    ("abstraction-basics/abstract-things-cannot-exist", {
+        "id": "abstraction-basics/abstract-things-cannot-exist",
+        "concept": "abstraction-basics",
+        "facet": "mental model",
+        "title": "Abstract Concepts Cannot Model Real Objects",
+        "wrong_belief": "Abstract classes and interfaces cannot model concrete real-world entities in software design.",
+        "correct_idea": "Abstraction models essential shared characteristics of real-world entities while omitting irrelevant implementation variations.",
+    }),
+    ("abstraction-basics/more-abstraction-always-better", {
+        "id": "abstraction-basics/more-abstraction-always-better",
+        "concept": "abstraction-basics",
+        "facet": "design trade-offs",
+        "title": "Higher Levels Of Abstraction Always Superior",
+        "wrong_belief": "Adding additional layers of abstract classes and interfaces always improves code quality regardless of problem scale.",
+        "correct_idea": "Premature or excessive abstraction introduces needless cognitive overhead, indirection, and complexity.",
+    }),
+    ("abstraction-basics/abstraction-requires-abstract-keyword", {
+        "id": "abstraction-basics/abstraction-requires-abstract-keyword",
+        "concept": "abstraction-basics",
+        "facet": "language mechanism",
+        "title": "Abstraction Exclusively Requires Abstract Keyword",
+        "wrong_belief": "Abstraction in Java can only be achieved by explicitly using the abstract keyword.",
+        "correct_idea": "Abstraction is achieved through interfaces, well-designed public class methods, and conceptual modeling, not just the abstract keyword.",
+    }),
+
+    # 30. abstract-classes
+    ("abstract-classes/can-be-instantiated-with-new", {
+        "id": "abstract-classes/can-be-instantiated-with-new",
+        "concept": "abstract-classes",
+        "facet": "instantiation rules",
+        "title": "Abstract Classes Directly Instantiable",
+        "wrong_belief": "An abstract class can be directly instantiated by invoking new AbstractClass().",
+        "correct_idea": "Abstract classes cannot be instantiated with new; only concrete subclasses that implement all abstract methods can be instantiated.",
+    }),
+    ("abstract-classes/cannot-have-constructors", {
+        "id": "abstract-classes/cannot-have-constructors",
+        "concept": "abstract-classes",
+        "facet": "constructor existence",
+        "title": "Abstract Classes Cannot Have Constructors",
+        "wrong_belief": "Because abstract classes cannot be directly instantiated, they cannot declare constructors.",
+        "correct_idea": "Abstract classes can and do have constructors, which are invoked by subclass constructors via super() to initialize base fields.",
+    }),
+    ("abstract-classes/must-have-abstract-methods", {
+        "id": "abstract-classes/must-have-abstract-methods",
+        "concept": "abstract-classes",
+        "facet": "method requirements",
+        "title": "Abstract Classes Must Declare Abstract Methods",
+        "wrong_belief": "A class declared with the abstract modifier must contain at least one abstract method.",
+        "correct_idea": "A class can be declared abstract even if all of its methods are fully concrete, purely to prevent direct instantiation.",
+    }),
+    ("abstract-classes/cannot-have-concrete-methods", {
+        "id": "abstract-classes/cannot-have-concrete-methods",
+        "concept": "abstract-classes",
+        "facet": "member implementation",
+        "title": "Abstract Classes Cannot Have Concrete Code",
+        "wrong_belief": "Abstract classes are like old interfaces and cannot provide any fully implemented concrete methods.",
+        "correct_idea": "Abstract classes can contain full concrete methods, instance variables, constants, and constructors alongside abstract methods.",
+    }),
+
+    # 31. abstract-methods
+    ("abstract-methods/can-have-empty-body", {
+        "id": "abstract-methods/can-have-empty-body",
+        "concept": "abstract-methods",
+        "facet": "method syntax",
+        "title": "Abstract Methods Can Have Empty Braces",
+        "wrong_belief": "An abstract method declaration can have a body consisting of empty curly braces ({}).",
+        "correct_idea": "Abstract methods cannot have any body whatsoever and must terminate immediately with a semicolon after the parameter list.",
+    }),
+    ("abstract-methods/can-be-private-or-final", {
+        "id": "abstract-methods/can-be-private-or-final",
+        "concept": "abstract-methods",
+        "facet": "modifier compatibility",
+        "title": "Abstract Methods Can Be Private Or Final",
+        "wrong_belief": "An abstract method can be declared private or final to restrict how subclasses access it.",
+        "correct_idea": "Abstract methods exist specifically to be overridden; combining abstract with private or final causes a compile-time error.",
+    }),
+    ("abstract-methods/subclass-can-ignore-implementation", {
+        "id": "abstract-methods/subclass-can-ignore-implementation",
+        "concept": "abstract-methods",
+        "facet": "subclass obligations",
+        "title": "Subclass Can Ignore Inherited Abstract Methods",
+        "wrong_belief": "A concrete subclass does not have to implement inherited abstract methods if it chooses not to use them.",
+        "correct_idea": "A concrete subclass must implement every inherited abstract method or declare itself abstract.",
+    }),
+    ("abstract-methods/can-be-declared-in-normal-class", {
+        "id": "abstract-methods/can-be-declared-in-normal-class",
+        "concept": "abstract-methods",
+        "facet": "class declaration context",
+        "title": "Abstract Methods Allowed In Regular Classes",
+        "wrong_belief": "A concrete regular class can declare an abstract method without making the class itself abstract.",
+        "correct_idea": "If a class declares even one abstract method, the enclosing class must be explicitly declared with the abstract modifier.",
+    }),
+
+    # 32. abstract-class-vs-interface
+    ("abstract-class-vs-interface/interfaces-can-hold-state", {
+        "id": "abstract-class-vs-interface/interfaces-can-hold-state",
+        "concept": "abstract-class-vs-interface",
+        "facet": "state storage",
+        "title": "Interfaces Can Hold Mutable Instance State",
+        "wrong_belief": "Interfaces can declare mutable instance variables to hold object state like abstract classes do.",
+        "correct_idea": "All fields in an interface are implicitly public, static, and final; interfaces cannot store per-instance mutable state.",
+    }),
+    ("abstract-class-vs-interface/default-methods-make-interfaces-abstract-classes", {
+        "id": "abstract-class-vs-interface/default-methods-make-interfaces-abstract-classes",
+        "concept": "abstract-class-vs-interface",
+        "facet": "type differences",
+        "title": "Default Methods Make Interfaces Abstract Classes",
+        "wrong_belief": "Default methods make interfaces completely identical to abstract classes in modern Java.",
+        "correct_idea": "Abstract classes can hold instance state and constructors and single-inherit; interfaces cannot have constructors or instance fields.",
+    }),
+    ("abstract-class-vs-interface/classes-can-extend-multiple-abstract-classes", {
+        "id": "abstract-class-vs-interface/classes-can-extend-multiple-abstract-classes",
+        "concept": "abstract-class-vs-interface",
+        "facet": "inheritance capability",
+        "title": "Classes Can Extend Multiple Abstract Classes",
+        "wrong_belief": "A class can extend multiple abstract classes just like it can implement multiple interfaces.",
+        "correct_idea": "Java enforces single class inheritance regardless of whether classes are abstract or concrete.",
+    }),
+    ("abstract-class-vs-interface/abstract-classes-cannot-implement-interfaces", {
+        "id": "abstract-class-vs-interface/abstract-classes-cannot-implement-interfaces",
+        "concept": "abstract-class-vs-interface",
+        "facet": "interoperability",
+        "title": "Abstract Classes Must Implement All Interface Methods",
+        "wrong_belief": "An abstract class that implements an interface must provide concrete implementations for all interface methods.",
+        "correct_idea": "An abstract class can implement an interface without implementing any of its methods, delegating implementation to subclasses.",
+    }),
+
+    # 33. design-patterns
+    ("design-patterns/singleton-prevents-multiple-classes", {
+        "id": "design-patterns/singleton-prevents-multiple-classes",
+        "concept": "design-patterns",
+        "facet": "singleton pattern",
+        "title": "Singleton Limits Number Of Class Definitions",
+        "wrong_belief": "The Singleton pattern prevents the creation of multiple distinct class definitions in the codebase.",
+        "correct_idea": "The Singleton pattern restricts the instantiation of a class to exactly one single object instance across the JVM.",
+    }),
+    ("design-patterns/factory-requires-inheritance", {
+        "id": "design-patterns/factory-requires-inheritance",
+        "concept": "design-patterns",
+        "facet": "factory pattern",
+        "title": "Factory Pattern Requires Class Inheritance",
+        "wrong_belief": "The Factory design pattern cannot be used without building an extensive subclass inheritance tree.",
+        "correct_idea": "Simple factories can instantiate concrete objects based on parameters without requiring complex inheritance trees.",
+    }),
+    ("design-patterns/patterns-are-reusable-code-libraries", {
+        "id": "design-patterns/patterns-are-reusable-code-libraries",
+        "concept": "design-patterns",
+        "facet": "pattern nature",
+        "title": "Design Patterns Are Directly Importable Libraries",
+        "wrong_belief": "Design patterns are off-the-shelf code libraries that can be directly imported with an import statement.",
+        "correct_idea": "Design patterns are architectural design templates and idioms that developers implement tailored to specific problems.",
+    }),
+    ("design-patterns/strategy-replaces-all-if-statements", {
+        "id": "design-patterns/strategy-replaces-all-if-statements",
+        "concept": "design-patterns",
+        "facet": "strategy pattern",
+        "title": "Strategy Pattern Completely Eliminates Conditionals",
+        "wrong_belief": "Applying the Strategy pattern eliminates the need for all conditional checks throughout an application.",
+        "correct_idea": "Strategy replaces conditional algorithm selection with polymorphic objects, but conditionals are still used elsewhere for validation and flow.",
+    }),
+
+    # =========================================================================
+    # Module 7: Interfaces (3 concepts)
+    # =========================================================================
+
+    # 34. interface-basics
+    ("interface-basics/interface-methods-default-to-package", {
+        "id": "interface-basics/interface-methods-default-to-package",
+        "concept": "interface-basics",
+        "facet": "member visibility",
+        "title": "Interface Methods Default To Package-Private",
+        "wrong_belief": "Methods declared in an interface without an access modifier have package-private visibility.",
+        "correct_idea": "All abstract methods declared in an interface are implicitly public and abstract.",
+    }),
+    ("interface-basics/interface-fields-can-be-mutable", {
+        "id": "interface-basics/interface-fields-can-be-mutable",
+        "concept": "interface-basics",
+        "facet": "interface fields",
+        "title": "Interface Fields Can Be Mutable State",
+        "wrong_belief": "Fields declared in an interface can be mutable instance variables modified by implementing classes.",
+        "correct_idea": "Every field declared in an interface is implicitly public, static, and final (compile-time constant).",
+    }),
+    ("interface-basics/interface-can-have-constructors", {
+        "id": "interface-basics/interface-can-have-constructors",
+        "concept": "interface-basics",
+        "facet": "interface lifecycle",
+        "title": "Interfaces Can Declare Constructors",
+        "wrong_belief": "Interfaces can define constructor methods to initialize their constant fields.",
+        "correct_idea": "Interfaces cannot declare constructors because they cannot hold instance state and cannot be instantiated.",
+    }),
+    ("interface-basics/interfaces-cannot-extend-other-interfaces", {
+        "id": "interface-basics/interfaces-cannot-extend-other-interfaces",
+        "concept": "interface-basics",
+        "facet": "interface inheritance",
+        "title": "Interfaces Cannot Extend Other Interfaces",
+        "wrong_belief": "An interface cannot inherit from another interface using the extends keyword.",
+        "correct_idea": "An interface can extend one or more other interfaces using the extends keyword, combining their contracts.",
+    }),
+
+    # 35. default-methods
+    ("default-methods/default-methods-can-modify-instance-state", {
+        "id": "default-methods/default-methods-can-modify-instance-state",
+        "concept": "default-methods",
+        "facet": "state access",
+        "title": "Default Methods Can Directly Mutate State",
+        "wrong_belief": "Default methods can declare and mutate interface-level instance fields.",
+        "correct_idea": "Default methods cannot access instance fields of the interface because interfaces cannot have instance fields.",
+    }),
+    ("default-methods/default-methods-override-object-methods", {
+        "id": "default-methods/default-methods-override-object-methods",
+        "concept": "default-methods",
+        "facet": "object method rules",
+        "title": "Default Methods Can Override Object Methods",
+        "wrong_belief": "An interface can provide default implementations for equals(), hashCode(), or toString().",
+        "correct_idea": "Java explicitly forbids default methods that override public methods of java.lang.Object.",
+    }),
+    ("default-methods/implementing-class-must-override-default", {
+        "id": "default-methods/implementing-class-must-override-default",
+        "concept": "default-methods",
+        "facet": "override necessity",
+        "title": "Implementing Class Must Override Default Methods",
+        "wrong_belief": "A class implementing an interface is forced to override all default methods provided by the interface.",
+        "correct_idea": "Implementing classes inherit default methods automatically and only need to override them if custom behavior is desired.",
+    }),
+    ("default-methods/default-keyword-optional", {
+        "id": "default-methods/default-keyword-optional",
+        "concept": "default-methods",
+        "facet": "method syntax",
+        "title": "Default Keyword Optional When Providing Body",
+        "wrong_belief": "An interface method with a code body is automatically a default method without writing the default keyword.",
+        "correct_idea": "Interface instance methods with bodies must be explicitly marked with the default keyword, or they cause a compile error.",
+    }),
+
+    # 36. functional-interface
+    ("functional-interface/can-have-multiple-abstract-methods", {
+        "id": "functional-interface/can-have-multiple-abstract-methods",
+        "concept": "functional-interface",
+        "facet": "single abstract method",
+        "title": "Functional Interface Can Have Multiple Abstract Methods",
+        "wrong_belief": "A functional interface can declare two or more abstract methods if it has default methods.",
+        "correct_idea": "A functional interface must have exactly one single abstract method (SAM), although it may contain default or static methods.",
+    }),
+    ("functional-interface/cannot-have-default-or-static-methods", {
+        "id": "functional-interface/cannot-have-default-or-static-methods",
+        "concept": "functional-interface",
+        "facet": "non-abstract members",
+        "title": "Functional Interface Disallows Default Methods",
+        "wrong_belief": "Functional interfaces cannot contain any default or static methods.",
+        "correct_idea": "Functional interfaces can have any number of default or static methods as long as they contain exactly one abstract method.",
+    }),
+    ("functional-interface/annotation-mandatory", {
+        "id": "functional-interface/annotation-mandatory",
+        "concept": "functional-interface",
+        "facet": "annotation role",
+        "title": "FunctionalInterface Annotation Is Mandatory",
+        "wrong_belief": "An interface cannot be used with lambda expressions unless explicitly annotated with @FunctionalInterface.",
+        "correct_idea": "Any interface with exactly one abstract method is functional by definition; the annotation is optional documentation.",
+    }),
+    ("functional-interface/lambdas-create-new-classes-at-compile-time", {
+        "id": "functional-interface/lambdas-create-new-classes-at-compile-time",
+        "concept": "functional-interface",
+        "facet": "lambda implementation",
+        "title": "Lambdas Generate Anonymous Inner Class Files",
+        "wrong_belief": "Every lambda expression generates an anonymous inner class .class file on disk during compilation.",
+        "correct_idea": "Java lambdas use the invokedynamic bytecode instruction to construct lightweight function objects at runtime without class files.",
+    }),
+
+    # =========================================================================
+    # Module 8: Exception Handling (8 concepts)
+    # =========================================================================
+
+    # 37. try-catch
+    ("try-catch/catch-super-before-subclass", {
+        "id": "try-catch/catch-super-before-subclass",
+        "concept": "try-catch",
+        "facet": "catch block ordering",
+        "title": "Catching Superclass Before Subclass Allowed",
+        "wrong_belief": "A catch block for Exception can be placed before a catch block for a subclass like IOException.",
+        "correct_idea": "Catch blocks must be ordered from most specific subclass to most general; placing a superclass first causes an unreachable code error.",
+    }),
+    ("try-catch/try-block-resumes-after-exception", {
+        "id": "try-catch/try-block-resumes-after-exception",
+        "concept": "try-catch",
+        "facet": "execution flow",
+        "title": "Try Block Resumes Where Exception Occurred",
+        "wrong_belief": "After a catch block handles an exception, execution resumes at the next line inside the try block.",
+        "correct_idea": "Once an exception is thrown in a try block, remaining lines in that try block are skipped and execution transfers to catch.",
+    }),
+    ("try-catch/catch-blocks-mandatory", {
+        "id": "try-catch/catch-blocks-mandatory",
+        "concept": "try-catch",
+        "facet": "block pairing",
+        "title": "Catch Block Mandatory On Every Try",
+        "wrong_belief": "A try block must always be accompanied by a catch block to compile.",
+        "correct_idea": "A try statement is legal with only a finally block (try-finally) or with resources (try-with-resources), needing no catch.",
+    }),
+    ("try-catch/suppresses-all-future-exceptions", {
+        "id": "try-catch/suppresses-all-future-exceptions",
+        "concept": "try-catch",
+        "facet": "scope of recovery",
+        "title": "Catch Block Silences All Future Errors",
+        "wrong_belief": "Catching an exception prevents subsequent code outside the try-catch block from throwing errors.",
+        "correct_idea": "A catch block only handles exceptions that occur within its specific paired try block.",
+    }),
+
+    # 38. finally-block
+    ("finally-block/finally-skipped-on-return", {
+        "id": "finally-block/finally-skipped-on-return",
+        "concept": "finally-block",
+        "facet": "return statement",
+        "title": "Return Statement Skips Finally Execution",
+        "wrong_belief": "Executing a return statement inside a try or catch block skips the execution of the finally block.",
+        "correct_idea": "The finally block always executes before the method actually returns, even when return is called in try or catch.",
+    }),
+    ("finally-block/finally-always-runs-without-exception", {
+        "id": "finally-block/finally-always-runs-without-exception",
+        "concept": "finally-block",
+        "facet": "jvm termination",
+        "title": "Finally Always Runs Even On System.exit",
+        "wrong_belief": "The finally block is guaranteed to execute even if System.exit(0) is called in the try block.",
+        "correct_idea": "If System.exit() halts the JVM or the operating system terminates the process, finally blocks do not execute.",
+    }),
+    ("finally-block/finally-return-doesnt-override", {
+        "id": "finally-block/finally-return-doesnt-override",
+        "concept": "finally-block",
+        "facet": "finally return value",
+        "title": "Finally Return Does Not Overwrite Try Return",
+        "wrong_belief": "Returning a value from a finally block does not override the value returned from the preceding try block.",
+        "correct_idea": "Returning a value from a finally block completely discards and overwrites any value or unhandled exception from try or catch.",
+    }),
+    ("finally-block/finally-only-runs-on-error", {
+        "id": "finally-block/finally-only-runs-on-error",
+        "concept": "finally-block",
+        "facet": "execution trigger",
+        "title": "Finally Block Only Runs When Error Occurs",
+        "wrong_belief": "The finally block only executes if an unhandled exception was thrown during the try block.",
+        "correct_idea": "The finally block executes unconditionally upon leaving the try block, whether normally or via an exception.",
+    }),
+
+    # 39. checked-vs-unchecked
+    ("checked-vs-unchecked/runtime-exceptions-must-be-declared", {
+        "id": "checked-vs-unchecked/runtime-exceptions-must-be-declared",
+        "concept": "checked-vs-unchecked",
+        "facet": "throws clause",
+        "title": "Unchecked Exceptions Must Be Declared",
+        "wrong_belief": "Methods that might throw RuntimeException subclasses must declare them in their throws clause.",
+        "correct_idea": "Unchecked exceptions (subclasses of RuntimeException) do not need to be declared in throws clauses or caught.",
+    }),
+    ("checked-vs-unchecked/checked-exceptions-occur-at-compile-time", {
+        "id": "checked-vs-unchecked/checked-exceptions-occur-at-compile-time",
+        "concept": "checked-vs-unchecked",
+        "facet": "exception occurrence",
+        "title": "Checked Exceptions Occur At Compile Time",
+        "wrong_belief": "Checked exceptions represent errors that occur during compilation rather than at runtime.",
+        "correct_idea": "All exceptions occur at runtime; 'checked' means the compiler verifies that code handles or declares them.",
+    }),
+    ("checked-vs-unchecked/errors-should-be-caught", {
+        "id": "checked-vs-unchecked/errors-should-be-caught",
+        "concept": "checked-vs-unchecked",
+        "facet": "error handling",
+        "title": "Applications Should Routinely Catch Errors",
+        "wrong_belief": "Normal application code should catch java.lang.Error subclasses like OutOfMemoryError or StackOverflowError.",
+        "correct_idea": "Error indicates catastrophic JVM-level failure from which normal applications cannot and should not attempt recovery.",
+    }),
+    ("checked-vs-unchecked/custom-exceptions-always-checked", {
+        "id": "checked-vs-unchecked/custom-exceptions-always-checked",
+        "concept": "checked-vs-unchecked",
+        "facet": "exception hierarchy",
+        "title": "Custom Exceptions Are Always Checked",
+        "wrong_belief": "Any custom user-defined exception class in Java is automatically a checked exception.",
+        "correct_idea": "Custom exceptions that extend RuntimeException are unchecked; only those extending Exception directly are checked.",
+    }),
+
+    # 40. exception-throwing
+    ("exception-throwing/throw-and-throws-are-interchangeable", {
+        "id": "exception-throwing/throw-and-throws-are-interchangeable",
+        "concept": "exception-throwing",
+        "facet": "keyword distinction",
+        "title": "Throw And Throws Are Interchangeable",
+        "wrong_belief": "The throw statement and the throws method clause are synonyms that can be used interchangeably.",
+        "correct_idea": "throw is an executable statement that raises an exception object; throws is a method signature clause declaring potential exceptions.",
+    }),
+    ("exception-throwing/thrown-exceptions-auto-handled", {
+        "id": "exception-throwing/thrown-exceptions-auto-handled",
+        "concept": "exception-throwing",
+        "facet": "propagation",
+        "title": "Thrown Exceptions Log And Recover Automatically",
+        "wrong_belief": "Throwing an exception automatically logs an error message and continues to the next statement.",
+        "correct_idea": "Throwing an exception immediately aborts method flow and unwinds the call stack until a matching catch block is found.",
+    }),
+    ("exception-throwing/can-throw-uninstantiated-class", {
+        "id": "exception-throwing/can-throw-uninstantiated-class",
+        "concept": "exception-throwing",
+        "facet": "throw argument",
+        "title": "Throw Takes Class Type Directly",
+        "wrong_belief": "The throw statement can take an exception class type directly (e.g. throw IOException;) without using new.",
+        "correct_idea": "The throw statement requires an instantiated object of type Throwable (e.g. throw new IOException()).",
+    }),
+    ("exception-throwing/throws-forces-exception", {
+        "id": "exception-throwing/throws-forces-exception",
+        "concept": "exception-throwing",
+        "facet": "method contract",
+        "title": "Declaring Throws Causes Method To Always Fail",
+        "wrong_belief": "Declaring throws Exception on a method signature causes it to always throw an exception whenever invoked.",
+        "correct_idea": "A throws clause indicates potential exceptions; a method with a throws clause can execute and return completely normally.",
+    }),
+
+    # 41. try-with-resources
+    ("try-with-resources/close-skipped-on-exception", {
+        "id": "try-with-resources/close-skipped-on-exception",
+        "concept": "try-with-resources",
+        "facet": "automatic cleanup",
+        "title": "Resource Close Skipped When Exception Thrown",
+        "wrong_belief": "Resources opened in a try-with-resources statement are not closed if an exception is thrown in the try block.",
+        "correct_idea": "try-with-resources guarantees that open resources are closed whether the block completes normally or throws an exception.",
+    }),
+    ("try-with-resources/works-on-any-object", {
+        "id": "try-with-resources/works-on-any-object",
+        "concept": "try-with-resources",
+        "facet": "resource interface",
+        "title": "Any Java Object Usable In Try-With-Resources",
+        "wrong_belief": "Any arbitrary Java object can be declared inside the try-with-resources parenthesis header.",
+        "correct_idea": "Only objects implementing java.lang.AutoCloseable (or Closeable) can be managed by try-with-resources.",
+    }),
+    ("try-with-resources/requires-explicit-finally", {
+        "id": "try-with-resources/requires-explicit-finally",
+        "concept": "try-with-resources",
+        "facet": "resource closing",
+        "title": "Try-With-Resources Requires Manual Close Finally",
+        "wrong_belief": "try-with-resources still requires an explicit finally block to call close() on the managed resources.",
+        "correct_idea": "try-with-resources automatically invokes close() on resources, making explicit finally cleanup blocks unnecessary.",
+    }),
+    ("try-with-resources/close-called-in-declaration-order", {
+        "id": "try-with-resources/close-called-in-declaration-order",
+        "concept": "try-with-resources",
+        "facet": "closing sequence",
+        "title": "Resources Closed In Forward Declaration Order",
+        "wrong_belief": "Multiple resources declared in try-with-resources are closed in the exact order they were declared.",
+        "correct_idea": "Resources in try-with-resources are closed in reverse order of their declaration, ensuring dependent resources close first.",
+    }),
+
+    # 42. exception-chaining
+    ("exception-chaining/cause-lost-when-wrapped", {
+        "id": "exception-chaining/cause-lost-when-wrapped",
+        "concept": "exception-chaining",
+        "facet": "cause preservation",
+        "title": "Original Exception Lost When Wrapped",
+        "wrong_belief": "Catching an exception and throwing a new custom exception permanently erases the original root cause and stack trace.",
+        "correct_idea": "Passing the original exception as the cause to the new exception's constructor preserves the full chained stack trace.",
+    }),
+    ("exception-chaining/getCause-returns-string-message", {
+        "id": "exception-chaining/getCause-returns-string-message",
+        "concept": "exception-chaining",
+        "facet": "cause inspection",
+        "title": "GetCause Returns Error Message String",
+        "wrong_belief": "Calling e.getCause() returns the exception's text message rather than a Throwable object.",
+        "correct_idea": "getCause() returns the actual underlying Throwable instance (or null if none), allowing programmatic inspection.",
+    }),
+    ("exception-chaining/chaining-causes-infinite-loops", {
+        "id": "exception-chaining/chaining-causes-infinite-loops",
+        "concept": "exception-chaining",
+        "facet": "chain structure",
+        "title": "Exception Chaining Causes Infinite Loop Crashes",
+        "wrong_belief": "Chaining exceptions creates recursive object graphs that cause stack overflow when printing traces.",
+        "correct_idea": "Java enforces acyclic exception chains; attempting to set an exception as its own cause throws an IllegalArgumentException.",
+    }),
+    ("exception-chaining/only-checked-exceptions-can-be-chained", {
+        "id": "exception-chaining/only-checked-exceptions-can-be-chained",
+        "concept": "exception-chaining",
+        "facet": "exception wrapping",
+        "title": "Only Checked Exceptions Can Be Chained",
+        "wrong_belief": "Unchecked runtime exceptions cannot have causes attached or participate in exception chaining.",
+        "correct_idea": "All subclasses of Throwable support chaining, allowing checked exceptions to be wrapped in unchecked ones.",
+    }),
+
+    # 43. custom-exceptions
+    ("custom-exceptions/must-extend-throwable-directly", {
+        "id": "custom-exceptions/must-extend-throwable-directly",
+        "concept": "custom-exceptions",
+        "facet": "inheritance root",
+        "title": "Custom Exceptions Must Directly Extend Throwable",
+        "wrong_belief": "Custom user-defined exceptions must extend java.lang.Throwable directly instead of Exception or RuntimeException.",
+        "correct_idea": "Custom exceptions should extend Exception (for checked) or RuntimeException (for unchecked), never Throwable directly.",
+    }),
+    ("custom-exceptions/cannot-add-custom-fields", {
+        "id": "custom-exceptions/cannot-add-custom-fields",
+        "concept": "custom-exceptions",
+        "facet": "exception state",
+        "title": "Custom Exceptions Cannot Store Extra State",
+        "wrong_belief": "Custom exceptions can only pass message strings and cannot declare custom fields or context objects.",
+        "correct_idea": "Custom exceptions are standard Java classes and can store error codes, timestamps, and domain entities for diagnostics.",
+    }),
+    ("custom-exceptions/requires-native-handling", {
+        "id": "custom-exceptions/requires-native-handling",
+        "concept": "custom-exceptions",
+        "facet": "exception mechanics",
+        "title": "Custom Exceptions Require Special JVM Setup",
+        "wrong_belief": "The JVM requires special configuration or registration to catch and handle custom exception classes.",
+        "correct_idea": "Custom exceptions participate in standard polymorphic catch blocks without any special runtime configuration.",
+    }),
+    ("custom-exceptions/must-override-printStackTrace", {
+        "id": "custom-exceptions/must-override-printStackTrace",
+        "concept": "custom-exceptions",
+        "facet": "method overrides",
+        "title": "Custom Exceptions Must Override PrintStackTrace",
+        "wrong_belief": "Custom exception classes must override printStackTrace() and getMessage() to display stack information.",
+        "correct_idea": "Custom exceptions inherit full stack trace capture and message formatting directly from Throwable.",
+    }),
+
+    # 44. null-pointer-exception
+    ("null-pointer-exception/primitives-can-be-null", {
+        "id": "null-pointer-exception/primitives-can-be-null",
+        "concept": "null-pointer-exception",
+        "facet": "primitive nullability",
+        "title": "Primitive Types Can Hold Null Value",
+        "wrong_belief": "Primitive variables like int, double, or boolean can be assigned null when no value is present.",
+        "correct_idea": "Primitives cannot be null; assigning null to a boxed wrapper that unboxes to a primitive causes a NullPointerException.",
+    }),
+    ("null-pointer-exception/calling-static-on-null-throws-npe", {
+        "id": "null-pointer-exception/calling-static-on-null-throws-npe",
+        "concept": "null-pointer-exception",
+        "facet": "static member on null reference",
+        "title": "Calling Static Method On Null Throws NPE",
+        "wrong_belief": "Invoking a static method through a reference variable that holds null throws a NullPointerException.",
+        "correct_idea": "Static methods are dispatched using the reference's compile-time type, ignoring the null runtime value without throwing NPE.",
+    }),
+    ("null-pointer-exception/null-string-concatenation-throws", {
+        "id": "null-pointer-exception/null-string-concatenation-throws",
+        "concept": "null-pointer-exception",
+        "facet": "string conversion",
+        "title": "Concatenating Null Object Throws NPE",
+        "wrong_belief": "Concatenating a null reference variable with a String (e.g. \"Item: \" + nullRef) throws a NullPointerException.",
+        "correct_idea": "The + string concatenation operator converts null references to the literal four-character string \"null\" safely.",
+    }),
+    ("null-pointer-exception/null-instanceof-check-throws", {
+        "id": "null-pointer-exception/null-instanceof-check-throws",
+        "concept": "null-pointer-exception",
+        "facet": "null type test",
+        "title": "Instanceof Check On Null Throws NPE",
+        "wrong_belief": "Evaluating (nullVar instanceof String) throws a NullPointerException at runtime.",
+        "correct_idea": "The instanceof operator safely evaluates to false when given a null reference without throwing an exception.",
+    }),
+])
+
+
+# ─────────────────────────────────────────────────────────────
+# Helper functions
+# ─────────────────────────────────────────────────────────────
+def misconceptions_for(concept):
+    """Return all misconception dicts for a given concept tag."""
+    return [m for m in MISCONCEPTIONS.values() if m["concept"] == concept]
+
+
+def is_valid_misconception(misconception_id, concept=None):
+    """
+    Check if misconception_id exists in the catalog.
+    If concept is provided, verifies it belongs to that specific concept.
+    """
+    if not misconception_id or misconception_id not in MISCONCEPTIONS:
+        return False
+    if concept:
+        return MISCONCEPTIONS[misconception_id]["concept"] == concept
+    return True
+
+
+def facets_of(concept):
+    """Return unique facet strings defined for a concept tag."""
+    seen = set()
+    result = []
+    for m in misconceptions_for(concept):
+        f = m.get("facet")
+        if f and f not in seen:
+            seen.add(f)
+            result.append(f)
+    return result

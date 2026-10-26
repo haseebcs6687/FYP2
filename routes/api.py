@@ -395,16 +395,25 @@ def api_quiz_submit():
     quiz_result_id = cur.lastrowid
 
     for item in review:
-        chosen_text = (item["options"][item["student_answer"]]
-                       if 0 <= item["student_answer"] < len(item["options"]) else None)
+        q_idx = item["index"]
+        chosen_idx = item["student_answer"]
+        chosen_text = (item["options"][chosen_idx]
+                       if 0 <= chosen_idx < len(item["options"]) else None)
+
+        misconception_id = None
+        if 0 <= q_idx < len(questions):
+            q_opts = questions[q_idx].get("options") or []
+            if 0 <= chosen_idx < len(q_opts) and isinstance(q_opts[chosen_idx], dict):
+                misconception_id = q_opts[chosen_idx].get("misconception_id")
+
         cur.execute(
             """INSERT INTO question_attempts
                (quiz_result_id, question_index, concept_tags, is_correct,
-                student_answer, correct_answer, time_taken_ms, question_text, chosen_option_text)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (quiz_result_id, item["index"], json.dumps(item["concept_tags"]),
-             int(item["is_correct"]), item["student_answer"], item["correct_answer"],
-             item["time_taken_ms"], item["question"][:500], chosen_text),
+                student_answer, correct_answer, time_taken_ms, question_text, chosen_option_text, misconception_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (quiz_result_id, q_idx, json.dumps(item["concept_tags"]),
+             int(item["is_correct"]), chosen_idx, item["correct_answer"],
+             item["time_taken_ms"], item["question"][:500], chosen_text, misconception_id),
         )
 
     cur.execute("UPDATE quiz_sessions SET consumed = 1 WHERE id = ?", (quiz_session_id,))

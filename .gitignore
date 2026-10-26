@@ -10,4 +10,5 @@ data/rag_index/
 data/rag_cache/
 rag/corpus/books/*.pdf
 rag/corpus/books/*.txt
+rag/corpus/questions_validated/
 .DS_Store

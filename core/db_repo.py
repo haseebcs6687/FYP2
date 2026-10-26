@@ -57,17 +57,19 @@ def record_generated_questions(concept, difficulty, questions, model=None, sourc
             tags_json = json.dumps(q.get("concept_tags", [concept]))
 
             # Check if already exists
+            facet = q.get("facet")
+
             row = cur.execute("SELECT id FROM questions WHERE text_hash = ?", (thash,)).fetchone()
             if row:
                 qid = row["id"]
             else:
                 cur.execute(
                     """INSERT INTO questions
-                       (concept, difficulty, qtype, question_text, options_json,
+                       (concept, facet, difficulty, qtype, question_text, options_json,
                         correct_index, explanation, tags_json, source, model,
                         verified, text_hash, times_served, times_correct)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0)""",
-                    (concept, difficulty, qtype, q_text, options_json,
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0)""",
+                    (concept, facet, difficulty, qtype, q_text, options_json,
                      correct_idx, explanation, tags_json, source, model, thash),
                 )
                 qid = cur.lastrowid
@@ -110,12 +112,19 @@ def record_submission_history(student_id, quiz_result_id, questions, answers, ti
             was_correct = 1 if (chosen == correct_idx and chosen != -1) else 0
             time_ms = int(timings.get(str(i), timings.get(i, 0)) or 0)
 
+            misconception_id = None
+            options = q.get("options") or []
+            if isinstance(options, list) and 0 <= chosen < len(options):
+                opt_item = options[chosen]
+                if isinstance(opt_item, dict):
+                    misconception_id = opt_item.get("misconception_id")
+
             if qid:
                 cur.execute(
                     """INSERT INTO student_question_history
-                       (student_id, question_id, quiz_result_id, was_correct, chosen_index, time_taken_ms)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (student_id, qid, quiz_result_id, was_correct, chosen, time_ms),
+                       (student_id, question_id, quiz_result_id, was_correct, chosen_index, time_taken_ms, misconception_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (student_id, qid, quiz_result_id, was_correct, chosen, time_ms, misconception_id),
                 )
                 cur.execute(
                     """UPDATE questions

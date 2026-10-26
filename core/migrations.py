@@ -396,9 +396,27 @@ def migration_2_new_tables(conn):
     _add_column(cur, "users", "last_login_at", "TIMESTAMP NULL")
 
 
+def migration_3_misconceptions_and_facets(conn):
+    """
+    Migration 3: add misconception tracking columns and question facet column.
+    Additive only:
+      - question_attempts.misconception_id TEXT
+      - student_question_history.misconception_id TEXT
+      - questions.facet TEXT
+    """
+    cur = conn.cursor()
+    _add_column(cur, "question_attempts", "misconception_id", "TEXT")
+    _add_column(cur, "student_question_history", "misconception_id", "TEXT")
+    _add_column(cur, "questions", "facet", "TEXT")
+
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_questions_facet ON questions(facet)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sqh_misconception ON student_question_history(misconception_id)")
+
+
 MIGRATIONS = [
     (1, "initial_schema", migration_1_initial),
     (2, "analytics_and_evidence", migration_2_new_tables),
+    (3, "misconceptions_and_facets", migration_3_misconceptions_and_facets),
 ]
 
 
