@@ -73,6 +73,8 @@ def generate_raw_inspect_report(output_file: Path):
                     badges.append("[CANDIDATE]")
                 if c.get("is_hint"):
                     badges.append("[HINT]")
+                elif c.get("is_toc"):
+                    badges.append("[TOC]")
                 if c.get("heading_hit"):
                     h_text = c.get("heading_text")
                     if h_text:

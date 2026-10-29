@@ -925,7 +925,7 @@ class TestIntegration(unittest.TestCase):
                     continue
 
     def test_specific_no_material_concepts(self):
-        """(c) Known thin concepts must return NO_MATERIAL on their respective PDFs."""
+        """(c) Known thin concepts must return NO_MATERIAL on their respective PDFs (without human hints)."""
         cases = [
             ("javanotes9", "dynamic-method-dispatch"),
             ("thinkjava2", "method-overriding"),
@@ -934,15 +934,34 @@ class TestIntegration(unittest.TestCase):
             ("thinkjava2", "copy-constructor"),
         ]
         from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE
-        for pdfshort, concept in cases:
-            _INDEX_CACHE.clear()
-            _CHUNKS_CACHE.clear()
-            self._skip_if_no_data(pdfshort)
-            pack = build_pack(pdfshort, concept, batch_idx=0, work_dir=self.BANK_WORK)
-            self.assertEqual(
-                pack.status, "NO_MATERIAL",
-                f"{pdfshort}/{concept}: expected NO_MATERIAL, got {pack.status} (strong={pack.strong_count})"
-            )
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as tf:
+            json.dump({}, tf)
+            empty_hints_path = Path(tf.name)
+
+        try:
+            for pdfshort, concept in cases:
+                _INDEX_CACHE.clear()
+                _CHUNKS_CACHE.clear()
+                self._skip_if_no_data(pdfshort)
+                pack = build_pack(pdfshort, concept, batch_idx=0, work_dir=self.BANK_WORK, hints_file=empty_hints_path)
+                self.assertEqual(
+                    pack.status, "NO_MATERIAL",
+                    f"{pdfshort}/{concept}: expected NO_MATERIAL, got {pack.status} (strong={pack.strong_count})"
+                )
+        finally:
+            if empty_hints_path.exists():
+                empty_hints_path.unlink()
+
+    def test_javanotes9_dynamic_method_dispatch_ok_with_hints(self):
+        """javanotes9/dynamic-method-dispatch is OK with real page_hints.json."""
+        pdfshort = "javanotes9"
+        self._skip_if_no_data(pdfshort)
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE
+        _INDEX_CACHE.clear()
+        _CHUNKS_CACHE.clear()
+        pack = build_pack(pdfshort, "dynamic-method-dispatch", batch_idx=0, work_dir=self.BANK_WORK)
+        self.assertEqual(pack.status, "OK")
+        self.assertGreaterEqual(pack.strong_count, 2)
 
     def test_method_overriding_javanotes9_page_hints(self):
         """(d) method-overriding/javanotes9 has >= 3 chunks inside pages 256-269."""
@@ -959,5 +978,161 @@ class TestIntegration(unittest.TestCase):
         )
 
 
+class TestTOCSectionMapping(unittest.TestCase):
+    """Phase 2D-fix-6 tests for TOC parsing and section mapping."""
+
+    def setUp(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_toc_parsing_synthetic_pdf(self):
+        """(1) TOC parsing on a synthetic PDF with bookmarks (PyMuPDF)."""
+        import fitz
+        from tools.question_bank.bank_prepare import extract_pdf_toc
+
+        pdf_path = self.temp_dir / "sample_bookmarks.pdf"
+        doc = fitz.open()
+        p1 = doc.new_page()
+        p1.insert_text((50, 50), "Chapter 1 Introduction")
+        p2 = doc.new_page()
+        p2.insert_text((50, 50), "1.1 Getting Started")
+        p3 = doc.new_page()
+        p3.insert_text((50, 50), "Chapter 2 Basics")
+
+        doc.set_toc([
+            [1, "Chapter 1 Introduction", 1],
+            [2, "1.1 Getting Started", 2],
+            [1, "Chapter 2 Basics", 3],
+        ])
+        doc.save(str(pdf_path))
+        doc.close()
+
+        toc = extract_pdf_toc(pdf_path)
+        self.assertEqual(len(toc), 3)
+        self.assertEqual(toc[0]["level"], 1)
+        self.assertEqual(toc[0]["title"], "Chapter 1 Introduction")
+        self.assertEqual(toc[0]["page_start"], 1)
+        self.assertEqual(toc[0]["page_end"], 2)
+
+        self.assertEqual(toc[1]["level"], 2)
+        self.assertEqual(toc[1]["title"], "1.1 Getting Started")
+        self.assertEqual(toc[1]["page_start"], 2)
+        self.assertEqual(toc[1]["page_end"], 2)
+
+        self.assertEqual(toc[2]["level"], 1)
+        self.assertEqual(toc[2]["title"], "Chapter 2 Basics")
+        self.assertEqual(toc[2]["page_start"], 3)
+        self.assertEqual(toc[2]["page_end"], 3)
+
+    def test_section_matches_constructor_basics(self):
+        """(2) '5.2 Constructors and Object Initialization' -> constructor-basics."""
+        from tools.question_bank.bank_pack import match_toc_sections
+        sample_toc = [
+            {"level": 2, "title": "5.2 Constructors and Object Initialization", "page_start": 233, "page_end": 240},
+            {"level": 2, "title": "6.1 User Interfaces", "page_start": 300, "page_end": 310},
+        ]
+        matched = match_toc_sections("dummy", "constructor-basics", toc_entries=sample_toc)
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["title"], "5.2 Constructors and Object Initialization")
+
+    def test_section_length_cap(self):
+        """(3) Sections longer than 25 pages are skipped."""
+        from tools.question_bank.bank_pack import match_toc_sections
+        sample_toc = [
+            {"level": 2, "title": "5.2 Constructors Overview", "page_start": 100, "page_end": 130},  # 31 pages > 25
+            {"level": 2, "title": "5.3 Constructors in Detail", "page_start": 131, "page_end": 140},  # 10 pages <= 25
+        ]
+        matched = match_toc_sections("dummy", "constructor-basics", toc_entries=sample_toc)
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["title"], "5.3 Constructors in Detail")
+
+    def test_page_order_rotation(self):
+        """(4) TOC/hint chunks are ordered by PAGE ORDER and batch rotation walks through them (batch k at 4k)."""
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE, build_pack
+        _INDEX_CACHE.clear()
+        _CHUNKS_CACHE.clear()
+
+        pdfshort = "mockpdf"
+        p_dir = self.temp_dir / pdfshort
+        p_dir.mkdir(parents=True)
+        chunks = []
+        for i in range(8):
+            chunks.append({
+                "chunk_id": f"chunk_{i:03d}",
+                "page_start": 10 + i,
+                "page_end": 10 + i,
+                "text": f"This is chunk {i} discussing constructors in Java with example code.",
+                "word_count": 50,
+            })
+        with open(p_dir / "chunks.jsonl", "w", encoding="utf-8") as f:
+            for c in chunks:
+                f.write(json.dumps(c) + "\n")
+
+        toc = [{"level": 2, "title": "Constructors and Objects", "page_start": 10, "page_end": 17}]
+        with open(p_dir / "toc.json", "w", encoding="utf-8") as f:
+            json.dump(toc, f)
+
+        from tools.question_bank.bank_prepare import BM25Index
+        bm = BM25Index()
+        for c in chunks:
+            bm.add_document(c["chunk_id"], c["text"])
+        bm.save(p_dir / "bm25.pkl")
+
+        p0 = build_pack(pdfshort, "constructor-basics", batch_idx=0, max_words=200, work_dir=self.temp_dir)
+        self.assertEqual(p0.status, "OK")
+        self.assertEqual(p0[0]["chunk_id"], "chunk_000")
+        self.assertEqual(p0[0]["page_start"], 10)
+
+        p1 = build_pack(pdfshort, "constructor-basics", batch_idx=1, max_words=200, work_dir=self.temp_dir)
+        self.assertEqual(p1.status, "OK")
+        self.assertEqual(p1[0]["chunk_id"], "chunk_004")
+        self.assertEqual(p1[0]["page_start"], 14)
+
+    def test_hint_beats_toc(self):
+        """(5) Human page hints win over TOC matches, and explicit [] disables TOC."""
+        from tools.question_bank.bank_pack import get_effective_ranges
+
+        hints_data = {"test_pdf": {"constructor-basics": [[50, 55]]}}
+        h_file = self.temp_dir / "hints.json"
+        with open(h_file, "w", encoding="utf-8") as f:
+            json.dump(hints_data, f)
+
+        ranges, src = get_effective_ranges("test_pdf", "constructor-basics", hints_file=h_file)
+        self.assertEqual(src, "HINT")
+        self.assertEqual(ranges, [[50, 55]])
+
+        hints_data_disabled = {"test_pdf": {"constructor-basics": []}}
+        with open(h_file, "w", encoding="utf-8") as f:
+            json.dump(hints_data_disabled, f)
+
+        ranges, src = get_effective_ranges("test_pdf", "constructor-basics", hints_file=h_file)
+        self.assertEqual(src, "DISABLED")
+        self.assertEqual(ranges, [])
+
+    def test_no_outline_fallback_warning(self):
+        """(6) Extracting TOC on a PDF with no outline prints a clear warning and falls back to regex."""
+        import io
+        from contextlib import redirect_stdout
+        import fitz
+        from tools.question_bank.bank_prepare import extract_pdf_toc
+
+        pdf_path = self.temp_dir / "no_bookmarks.pdf"
+        doc = fitz.open()
+        p = doc.new_page()
+        p.insert_text((50, 50), "Chapter 1: Getting Started\nContent here.")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            toc = extract_pdf_toc(pdf_path, pages=[{"page": 1, "text": "Chapter 1: Getting Started\nContent here."}], total_pages=1)
+        out = buf.getvalue()
+        self.assertIn("WARNING", out)
+        self.assertIn("has no embedded outline", out)
+
+
 if __name__ == "__main__":
     unittest.main()
+

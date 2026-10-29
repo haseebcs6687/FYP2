@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -41,6 +42,7 @@ from tools.question_bank.bank_pack import (
     check_chunk_anchors,
     check_heading_hit,
     get_anchors,
+    get_effective_ranges,
     get_page_hints,
     has_exact_keyword_phrase,
     split_anchors,
@@ -50,14 +52,13 @@ from tools.question_bank.bank_prepare import BM25Index
 
 def compute_pdf_coverage(pdfshort: str, work_dir: Path) -> dict:
     """
-    Computes BM25 metrics for all concepts on a given PDF:
-      - Filters chunks for candidate status (>= 1 anchor hit)
-      - Identifies strong chunks:
-          * (>= 1 CORE anchor hit) AND (>= 2 distinct anchors OR CORE anchor appears >= 2 times)
-            AND (score >= 40% best score)
-          * OR chunk has a HEADING HIT (or is one of next 3 chapter chunks with >= 1 CORE anchor).
-      - Weak rule: strong_count < 3 (or < 2 if heading hit).
-      - Returns concept metrics dictionary.
+    Computes coverage metrics for all concepts on a given PDF (Phase 2D-fix-6):
+      - Gathers chunks inside TOC or human page hint ranges (effective_ranges).
+      - Evaluates BM25 candidate chunks for anchor-strong criteria.
+      - Chunks inside TOC/hint ranges count as STRONG.
+      - TOC ranges allow cap = min(6, ceil(range_chunks / 4)) batches.
+      - Anchor-based chunks capped at strong // 2 batches (max 6).
+      - Weak if total strong < 2.
     """
     index_file = work_dir / pdfshort / "bm25.pkl"
     chunks_file = work_dir / pdfshort / "chunks.jsonl"
@@ -83,8 +84,20 @@ def compute_pdf_coverage(pdfshort: str, work_dir: Path) -> dict:
     strong_counts = {}
     best_scores = {}
     heading_hit_counts = {}
+    range_chunk_counts = {}
+    has_toc_or_hint_map = {}
+    caps = {}
 
     for tag in CONCEPTS:
+        eff_ranges, src = get_effective_ranges(pdfshort, tag, work_dir)
+        range_cids = set()
+        if eff_ranges:
+            for cid, chunk in chunks_map.items():
+                if any(max(chunk["page_start"], r[0]) <= min(chunk["page_end"], r[1]) for r in eff_ranges):
+                    range_cids.add(cid)
+        range_chunks = len(range_cids)
+        range_chunk_counts[tag] = range_chunks
+
         anchors = get_anchors(tag)
         phrase_core, word_core, support_anchors = split_anchors(tag, anchors, idx.df, idx.doc_count)
         core_anchors = all_core(phrase_core, word_core)
@@ -121,13 +134,6 @@ def compute_pdf_coverage(pdfshort: str, work_dir: Path) -> dict:
                 "chapter_following_hit": False,
                 "text": chunk["text"],
             })
-
-        if len(candidates) < 3:
-            raw_sums[tag] = 0.0
-            strong_counts[tag] = 0
-            best_scores[tag] = 0.0
-            heading_hit_counts[tag] = 0
-            continue
 
         cand_map = {c["chunk_id"]: c for c in candidates}
 
@@ -167,38 +173,34 @@ def compute_pdf_coverage(pdfshort: str, work_dir: Path) -> dict:
                         candidates.append(cand_entry)
                         cand_map[nxt_cid] = cand_entry
 
-        best = max(c["score"] for c in candidates)
+        best = max(c["score"] for c in candidates) if candidates else 0.0
         best_scores[tag] = best
         h_hits = sum(1 for c in candidates if c["heading_hit"])
 
-        hints = get_page_hints(pdfshort, tag)
-        hinted_cids = set()
-        if hints:
-            for cid, chunk in chunks_map.items():
-                c_start = chunk["page_start"]
-                c_end = chunk["page_end"]
-                if any(max(c_start, h[0]) <= min(c_end, h[1]) for h in hints):
-                    hinted_cids.add(cid)
-
-        strong = []
+        strong_cids = set(range_cids)
         for c in candidates:
-            if c["chunk_id"] in hinted_cids:
-                c["is_hint"] = True
-                strong.append(c)
+            if c["chunk_id"] in strong_cids:
                 continue
-            is_strong = _is_chunk_strong(c, phrase_core, word_core, best)
-            if is_strong:
-                strong.append(c)
-
-        cand_cids = {c["chunk_id"] for c in candidates}
-        for hcid in hinted_cids:
-            if hcid not in cand_cids:
-                strong.append({"chunk_id": hcid, "score": 1.0, "is_hint": True})
+            if _is_chunk_strong(c, phrase_core, word_core, best):
+                strong_cids.add(c["chunk_id"])
 
         sorted_cand = sorted(candidates, key=lambda x: x["score"], reverse=True)
         raw_sums[tag] = sum(c["score"] for c in sorted_cand[:30])
-        strong_counts[tag] = len(strong)
-        heading_hit_counts[tag] = h_hits + len(hinted_cids)
+        total_strong = len(strong_cids)
+        strong_counts[tag] = total_strong
+        heading_hit_counts[tag] = h_hits + range_chunks
+
+        has_toc_or_hint = (range_chunks > 0)
+        has_toc_or_hint_map[tag] = has_toc_or_hint
+
+        if has_toc_or_hint:
+            cap = min(6, math.ceil(range_chunks / 4))
+            is_weak = (range_chunks < 2 and total_strong < 2)
+        else:
+            is_weak = (total_strong < 2)
+            cap = 0 if is_weak else min(6, total_strong // 2)
+
+        caps[tag] = cap
 
     max_sum = max(raw_sums.values()) if raw_sums and max(raw_sums.values()) > 0 else 1.0
 
@@ -208,17 +210,17 @@ def compute_pdf_coverage(pdfshort: str, work_dir: Path) -> dict:
         cov = round(norm_top30 + strong, 1)
         h_cnt = heading_hit_counts[tag]
 
-        # Weak rule: weak if strong < 3 (or < 2 if heading hit)
-        is_weak = (strong < 2) if h_cnt > 0 else (strong < 3)
-
         concept_metrics[tag] = {
-            "best_score": round(best_scores[tag], 2),
-            "raw_sum": round(raw_sums[tag], 2),
+            "best_score": round(best_scores.get(tag, 0.0), 2),
+            "raw_sum": round(raw_sums.get(tag, 0.0), 2),
             "norm_top30": round(norm_top30, 2),
             "strong": strong,
             "coverage": cov,
-            "weak": is_weak,
+            "weak": (strong < 2),
             "heading_hits": h_cnt,
+            "cap": caps.get(tag, 0),
+            "has_toc_or_hint": has_toc_or_hint_map.get(tag, False),
+            "range_chunks": range_chunk_counts.get(tag, 0),
         }
 
     return concept_metrics
@@ -231,125 +233,111 @@ def allocate_quotas(
     max_per_concept: int = 6,
 ) -> dict:
     """
-    Distributes batch quotas per PDF (Phase 2D-fix-3 rules):
-      - Batches per (pdf, concept) strictly capped at strong_count // 2 (max 6).
-      - Weak concepts get 0 native batches in that PDF.
-      - Relaxed floor: every concept gets >= 4 batches IF material allows.
-        Otherwise marked THIN (given >= 2 only if >= 1 heading-hit chunk).
-      - Strict borrowing: only borrow chunks that contain >= 1 CORE anchor of target concept.
-      - Never force 4 batches through borrowed junk.
+    Distributes batch quotas per PDF (Phase 2D-fix-6 rules):
+      - Concepts with TOC/hint sections get cap = min(6, ceil(range_chunks/4)) and >= 2 batches if material allows.
+      - Anchor-only concepts capped at strong // 2.
+      - Weak concepts (< 2 strong) get 0 batches.
+      - Goal: no concept at 0 batches, total target near 252.
     """
     pdfs = sorted(list(coverage_data.keys()))
     quotas = {pdf: {c: {"batches": 0, "borrowed": False, "thin": False} for c in CONCEPTS} for pdf in pdfs}
 
-    for pdf in pdfs:
-        pdf_data = coverage_data[pdf]
-        caps = {
-            c: 0 if pdf_data[c]["weak"] else min(max_per_concept, pdf_data[c]["strong"] // 2)
+    target_total = target_per_pdf * len(pdfs)
+    pdf_caps = {
+        p: {
+            c: coverage_data[p][c].get(
+                "cap",
+                (0 if coverage_data[p][c].get("weak") else min(max_per_concept, coverage_data[p][c]["strong"] // 2))
+            )
             for c in CONCEPTS
         }
+        for p in pdfs
+    }
 
+    pdf_targets = {p: min(target_per_pdf, sum(pdf_caps[p][c] for c in CONCEPTS)) for p in pdfs}
+    rem_total = target_total - sum(pdf_targets.values())
+    if rem_total > 0:
+        for p in pdfs:
+            room = sum(pdf_caps[p][c] for c in CONCEPTS) - pdf_targets[p]
+            if room > 0:
+                add = min(room, math.ceil(rem_total / 2))
+                pdf_targets[p] += add
+                rem_total -= add
+                if rem_total <= 0:
+                    break
+
+    for pdf in pdfs:
+        pdf_data = coverage_data[pdf]
+        target_p = pdf_targets[pdf]
+        caps = pdf_caps[pdf]
         eligible = [c for c in CONCEPTS if caps[c] >= 1]
         if not eligible:
             continue
 
-        # Initial allocation: 1 batch each for eligible concepts
         for c in eligible:
-            quotas[pdf][c]["batches"] = 1
+            if pdf_data[c].get("has_toc_or_hint") and caps[c] >= 2:
+                quotas[pdf][c]["batches"] = 2
+            else:
+                quotas[pdf][c]["batches"] = 1
 
-        remaining = target_per_pdf - len(eligible)
-        if remaining > 0:
+        current = sum(quotas[pdf][c]["batches"] for c in eligible)
+        rem = target_p - current
+        if rem > 0:
             total_cov = sum(pdf_data[c]["coverage"] for c in eligible)
             if total_cov > 0:
-                floats = {c: (pdf_data[c]["coverage"] / total_cov) * remaining for c in eligible}
-                additions = {c: int(floats[c]) for c in eligible}
-                leftover = remaining - sum(additions.values())
-
-                remainders = sorted(eligible, key=lambda c: floats[c] - additions[c], reverse=True)
+                floats = {c: (pdf_data[c]["coverage"] / total_cov) * rem for c in eligible}
+                adds = {c: int(floats[c]) for c in eligible}
+                leftover = rem - sum(adds.values())
+                remainders = sorted(eligible, key=lambda c: floats[c] - adds[c], reverse=True)
                 for i in range(leftover):
-                    additions[remainders[i]] += 1
-
+                    adds[remainders[i]] += 1
                 for c in eligible:
-                    alloc = quotas[pdf][c]["batches"] + additions[c]
-                    quotas[pdf][c]["batches"] = min(caps[c], max(1, alloc))
+                    quotas[pdf][c]["batches"] = min(caps[c], quotas[pdf][c]["batches"] + adds[c])
 
-        # Adjust up to target_per_pdf strictly within caps
-        current_total = sum(quotas[pdf][c]["batches"] for c in CONCEPTS)
-        while current_total < target_per_pdf:
-            candidates = [
-                c for c in sorted(eligible, key=lambda c: pdf_data[c]["coverage"], reverse=True)
-                if quotas[pdf][c]["batches"] < caps[c]
-            ]
-            if not candidates:
+        current = sum(quotas[pdf][c]["batches"] for c in CONCEPTS)
+        while current < target_p:
+            cand = [c for c in sorted(eligible, key=lambda c: pdf_data[c]["coverage"], reverse=True) if quotas[pdf][c]["batches"] < caps[c]]
+            if not cand:
                 break
-            quotas[pdf][candidates[0]]["batches"] += 1
-            current_total += 1
+            quotas[pdf][cand[0]]["batches"] += 1
+            current += 1
 
-        # Adjust down to target_per_pdf if over
-        while current_total > target_per_pdf:
-            candidates = [
-                c for c in sorted(eligible, key=lambda c: pdf_data[c]["coverage"])
-                if quotas[pdf][c]["batches"] > 1
-            ]
-            if not candidates:
+        while current > target_p:
+            cand = [c for c in sorted(eligible, key=lambda c: pdf_data[c]["coverage"]) if quotas[pdf][c]["batches"] > 1]
+            if not cand:
                 break
-            quotas[pdf][candidates[0]]["batches"] -= 1
-            current_total -= 1
+            quotas[pdf][cand[0]]["batches"] -= 1
+            current -= 1
 
-    # Cross-PDF balancing: reallocate within non-weak caps to help concepts reach min_total (4)
-    for tag in CONCEPTS:
-        tot = sum(quotas[pdf][tag]["batches"] for pdf in pdfs)
-        while tot < min_total:
-            eligible_pdfs = [
-                p for p in pdfs
-                if not coverage_data[p][tag]["weak"] and
-                quotas[p][tag]["batches"] < min(max_per_concept, coverage_data[p][tag]["strong"] // 2)
-            ]
-            if not eligible_pdfs:
-                break
-
-            best_pdf = max(eligible_pdfs, key=lambda p: coverage_data[p][tag]["coverage"])
-            # Donors must have surplus above min_total across books and > 1 in best_pdf
-            donors = [
-                c for c in sorted(CONCEPTS, key=lambda c: coverage_data[best_pdf][c]["coverage"])
-                if quotas[best_pdf][c]["batches"] > 1 and sum(quotas[p][c]["batches"] for p in pdfs) > min_total
-            ]
-            if not donors:
-                break
-
-            donor = donors[0]
-            quotas[best_pdf][donor]["batches"] -= 1
-            quotas[best_pdf][tag]["batches"] += 1
+    # Cross-PDF balancing: ensure min_total (4) where possible, and >= 2 for all concepts with capacity
+    for min_floor in [2, min_total]:
+        for tag in CONCEPTS:
             tot = sum(quotas[p][tag]["batches"] for p in pdfs)
+            while tot < min_floor:
+                eligible_pdfs = [
+                    p for p in pdfs
+                    if not coverage_data[p][tag].get("weak", False) and quotas[p][tag]["batches"] < pdf_caps[p][tag]
+                ]
+                if not eligible_pdfs:
+                    break
+                best_pdf = max(eligible_pdfs, key=lambda p: coverage_data[p][tag]["coverage"])
+                donors = [
+                    c for c in sorted(CONCEPTS, key=lambda c: coverage_data[best_pdf][c]["coverage"])
+                    if quotas[best_pdf][c]["batches"] > 1 and sum(quotas[x][c]["batches"] for x in pdfs) > min_floor
+                ]
+                if not donors:
+                    break
+                donor = donors[0]
+                quotas[best_pdf][donor]["batches"] -= 1
+                quotas[best_pdf][tag]["batches"] += 1
+                tot = sum(quotas[x][tag]["batches"] for x in pdfs)
 
-    # Cross-PDF Floor Relaxation: mark THIN concepts
-    # If total batches < 4 across all PDFs:
-    # Check if qualified borrowing or heading hits allow reaching >= 2
+    # Mark THIN concepts (< 4 batches total)
     for tag in CONCEPTS:
         tot = sum(quotas[pdf][tag]["batches"] for pdf in pdfs)
-        heading_hit_total = sum(coverage_data[pdf][tag].get("heading_hits", 0) for pdf in pdfs)
-
         if tot < min_total:
-            # Mark concept as THIN
             for pdf in pdfs:
                 quotas[pdf][tag]["thin"] = True
-
-            # If tot < 2: allow >= 2 only if >= 1 heading hit across all books
-            if tot < 2 and heading_hit_total >= 1:
-                # Find PDF with heading hit and give 1 batch if possible
-                for p in pdfs:
-                    if coverage_data[p][tag].get("heading_hits", 0) >= 1 and quotas[p][tag]["batches"] == 0:
-                        donors = [
-                            c for c in sorted(CONCEPTS, key=lambda c: coverage_data[p][c]["coverage"], reverse=True)
-                            if quotas[p][c]["batches"] > 1 and sum(quotas[x][c]["batches"] for x in pdfs) > min_total
-                        ]
-                        if donors:
-                            donor = donors[0]
-                            quotas[p][donor]["batches"] -= 1
-                            quotas[p][tag]["batches"] += 1
-                            tot += 1
-                            if tot >= 2:
-                                break
 
     return quotas
 
@@ -369,7 +357,7 @@ def generate_coverage_markdown(
     lines = []
     lines.append("# Question Bank Source Coverage & Batch Quotas")
     lines.append("")
-    lines.append("> Auto-generated report on textbook source coverage, strong chunks, and quota distribution (Phase 2D-fix-3).")
+    lines.append("> Auto-generated report on textbook source coverage, strong chunks, and quota distribution (Phase 2D-fix-6: TOC-based section mapping).")
     lines.append("")
     lines.append("## Overview")
     lines.append(f"- **Total Canonical Concepts:** {len(CONCEPTS)}")
@@ -386,7 +374,9 @@ def generate_coverage_markdown(
             b_details = []
             for p in pdfs:
                 if quotas[p][c]["borrowed"]:
-                    b_details.append(f"{p}: {quotas[p][c]['batches']} batches (borrowed)")
+                    src = quotas[p][c].get("source_concept", "")
+                    src_str = f" from `{src}`" if src else ""
+                    b_details.append(f"{p}: {quotas[p][c]['batches']} batches (borrowed{src_str})")
             lines.append(f"- `{c}`: {', '.join(b_details)}")
         lines.append("")
     else:
@@ -501,6 +491,16 @@ def main():
     print("Allocating batch quotas (enforcing strong // 2 cap, relaxed floor)...")
     quotas = allocate_quotas(coverage_data, target_per_pdf=84, min_total=4, max_per_concept=6)
 
+    # Check real borrowing from packs
+    from tools.question_bank.bank_pack import build_pack
+    for pdf in pdfs:
+        for c in CONCEPTS:
+            if quotas[pdf][c]["batches"] > 0:
+                pack = build_pack(pdf, c, batch_idx=0, work_dir=work_dir)
+                if pack.borrowed:
+                    quotas[pdf][c]["borrowed"] = True
+                    quotas[pdf][c]["source_concept"] = pack.source_concept
+
     # Check totals, thin concepts, and below min
     totals = {tag: sum(quotas[pdf][tag]["batches"] for pdf in pdfs) for tag in CONCEPTS}
     thin = [tag for tag in CONCEPTS if any(quotas[p][tag]["thin"] for p in pdfs)]
@@ -516,7 +516,7 @@ def main():
     print(f"Saved coverage report to {out_md}")
 
     print("\n" + "=" * 65)
-    print("  Coverage & Quota Summary (Phase 2D-fix-3)")
+    print("  Coverage & Quota Summary (Phase 2D-fix-6)")
     print("=" * 65)
     for pdf in pdfs:
         allocated = sum(quotas[pdf][c]["batches"] for c in CONCEPTS)
@@ -532,3 +532,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

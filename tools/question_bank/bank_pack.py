@@ -112,6 +112,183 @@ PACK_ALIASES = {
 
 PAGE_HINTS_FILE = BASE_DIR / "tools" / "question_bank" / "page_hints.json"
 
+_TOC_CACHE = {}
+
+TOC_EXCLUDED_WORDS = {
+    "class", "classes", "object", "objects", "method", "methods", "java", "variable",
+    "variables", "code", "program", "value", "values", "type", "types", "use", "using",
+    "data", "field", "fields", "instance", "instances", "new", "public", "private",
+    "void", "return", "basics", "keyword", "keywords", "definition", "introduction",
+    "overview", "concepts", "members", "create", "creating", "example", "examples",
+    "simple", "first", "chapter", "section", "part", "advanced", "guide",
+    "collection", "collections", "reference", "references", "what", "with", "from",
+    "this", "static", "copy", "try", "close", "block", "final", "string", "dynamic",
+    "chaining", "duplicate", "multiple", "contract", "cleanup", "invariant", "resource",
+    "resources", "constant", "clone", "about", "more", "other", "another"
+}
+
+FRONT_BACK_RE = re.compile(
+    r"^(?:glossary|index|table of contents|contents|preface|acknowledg|credits|about the author|bibliography|references)",
+    re.IGNORECASE,
+)
+
+
+def get_toc(pdfshort: str, work_dir: Path = None) -> list[dict]:
+    """Loads extracted outline/TOC entries for a PDF from data/bank_work/<pdfshort>/toc.json."""
+    global _TOC_CACHE
+    if work_dir is None:
+        work_dir = BASE_DIR / "data" / "bank_work"
+    else:
+        work_dir = Path(work_dir)
+    if pdfshort in _TOC_CACHE:
+        return _TOC_CACHE[pdfshort]
+    toc_file = work_dir / pdfshort / "toc.json"
+    if not toc_file.exists():
+        _TOC_CACHE[pdfshort] = []
+        return []
+    try:
+        with open(toc_file, "r", encoding="utf-8") as f:
+            entries = json.load(f)
+            _TOC_CACHE[pdfshort] = entries
+            return entries
+    except Exception:
+        _TOC_CACHE[pdfshort] = []
+        return []
+
+
+SUB_CONCEPT_EXCLUDED_STEMS = {
+    "copy-constructor": {"constru"},
+    "constructor-chaining": {"constru"},
+    "constructor-overloading": {"constru"},
+    "default-constructor": {"constru"},
+    "multiple-inheritance": {"inherit"},
+    "custom-exceptions": {"excepti"},
+    "exception-chaining": {"excepti"},
+    "exception-throwing": {"excepti"},
+    "null-pointer-exception": {"excepti"},
+}
+
+
+def get_concept_stems(concept_tag: str) -> set[str]:
+    """Extracts non-generic stems (first 6-7 letters) from concept title and tag."""
+    meta = CONCEPTS.get(concept_tag, {})
+    title = meta.get("title", "")
+    words = re.findall(r"[a-z0-9]+", (title + " " + concept_tag).lower())
+    stems = set()
+    for w in words:
+        if w in TOC_EXCLUDED_WORDS or len(w) <= 3:
+            continue
+        if w.startswith("instantiat"):
+            stems.add("instanti")
+        elif len(w) >= 7:
+            stems.add(w[:7])
+        else:
+            stems.add(w[:6])
+    if concept_tag in SUB_CONCEPT_EXCLUDED_STEMS:
+        stems -= SUB_CONCEPT_EXCLUDED_STEMS[concept_tag]
+    return stems
+
+
+def match_toc_sections(
+    pdfshort: str,
+    concept_tag: str,
+    work_dir: Path = None,
+    toc_entries: list[dict] = None,
+) -> list[dict]:
+    """
+    Phase 2D-fix-6 TOC matching:
+      - Section matches concept if title contains a PHRASE_CORE anchor (>=4 chars)
+        or a title/tag word by stem (first 6-7 letters), excluding generic words.
+      - Skips front/back matter.
+      - Skips sections longer than 25 pages.
+      - Prefers level 2/3 sections over level-1 chapters.
+    """
+    if toc_entries is None:
+        toc_entries = get_toc(pdfshort, work_dir)
+    if not toc_entries:
+        return []
+
+    anchors = get_anchors(concept_tag)
+    phrase_core, _, _ = split_anchors(concept_tag, anchors, {}, 0)
+    stems = get_concept_stems(concept_tag)
+
+    matches = []
+    for entry in toc_entries:
+        title = entry.get("title", "").strip()
+        if FRONT_BACK_RE.search(title):
+            continue
+        page_len = entry.get("page_end", 0) - entry.get("page_start", 0) + 1
+        if page_len > 25:
+            continue
+
+        t_low = title.lower()
+        hit = False
+        # 1. Check PHRASE_CORE anchors (multi-word phrases or unambiguous symbols/tokens)
+        for phrase in phrase_core:
+            if len(phrase) >= 4:
+                pat = r"(?<!\w)" + re.escape(phrase) + (r"(?!\w)" if phrase[-1].isalnum() else "")
+                if re.search(pat, t_low):
+                    hit = True
+                    break
+
+        # 2. Check title/tag word stem (6-7 letters)
+        if not hit:
+            t_words = re.findall(r"[a-z0-9]+", t_low)
+            for tw in t_words:
+                for s in stems:
+                    if tw.startswith(s):
+                        hit = True
+                        break
+                if hit:
+                    break
+
+        if hit:
+            matches.append(entry)
+
+    # Prefer level 2/3 sections over level-1 chapters
+    if any(m.get("level", 1) >= 2 for m in matches):
+        matches = [m for m in matches if m.get("level", 1) >= 2]
+
+    return matches
+
+
+def get_effective_ranges(
+    pdfshort: str,
+    concept_tag: str,
+    work_dir: Path = None,
+    hints_file: Path = None,
+) -> tuple[list[list[int]], str]:
+    """
+    Determines effective page ranges for a concept in a PDF.
+    Returns (ranges, source) where source is 'HINT', 'TOC', 'DISABLED', or 'NONE'.
+    Precedence:
+      - page_hints.json explicit entry:
+          - non-empty list: ranges from hint, source='HINT'
+          - empty list []: source='DISABLED', ranges=[] (do not use TOC)
+      - if not in page_hints.json:
+          - match TOC sections: ranges from matched sections, source='TOC'
+          - if no TOC match: ranges=[], source='NONE'
+    """
+    p_file = hints_file or PAGE_HINTS_FILE
+    if p_file.exists():
+        try:
+            with open(p_file, "r", encoding="utf-8") as f:
+                h_data = json.load(f)
+            if pdfshort in h_data and concept_tag in h_data[pdfshort]:
+                val = h_data[pdfshort][concept_tag]
+                if len(val) > 0:
+                    return val, "HINT"
+                else:
+                    return [], "DISABLED"
+        except Exception:
+            pass
+
+    toc_matches = match_toc_sections(pdfshort, concept_tag, work_dir)
+    if toc_matches:
+        return [[m["page_start"], m["page_end"]] for m in toc_matches], "TOC"
+
+    return [], "NONE"
+
 
 def get_page_hints(pdfshort: str, concept_tag: str, hints_path: Path = None) -> list[list[int]]:
     """Loads human page hints for a (pdf, concept) from page_hints.json."""
@@ -137,6 +314,7 @@ def get_page_hints(pdfshort: str, concept_tag: str, hints_path: Path = None) -> 
             else:
                 return []
     return (_PAGE_HINTS_CACHE or {}).get(pdfshort, {}).get(concept_tag, [])
+
 
 
 def get_anchors(concept_tag: str) -> list[str]:
@@ -595,13 +773,12 @@ def build_pack(
     hints_file: Path = None,
 ) -> SourcePack:
     """
-    Builds a source pack of textbook chunks (Phase 2D-fix-5 rules):
-      - Force-includes ALL chunks overlapping hinted pages (no anchor needed, up to 6, by score).
-      - STRONG requires >= 1 PHRASE_CORE hit (or heading/chapter hit or hint).
-        WORD_CORE alone => CANDIDATE, never STRONG.
-      - Returns NO_MATERIAL if < 2 STRONG+HINT chunks (candidates alone never form a pack).
+    Builds a source pack of textbook chunks (Phase 2D-fix-6 rules):
+      - STRONG = (PHRASE_CORE hit as in fix-5) OR (chunk lies inside a TOC-matched section or page hint).
+      - TOC/hint chunks are ordered by PAGE ORDER (not BM25).
+      - Batch rotation walks through TOC/hint chunks (batch k starts at chunk 4k, wrapping inside that range).
+      - Returns NO_MATERIAL if < 2 STRONG chunks (including TOC/hint ones).
       - Strict borrowing: only borrow if target PHRASE_CORE >= 1 in the borrowed chunk.
-      - Rotation: batch k rotates by k*4 within non-hinted strong chunks.
     """
     index, chunks_map = _get_index_and_chunks(pdfshort, work_dir)
     candidates, phrase_core, word_core, support_anchors, best_score, anchors = _extract_candidates_for_concept(
@@ -609,22 +786,20 @@ def build_pack(
     )
     core_anchors = all_core(phrase_core, word_core)
 
-    # --- Step 1: Force-include hinted chunks (no anchor required) ---
-    hints = get_page_hints(pdfshort, concept_tag, hints_file)
-    hinted_cids: set[str] = set()
-    hinted_pool: list[dict] = []
+    # --- Step 1: Collect chunks inside TOC or human page hint ranges ---
+    eff_ranges, range_source = get_effective_ranges(pdfshort, concept_tag, work_dir, hints_file)
+    toc_hint_pool: list[dict] = []
+    toc_hint_cids: set[str] = set()
     cand_map_by_id = {c["chunk_id"]: c for c in candidates}
 
-    if hints:
-        # Gather all chunks overlapping any hinted range
+    if eff_ranges:
         for cid, chunk in chunks_map.items():
             c_start = chunk["page_start"]
             c_end = chunk["page_end"]
-            if any(max(c_start, h[0]) <= min(c_end, h[1]) for h in hints):
+            if any(max(c_start, r[0]) <= min(c_end, r[1]) for r in eff_ranges):
                 if cid in cand_map_by_id:
                     c = cand_map_by_id[cid]
                 else:
-                    # Chunk not in candidates; add it without anchor check
                     t_lower = chunk.get("text_lower") or chunk["text"].lower()
                     h_hits, h_hit_list = check_chunk_anchors(t_lower, anchors) if anchors else ({}, [])
                     c = {
@@ -642,41 +817,32 @@ def build_pack(
                         "source_concept": concept_tag,
                         "is_borrowed": False,
                     }
-                c["is_hint"] = True
                 c["is_strong"] = True
-                hinted_cids.add(cid)
-                hinted_pool.append(c)
+                c["is_hint"] = (range_source == "HINT")
+                c["is_toc"] = (range_source == "TOC")
+                toc_hint_cids.add(cid)
+                toc_hint_pool.append(c)
 
-        hinted_pool.sort(key=lambda x: x["score"], reverse=True)
-        hinted_pool = hinted_pool[:6]  # at most 6 hint chunks
+        # TOC/hint chunks are ordered by PAGE ORDER (not BM25)
+        toc_hint_pool.sort(key=lambda x: (x["page_start"], x["page_end"], x["chunk_id"]))
 
-    # Mark is_hint on candidates too
-    for c in candidates:
-        c["is_hint"] = c["chunk_id"] in hinted_cids
-
-    # --- Step 2: Classify candidates as STRONG or CANDIDATE ---
-    strong_chunks: list[dict] = []
+    # --- Step 2: Classify non-TOC/hint candidates as anchor-STRONG or CANDIDATE ---
+    anchor_strong: list[dict] = []
     regular_chunks: list[dict] = []
 
     for c in candidates:
-        if c["chunk_id"] in hinted_cids:
-            c["is_strong"] = True
-            strong_chunks.append(c)
+        if c["chunk_id"] in toc_hint_cids:
             continue
         is_strong = _is_chunk_strong(c, phrase_core, word_core, best_score)
         c["is_strong"] = is_strong
+        c["is_hint"] = False
+        c["is_toc"] = False
         if is_strong:
-            strong_chunks.append(c)
+            anchor_strong.append(c)
         else:
             regular_chunks.append(c)
 
-    # Add hinted chunks not already in candidates
-    extra_hint_ids = hinted_cids - {c["chunk_id"] for c in strong_chunks}
-    for c in hinted_pool:
-        if c["chunk_id"] in extra_hint_ids:
-            strong_chunks.append(c)
-
-    own_strong_count = len([c for c in strong_chunks if not c.get("is_borrowed")])
+    own_strong_count = len(toc_hint_pool) + len(anchor_strong)
 
     # --- Step 3: Borrowing ONLY when own strong < 3 ---
     is_borrowed = False
@@ -700,17 +866,18 @@ def build_pack(
                     ac_copy["source_concept"] = alias
                     ac_copy["is_borrowed"] = True
                     ac_copy["is_hint"] = False
+                    ac_copy["is_toc"] = False
                     ac_copy["phrase_core_hit"] = target_phrase_hits
                     alias_strong.append(ac_copy)
 
             if alias_strong:
-                existing_cids = {c["chunk_id"] for c in strong_chunks}
+                existing_cids = toc_hint_cids | {c["chunk_id"] for c in anchor_strong}
                 for ac in alias_strong:
                     if ac["chunk_id"] not in existing_cids:
-                        strong_chunks.append(ac)
+                        anchor_strong.append(ac)
                         existing_cids.add(ac["chunk_id"])
                     else:
-                        for c in strong_chunks:
+                        for c in anchor_strong:
                             if c["chunk_id"] == ac["chunk_id"]:
                                 c["is_borrowed"] = True
                                 c["source_concept"] = alias
@@ -718,32 +885,36 @@ def build_pack(
                 source_alias = alias
                 break
 
-    # --- Step 4: NO_MATERIAL if < 2 strong+hint chunks ---
-    strong_hint_count = len([c for c in strong_chunks])
-    if strong_hint_count < 2:
+    total_strong_count = len(toc_hint_pool) + len(anchor_strong)
+
+    # --- Step 4: NO_MATERIAL if < 2 strong chunks including TOC/hint ones ---
+    if total_strong_count < 2:
         return SourcePack(
             [], status="NO_MATERIAL",
             candidate_count=len(candidates),
-            strong_count=own_strong_count,
+            strong_count=total_strong_count,
         )
 
     # --- Step 5: Order and fill pack ---
-    hinted_strong = [c for c in strong_chunks if c.get("is_hint")]
-    non_hinted_strong = [c for c in strong_chunks if not c.get("is_hint")]
-    hinted_strong.sort(key=lambda x: x["score"], reverse=True)
-    non_hinted_strong.sort(key=lambda x: x["score"], reverse=True)
+    # Batch rotation walks through TOC/hint chunks: batch k starts at chunk 4k, wrapping inside that range
+    if toc_hint_pool:
+        n_toc = len(toc_hint_pool)
+        start_idx = (batch_idx * 4) % n_toc
+        rotated_toc_hint = toc_hint_pool[start_idx:] + toc_hint_pool[:start_idx]
+    else:
+        rotated_toc_hint = []
+
+    anchor_strong.sort(key=lambda x: x["score"], reverse=True)
+    if len(anchor_strong) >= 3:
+        n_anchor = len(anchor_strong)
+        start_idx = (batch_idx * 4) % n_anchor
+        rotated_anchor = anchor_strong[start_idx:] + anchor_strong[:start_idx]
+    else:
+        rotated_anchor = anchor_strong
+
     regular_chunks.sort(key=lambda x: x["score"], reverse=True)
 
-    if len(non_hinted_strong) >= 3:
-        n_strong = len(non_hinted_strong)
-        start_idx = (batch_idx * 4) % n_strong
-        rotated_strong = non_hinted_strong[start_idx:] + non_hinted_strong[:start_idx]
-    elif non_hinted_strong:
-        rotated_strong = non_hinted_strong
-    else:
-        rotated_strong = []
-
-    ordered_pool = hinted_strong + rotated_strong + regular_chunks
+    ordered_pool = rotated_toc_hint + rotated_anchor + regular_chunks
 
     pack_chunks: list[dict] = []
     total_words = 0
@@ -757,7 +928,7 @@ def build_pack(
         if pack_chunks and (total_words + w_count > max_words):
             break
 
-        if c.get("is_borrowed") or c.get("is_hint"):
+        if c.get("is_borrowed") or c.get("is_hint") or c.get("is_toc"):
             t_low = c.get("text_lower") or c["text"].lower()
             _, c_hits = check_chunk_anchors(t_low, anchors)
         else:
@@ -775,6 +946,7 @@ def build_pack(
             "words": w_count,
             "is_strong": c["is_strong"],
             "is_hint": c.get("is_hint", False),
+            "is_toc": c.get("is_toc", False),
             "heading_hit": c.get("heading_hit", False),
             "heading_text": c.get("heading_text", ""),
             "chapter_following_hit": c.get("chapter_following_hit", False),
@@ -810,7 +982,7 @@ def build_pack(
         pack_chunks,
         status="OK" if not is_borrowed else "BORROWED",
         candidate_count=len(candidates),
-        strong_count=len(strong_chunks),
+        strong_count=total_strong_count,
         borrowed=is_borrowed,
         source_concept=source_alias or concept_tag,
     )

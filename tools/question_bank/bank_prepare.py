@@ -102,6 +102,8 @@ class BM25Index:
         return ranked[:top_k] if top_k else ranked
 
     def save(self, file_path: Path):
+        if self.avg_doc_len == 0.0 and self.doc_count > 0:
+            self.finalize()
         data = {
             "k1": self.k1,
             "b": self.b,
@@ -278,6 +280,137 @@ def is_front_or_back_matter(page_num: int, total_pages: int, text: str) -> tuple
                 return True, f"contents-like ({contents_hits}/{len(lines)} lines)"
 
     return False, None
+
+
+def extract_regex_toc(pages: list[dict], total_pages: int) -> list[dict]:
+    """Fallback heading detection on the first 300 chars of pages for PDFs without an outline."""
+    raw_entries = []
+    RE_CHAP = re.compile(r'^(?:Chapter\s+(\d+)|\bCHAPTER\s+(\d+))\b(?:\s*[:\-—.]\s*(.*))?$', re.IGNORECASE)
+    RE_SEC_WORD = re.compile(r'^(?:Section\s+(\d+\.\d+(?:\.\d+)?))\s*[:\-—.]?\s*(.*)$', re.IGNORECASE)
+    RE_NUM = re.compile(r'^(\d+\.\d+(?:\.\d+)?)\.?\s*(.*)$')
+    
+    for p in pages:
+        page_num = p['page']
+        if page_num < 15:
+            continue
+            
+        text = p.get('text', '')
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        if not lines:
+            continue
+            
+        first_300 = text[:300]
+        first_300_lines = [l.strip() for l in first_300.splitlines() if l.strip()]
+        
+        # 1. Chapter in first 300 chars
+        for idx, l in enumerate(first_300_lines[:4]):
+            if re.match(r'^CHAPTER\s+\d+\.\s+[A-Z\s]+$', l):
+                continue
+            m_chap = RE_CHAP.match(l)
+            if m_chap:
+                c_num = m_chap.group(1) or m_chap.group(2)
+                c_title = (m_chap.group(3) or '').strip()
+                if not c_title and idx + 1 < len(first_300_lines):
+                    nxt = first_300_lines[idx+1]
+                    if not re.match(r'^\d', nxt) and not nxt.startswith(('//', 'public', '{', 'import')):
+                        c_title = nxt
+                title = f"Chapter {c_num}: {c_title}".strip(": ")
+                raw_entries.append({'level': 1, 'title': title, 'page_start': page_num})
+                break
+
+        # 2. Section headings
+        for idx, l in enumerate(lines):
+            if l.startswith(('//', '/*', '*', 'package ', 'import ', 'public ', 'private ', 'protected ', 'return ', '{', '}')):
+                continue
+            if len(l) > 70:
+                continue
+
+            m_sec = RE_SEC_WORD.match(l)
+            m_num = RE_NUM.match(l)
+            m = m_sec or m_num
+            if m:
+                num = m.group(1)
+                rest = m.group(2).strip()
+                if not rest and idx + 1 < len(lines):
+                    nxt = lines[idx+1]
+                    if not nxt.startswith(('//', 'public', '{', 'import', 'package', '/*')) and not re.match(r'^\d', nxt):
+                        rest = nxt
+                if rest and not rest.isupper() and len(rest) >= 3 and not rest.endswith((';', '{', '}', '=')):
+                    level = 3 if num.count('.') >= 2 else 2
+                    title = f"{num} {rest}".strip()
+                    raw_entries.append({'level': level, 'title': title, 'page_start': page_num})
+
+    # Deduplicate: keep earliest page for same section number/title
+    dedup = []
+    seen = set()
+    for e in raw_entries:
+        sec_key = e['title'].lower()
+        m = re.match(r'^(\d+\.\d+(?:\.\d+)?)', e['title'])
+        if m:
+            sec_key = m.group(1)
+        key = (e['level'], sec_key, e['page_start'])
+        if key not in seen:
+            seen.add(key)
+            dedup.append(e)
+
+    dedup.sort(key=lambda x: (x['page_start'], x['level']))
+
+    for i, e in enumerate(dedup):
+        lvl = e['level']
+        p_start = e['page_start']
+        p_end = total_pages
+        for j in range(i + 1, len(dedup)):
+            next_e = dedup[j]
+            if next_e['level'] <= lvl and next_e['page_start'] >= p_start:
+                p_end = max(p_start, next_e['page_start'] - 1)
+                break
+        e['page_end'] = p_end
+
+    return dedup
+
+
+def extract_pdf_toc(pdf_path: Path, pages: list[dict] = None, total_pages: int = None) -> list[dict]:
+    """
+    Extracts outline/TOC from a PDF:
+      - Uses PyMuPDF doc.get_toc() if available -> [{level, title, page_start, page_end}]
+      - If no outline, prints warning and falls back to regex heading detection.
+    """
+    pdf_path = Path(pdf_path)
+    doc = fitz.open(pdf_path)
+    raw_toc = doc.get_toc()
+    doc_pages = len(doc)
+    doc.close()
+    if total_pages is None:
+        total_pages = doc_pages
+
+    if raw_toc:
+        entries = []
+        for item in raw_toc:
+            lvl, title, page = item[0], item[1].strip(), item[2]
+            if title and page > 0:
+                entries.append({"level": int(lvl), "title": title, "page_start": int(page)})
+        for i, e in enumerate(entries):
+            lvl = e["level"]
+            p_start = e["page_start"]
+            p_end = total_pages
+            for j in range(i + 1, len(entries)):
+                next_e = entries[j]
+                if next_e["level"] <= lvl and next_e["page_start"] >= p_start:
+                    p_end = max(p_start, next_e["page_start"] - 1)
+                    break
+            e["page_end"] = p_end
+        return entries
+    else:
+        print(f"  WARNING: PDF '{pdf_path.stem}' has no embedded outline / bookmarks. Falling back to regex heading detection.")
+        if pages is None:
+            p_file = pdf_path.parent.parent / "bank_work" / pdf_path.stem / "pages.jsonl"
+            if p_file.exists():
+                with open(p_file, "r", encoding="utf-8") as f:
+                    pages = [json.loads(line) for line in f]
+            else:
+                pages = []
+        return extract_regex_toc(pages, total_pages)
+
 
 
 def chunk_pages(
@@ -473,6 +606,14 @@ def process_pdf(pdf_path: Path, work_dir: Path, force: bool = False) -> dict:
     if dropped_pages:
         examples = [f"p.{dp['page']} ({dp['reason']})" for dp in dropped_pages[:3]]
         print(f"    Examples dropped: {', '.join(examples)}")
+
+    # Step 3c: Extract TOC outline or fallback regex
+    toc_file = pdf_out_dir / "toc.json"
+    if not toc_file.exists() or force:
+        toc_entries = extract_pdf_toc(pdf_path, pages=pages, total_pages=total_pages)
+        with open(toc_file, "w", encoding="utf-8") as f:
+            json.dump(toc_entries, f, indent=2, ensure_ascii=False)
+        print(f"  Extracted {len(toc_entries)} TOC entries -> {toc_file}")
 
     # Step 4: Chunking
     chunks = chunk_pages(kept_pages, pdfshort, target_words=350, overlap_words=60, max_page_gap=2)
