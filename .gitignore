@@ -11,4 +11,5 @@ data/rag_cache/
 rag/corpus/books/*.pdf
 rag/corpus/books/*.txt
 rag/corpus/questions_validated/
+data/bank_work/
 .DS_Store
