@@ -175,6 +175,67 @@ def clean_page_text(text: str, running_lines: set[str]) -> str:
     return "\n".join(clean_lines)
 
 
+HEADINGS_PATTERN = re.compile(
+    r"^(?:(?:chapter|section|\d+\.?)\s+)?(glossary|index|table\s+of\s+contents|contents|preface|acknowledgements?|acknowledgments?|credits|about\s+the\s+authors?|bibliography|references)(?:\s*[:\-—].*)?$",
+    re.IGNORECASE,
+)
+
+
+def is_front_or_back_matter(page_num: int, total_pages: int, text: str) -> tuple[bool, str]:
+    """
+    Identifies front/back matter pages to drop:
+      1. Headings in the first 400 characters: Glossary, Index, Table of Contents,
+         Contents, Preface, Acknowledg(e)ments, Credits, About the Author(s),
+         Bibliography, References. Heading position only, not mid-sentence.
+      2. Index-like pages: > 40% non-empty lines end in number/page-range or contain 3+ dot leaders.
+      3. Contents-like pages: > 40% lines end in page number AND contain Chapter/Section/numbered headings.
+      Preserves appendices and chapter text.
+    """
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if not lines:
+        return False, None
+
+    # Check 1: Headings in first 400 chars (heading position: first 6 non-empty lines, short <= 60 chars)
+    first_400 = text[:400]
+    first_lines = [l.strip() for l in first_400.splitlines() if l.strip()]
+    for line in first_lines[:6]:
+        if len(line) <= 60 and HEADINGS_PATTERN.match(line):
+            # Guard: Keep appendices
+            if not re.search(r"\bappendix\b", line, re.IGNORECASE):
+                return True, f"heading: {line}"
+
+    # Check 2 & 3: Index-like and Contents-like
+    if len(lines) >= 8:
+        # Index-like check (>40% non-empty lines end in number or page-range, or contain 3+ dot leaders)
+        index_hits = 0
+        for l in lines:
+            has_dots = bool(re.search(r"\.{3,}|\.\s*\.\s*\.", l))
+            ends_num_or_range = bool(re.search(r"[a-zA-Z].*?(?:[,:\s]\s*\d+(?:[-–—]\d+)?|\d+[-–—]\d+)\s*$", l))
+            is_dots_only = bool(re.search(r"^\s*[\.\s]{4,}\s*$", l))
+            is_num_only = bool(re.search(r"^\s*\d+(?:[-–—]\d+)?\s*$", l))
+            if has_dots or ends_num_or_range or is_dots_only or (is_num_only and (page_num <= 40 or page_num >= total_pages - 40)):
+                index_hits += 1
+
+        if (index_hits / len(lines)) > 0.40:
+            if page_num <= 50 or page_num >= total_pages - 50 or (index_hits / len(lines)) > 0.65:
+                if not any(re.search(r"\bappendix\b", l, re.IGNORECASE) for l in first_lines[:3]):
+                    return True, f"index-like ({index_hits}/{len(lines)} lines)"
+
+        # Contents-like check (>40% of lines end in page number AND contain Chapter/Section/numbered headings)
+        contents_hits = 0
+        for l in lines:
+            ends_num = bool(re.search(r"\b\d+\s*$", l))
+            has_chapter_sec = bool(re.search(r"\b(?:chapter|section|\d+\.\d+)\b", l, re.IGNORECASE))
+            if ends_num and has_chapter_sec:
+                contents_hits += 1
+
+        if (contents_hits / len(lines)) > 0.40:
+            if page_num <= 50 or page_num >= total_pages - 50:
+                return True, f"contents-like ({contents_hits}/{len(lines)} lines)"
+
+    return False, None
+
+
 def chunk_pages(
     pages: list[dict],
     pdfshort: str,
@@ -351,8 +412,27 @@ def process_pdf(pdf_path: Path, work_dir: Path, force: bool = False) -> dict:
         for p in pages:
             p["text"] = clean_page_text(p["text"], headers_footers)
 
+    # Step 3b: Front/back matter filter (apply BEFORE chunking)
+    dropped_pages = []
+    kept_pages = []
+    for p in pages:
+        is_drop, reason = is_front_or_back_matter(p["page"], total_pages, p["text"])
+        if is_drop:
+            dropped_pages.append({"page": p["page"], "reason": reason})
+        else:
+            kept_pages.append(p)
+
+    dropped_file = pdf_out_dir / "dropped_pages.json"
+    with open(dropped_file, "w", encoding="utf-8") as f:
+        json.dump(dropped_pages, f, indent=2)
+
+    print(f"  Front/back matter filter: dropped {len(dropped_pages)} pages (kept {len(kept_pages)}).")
+    if dropped_pages:
+        examples = [f"p.{dp['page']} ({dp['reason']})" for dp in dropped_pages[:3]]
+        print(f"    Examples dropped: {', '.join(examples)}")
+
     # Step 4: Chunking
-    chunks = chunk_pages(pages, pdfshort, target_words=350, overlap_words=60, max_page_gap=2)
+    chunks = chunk_pages(kept_pages, pdfshort, target_words=350, overlap_words=60, max_page_gap=2)
     print(f"  Created {len(chunks)} chunks (~350 words, ~60 overlap).")
 
     with open(chunks_file, "w", encoding="utf-8") as f:
@@ -379,6 +459,8 @@ def process_pdf(pdf_path: Path, work_dir: Path, force: bool = False) -> dict:
         "pdf": pdfshort,
         "pages": total_pages,
         "pct_with_text": pct_with_text,
+        "dropped_pages": len(dropped_pages),
+        "kept_pages": len(kept_pages),
         "chunks": len(chunks),
         "needs_ocr": False,
         "duration": duration,
@@ -411,7 +493,7 @@ def main():
     print("=" * 65)
     for r in results:
         ocr_flag = " [NEEDS OCR]" if r["needs_ocr"] else ""
-        print(f"  {r['pdf']:<28} : {r['pages']:>4} pages | {r['pct_with_text']:>5.1f}% text | {r['chunks']:>5} chunks | {r['duration']:>5.1f}s{ocr_flag}")
+        print(f"  {r['pdf']:<28} : {r['pages']:>4} pages ({r.get('dropped_pages', 0):>2} dropped) | {r['pct_with_text']:>5.1f}% text | {r['chunks']:>5} chunks | {r['duration']:>5.1f}s{ocr_flag}")
     print("=" * 65)
 
 

@@ -23,46 +23,98 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 from core.concepts import CONCEPTS, MODULE_CONCEPTS, MODULES
-from tools.question_bank.bank_pack import build_concept_query
+from tools.question_bank.bank_pack import (
+    build_concept_query,
+    check_chunk_anchors,
+    get_anchors,
+    has_exact_keyword_phrase,
+)
 from tools.question_bank.bank_prepare import BM25Index
 
 
 def compute_pdf_coverage(pdfshort: str, work_dir: Path) -> dict:
     """
     Computes BM25 metrics for all concepts on a given PDF:
-      - Raw top-30 sum
-      - Strong chunks count (score >= 0.40 * best_score)
+      - Filters chunks for candidate status (>= 1 anchor hit)
+      - Identifies strong chunks (>= 2 distinct anchors OR 1 anchor >= 3 times, AND score >= 40% best score)
+      - If fewer than 3 candidates: concept gets 0 raw sum and is marked weak (NO_MATERIAL)
+      - Raw top-30 candidate sum
+      - Strong chunks count
       - Weak flag (< 5 strong chunks)
     """
     index_file = work_dir / pdfshort / "bm25.pkl"
+    chunks_file = work_dir / pdfshort / "chunks.jsonl"
     if not index_file.exists():
         raise FileNotFoundError(f"BM25 index not found: {index_file}. Run bank_prepare.py first.")
+    if not chunks_file.exists():
+        raise FileNotFoundError(f"Chunks file not found: {chunks_file}. Run bank_prepare.py first.")
 
     idx = BM25Index.load(index_file)
+    chunks_map = {}
+    with open(chunks_file, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                item = json.loads(line)
+                item["text_lower"] = item["text"].lower()
+                chunks_map[item["chunk_id"]] = item
+
     concept_metrics = {}
     raw_sums = {}
     strong_counts = {}
     best_scores = {}
 
     for tag in CONCEPTS:
-        query = build_concept_query(tag)
-        scores = idx.score(query)
-        best = scores[0][1] if scores else 0.0
+        anchors = get_anchors(tag)
+        query, keywords = build_concept_query(tag)
+        raw_scores = dict(idx.score(query))
+
+        candidates = []
+        for doc_id, base_score in raw_scores.items():
+            if base_score <= 0:
+                continue
+            chunk = chunks_map.get(doc_id)
+            if not chunk:
+                continue
+
+            t_lower = chunk["text_lower"]
+            hits, hit_list = check_chunk_anchors(t_lower, anchors)
+            if not hit_list:
+                continue
+
+            score = base_score
+            if has_exact_keyword_phrase(t_lower, keywords):
+                score *= 1.20
+
+            candidates.append({
+                "chunk_id": doc_id,
+                "score": score,
+                "hits": hits,
+                "hit_list": hit_list,
+            })
+
+        if len(candidates) < 3:
+            raw_sums[tag] = 0.0
+            strong_counts[tag] = 0
+            best_scores[tag] = 0.0
+            continue
+
+        best = max(c["score"] for c in candidates)
         best_scores[tag] = best
 
-        top30 = scores[:30]
-        s_sum = sum(s for _, s in top30)
-        raw_sums[tag] = s_sum
+        strong = [
+            c for c in candidates
+            if (len(c["hit_list"]) >= 2 or any(cnt >= 3 for cnt in c["hits"].values()))
+            and (c["score"] >= 0.40 * best)
+        ]
+        sorted_cand = sorted(candidates, key=lambda x: x["score"], reverse=True)
+        raw_sums[tag] = sum(c["score"] for c in sorted_cand[:30])
+        strong_counts[tag] = len(strong)
 
-        strong = sum(1 for _, s in scores if s >= 0.40 * best) if best > 0 else 0
-        strong_counts[tag] = strong
-
-    max_sum = max(raw_sums.values()) if raw_sums else 1.0
+    max_sum = max(raw_sums.values()) if raw_sums and max(raw_sums.values()) > 0 else 1.0
 
     for tag in CONCEPTS:
         norm_top30 = (raw_sums[tag] / max_sum) * 100.0
         strong = strong_counts[tag]
-        # coverage = sum of top-30 scores normalised per PDF + strong chunks count
         cov = round(norm_top30 + strong, 1)
         concept_metrics[tag] = {
             "best_score": round(best_scores[tag], 2),

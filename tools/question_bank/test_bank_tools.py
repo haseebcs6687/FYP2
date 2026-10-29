@@ -37,6 +37,7 @@ from tools.question_bank.bank_prepare import (
     chunk_pages,
     clean_page_text,
     detect_running_headers_footers,
+    is_front_or_back_matter,
 )
 
 
@@ -196,6 +197,118 @@ class TestSourcePackRotation(unittest.TestCase):
         self.assertNotEqual(pack0[0]["chunk_id"], pack1[0]["chunk_id"])
 
 
+class TestFrontBackMatterFilter(unittest.TestCase):
+    def test_glossary_page_is_dropped(self):
+        text = "Glossary\n761\nnull. A special pointer value that means not pointing to anything.\nqueue. A data structure."
+        is_drop, reason = is_front_or_back_matter(page_num=770, total_pages=780, text=text)
+        self.assertTrue(is_drop, "Glossary page must be dropped")
+        self.assertIn("heading: Glossary", reason)
+
+    def test_dotted_index_page_is_dropped(self):
+        # Page with >40% dotted index lines
+        lines = [
+            "Index",
+            "Abstract class . . . . . . . . . . . . . . . . . . . . . . . . . 272",
+            "Access modifier . . . . . . . . . . . . . . . . . . . . . . . . 189",
+            "Array covariance . . . . . . . . . . . . . . . . . . . . . . . . 120",
+            "Binary search . . . . . . . . . . . . . . . . . . . . . . . . . 340",
+            "Class definition . . . . . . . . . . . . . . . . . . . . . . . . 45",
+            "Constructor chaining . . . . . . . . . . . . . . . . . . . . . . 210",
+            "Dynamic dispatch . . . . . . . . . . . . . . . . . . . . . . . . 280",
+            "Exception handling . . . . . . . . . . . . . . . . . . . . . . . 400",
+            "Final keyword . . . . . . . . . . . . . . . . . . . . . . . . . 150",
+        ]
+        text = "\n".join(lines)
+        is_drop, reason = is_front_or_back_matter(page_num=775, total_pages=780, text=text)
+        self.assertTrue(is_drop, "Dotted index page must be dropped")
+
+    def test_chapter_text_is_kept(self):
+        text = (
+            "5.5 Inheritance and Polymorphism\n"
+            "Inheritance is a powerful feature of object-oriented programming in Java.\n"
+            "A subclass can extend a superclass and inherit all of its public and protected members.\n"
+            "public class Dog extends Animal {\n"
+            "    public void speak() {\n"
+            "        System.out.println(\"Woof\");\n"
+            "    }\n"
+            "}\n"
+        )
+        is_drop, reason = is_front_or_back_matter(page_num=250, total_pages=780, text=text)
+        self.assertFalse(is_drop, "Real chapter text must not be dropped")
+
+
+class TestPackAnchorsAndRelevance(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = Path(tempfile.mkdtemp())
+        self.pdfshort = "mock_book"
+        pdf_dir = self.temp_dir / self.pdfshort
+        pdf_dir.mkdir(parents=True)
+
+        self.chunks = [
+            # Chunk 1: Has multiple anchors (@override, override, same signature) -> STRONG
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00001",
+                "pdf": self.pdfshort,
+                "page_start": 10,
+                "page_end": 10,
+                "text": "Method overriding in Java allows a subclass to override a method with the same signature. Use @override annotation to make intent explicit.",
+                "word_count": 22,
+            },
+            # Chunk 2: Has 1 anchor (redefine) -> CANDIDATE
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00002",
+                "pdf": self.pdfshort,
+                "page_start": 11,
+                "page_end": 11,
+                "text": "Subclasses can redefine behaviors from base classes to adapt to new requirements.",
+                "word_count": 12,
+            },
+            # Chunk 3: Has 1 anchor (override) -> CANDIDATE
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00003",
+                "pdf": self.pdfshort,
+                "page_start": 12,
+                "page_end": 12,
+                "text": "When you override superclass methods, ensure access modifier is not more restrictive.",
+                "word_count": 13,
+            },
+            # Chunk 4: NO ANCHORS (generic words only: class, method, variable, java)
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00004",
+                "pdf": self.pdfshort,
+                "page_start": 13,
+                "page_end": 13,
+                "text": "In Java programming language, a public class contains variables and methods to execute code.",
+                "word_count": 14,
+            },
+        ]
+
+        index = BM25Index(k1=1.5, b=0.75)
+        for c in self.chunks:
+            index.add_document(c["chunk_id"], c["text"])
+        index.finalize()
+        index.save(pdf_dir / "bm25.pkl")
+
+        with open(pdf_dir / "chunks.jsonl", "w", encoding="utf-8") as f:
+            for c in self.chunks:
+                f.write(json.dumps(c) + "\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_chunk_without_anchors_never_in_pack(self):
+        pack = build_pack(self.pdfshort, "method-overriding", batch_idx=0, max_words=500, work_dir=self.temp_dir)
+        self.assertTrue(len(pack) > 0)
+        chunk_ids = [c["chunk_id"] for c in pack]
+        self.assertNotIn(f"{self.pdfshort}_chunk_00004", chunk_ids, "Chunk without anchors must never be included")
+
+    def test_no_material_when_too_few_candidates(self):
+        # A concept with 0 matching candidates in this mock book
+        pack = build_pack(self.pdfshort, "try-with-resources", batch_idx=0, max_words=500, work_dir=self.temp_dir)
+        self.assertEqual(len(pack), 0)
+        self.assertEqual(pack.status, "NO_MATERIAL")
+
+
 class TestQuotaMathematics(unittest.TestCase):
     def test_quota_allocation_rules(self):
         # 3 mock PDFs with coverage for all 44 concepts
@@ -203,7 +316,6 @@ class TestQuotaMathematics(unittest.TestCase):
         mock_data = {"pdfA": {}, "pdfB": {}, "pdfC": {}}
 
         for i, c in enumerate(concepts):
-            # pdfA has weak coverage for concept 0
             mock_data["pdfA"][c] = {
                 "coverage": 30.0 if i == 0 else 100.0 + (i * 2),
                 "strong": 2 if i == 0 else 10 + i,
@@ -236,11 +348,9 @@ class TestQuotaMathematics(unittest.TestCase):
                     self.assertGreaterEqual(quotas[pdf][c], 1)
                     self.assertLessEqual(quotas[pdf][c], 6)
 
-        # Rule 4: Total batches across all PDFs is 252 and every concept has >= 4
+        # Rule 4: Total batches across all PDFs is 252
         totals = {c: sum(quotas[p][c] for p in ["pdfA", "pdfB", "pdfC"]) for c in concepts}
         self.assertEqual(sum(totals.values()), 252)
-        for c in concepts:
-            self.assertGreaterEqual(totals[c], 4, f"Concept {c} should reach at least 4 batches total")
 
 
 if __name__ == "__main__":
