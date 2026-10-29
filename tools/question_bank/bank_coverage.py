@@ -104,7 +104,8 @@ def compute_pdf_coverage(pdfshort: str, work_dir: Path) -> dict:
             if has_exact_keyword_phrase(t_lower, keywords):
                 score *= 1.20
 
-            h_hit = check_heading_hit(chunk["text"], core_anchors, tag)
+            h_hit_text = check_heading_hit(chunk["text"], core_anchors, tag)
+            h_hit = bool(h_hit_text)
 
             candidates.append({
                 "chunk_id": doc_id,
@@ -112,6 +113,7 @@ def compute_pdf_coverage(pdfshort: str, work_dir: Path) -> dict:
                 "hits": hits,
                 "hit_list": hit_list,
                 "heading_hit": h_hit,
+                "heading_text": h_hit_text or "",
                 "chapter_following_hit": False,
                 "text": chunk["text"],
             })

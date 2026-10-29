@@ -74,7 +74,11 @@ def generate_raw_inspect_report(output_file: Path):
                 if c.get("is_hint"):
                     badges.append("[HINT]")
                 if c.get("heading_hit"):
-                    badges.append("[HEADING-HIT]")
+                    h_text = c.get("heading_text")
+                    if h_text:
+                        badges.append(f'[HEADING-HIT: "{h_text}"]')
+                    else:
+                        badges.append("[HEADING-HIT]")
                 elif c.get("chapter_following_hit"):
                     badges.append("[CHAPTER-HIT]")
                 if c.get("is_borrowed"):
@@ -91,6 +95,8 @@ def generate_raw_inspect_report(output_file: Path):
 
                 lines.append(f"\nChunk {i}: pp.{c['page_start']}-{c['page_end']} {badge_str}")
                 lines.append(f"  Source Concept: {c.get('source_concept')}")
+                if c.get("heading_hit") and c.get("heading_text"):
+                    lines.append(f"  Heading: {c.get('heading_text')}")
                 lines.append(f"  Distinct Anchors ({num_anchors}):")
                 lines.append(f"    CORE ({len(core_hits)}): {core_hits}")
                 lines.append(f"    SUPPORT ({len(supp_hits)}): {supp_hits}")

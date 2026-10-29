@@ -81,6 +81,10 @@ ANCHOR_EXTRA = {
     "copy-constructor": ["copy constructor", "clone()", "deep copy", "shallow copy"],
     "immutability": ["immutable class", "immutable object"],
     "getters-setters": ["getter", "setter", "getters", "setters", "accessor", "mutator"],
+    "class-definition": [
+        "class definition", "defining a class", "class declaration", "declare a class",
+        "instance variables", "instance methods", "class body", "blueprint", "public class"
+    ],
 }
 
 PACK_ALIASES = {
@@ -299,10 +303,10 @@ def has_exact_keyword_phrase(text_lower: str, keywords: list[str]) -> bool:
     return False
 
 
-def check_heading_hit(text: str, core_anchors: set[str], concept_tag: str) -> bool:
+def check_heading_hit(text: str, core_anchors: set[str], concept_tag: str) -> str | None:
     """
-    Returns True if the first 300 characters of a chunk (after stripping leading page numbers /
-    running headers) contain a section or chapter heading that includes a CORE phrase.
+    Returns the heading line if the first 300 characters of a chunk (after stripping leading page numbers /
+    running headers) contain a section or chapter heading that includes a CORE phrase. Otherwise None.
     """
     lines = text.splitlines()
     idx = 0
@@ -319,7 +323,7 @@ def check_heading_hit(text: str, core_anchors: set[str], concept_tag: str) -> bo
     head_text = "\n".join(lines[idx:])[:300]
     head_lines = [l.strip() for l in head_text.splitlines() if l.strip()]
     if not head_lines:
-        return False
+        return None
 
     core_phrases = [a for a in core_anchors if (" " in a or any(not ch.isalnum() for ch in a))]
     if concept_tag in ANCHOR_EXTRA:
@@ -354,9 +358,9 @@ def check_heading_hit(text: str, core_anchors: set[str], concept_tag: str) -> bo
             for phrase in core_phrases:
                 pat = r"(?<!\w)" + re.escape(phrase) + (r"(?!\w)" if phrase[-1].isalnum() else "")
                 if re.search(pat, l_lower):
-                    return True
+                    return l
 
-    return False
+    return None
 
 
 def _get_index_and_chunks(pdfshort: str, work_dir: Path = None):
@@ -432,7 +436,8 @@ def _extract_candidates_for_concept(index, chunks_map, concept_tag: str):
         if has_exact_keyword_phrase(t_lower, keywords):
             score *= 1.20
 
-        h_hit = check_heading_hit(chunk["text"], core_anchors, concept_tag)
+        h_hit_text = check_heading_hit(chunk["text"], core_anchors, concept_tag)
+        h_hit = bool(h_hit_text)
 
         candidates.append({
             "chunk_id": doc_id,
@@ -444,6 +449,7 @@ def _extract_candidates_for_concept(index, chunks_map, concept_tag: str):
             "hits": hits,
             "hit_list": hit_list,
             "heading_hit": h_hit,
+            "heading_text": h_hit_text or "",
             "chapter_following_hit": False,
             "is_hint": False,
             "source_concept": concept_tag,
@@ -646,6 +652,7 @@ def build_pack(
             "is_strong": c["is_strong"],
             "is_hint": c.get("is_hint", False),
             "heading_hit": c.get("heading_hit", False),
+            "heading_text": c.get("heading_text", ""),
             "chapter_following_hit": c.get("chapter_following_hit", False),
             "anchors_hit": c_hits,
             "core_anchors_hit": c_core,
@@ -710,7 +717,11 @@ def main():
         if c.get("is_hint"):
             badges.append("[HINT]")
         if c.get("heading_hit"):
-            badges.append("[HEADING-HIT]")
+            h_text = c.get("heading_text")
+            if h_text:
+                badges.append(f'[HEADING-HIT: "{h_text}"]')
+            else:
+                badges.append("[HEADING-HIT]")
         elif c.get("chapter_following_hit"):
             badges.append("[CHAPTER-HIT]")
         if c.get("is_borrowed"):
@@ -726,6 +737,8 @@ def main():
             snip = c["text"][:300].replace("\n", " ")
             print(f"\nChunk {i}: pp.{c['page_start']}-{c['page_end']} {badge_str}")
             print(f"  Source Concept: {c.get('source_concept')}")
+            if c.get("heading_hit") and c.get("heading_text"):
+                print(f"  Heading: {c.get('heading_text')}")
             print(f"  Distinct Anchors ({num_anchors}):")
             print(f"    CORE ({len(core_hits)}): {core_hits}")
             print(f"    SUPPORT ({len(supp_hits)}): {supp_hits}")

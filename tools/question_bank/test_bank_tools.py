@@ -584,6 +584,19 @@ class TestPhase2DFix3Rules(unittest.TestCase):
         self.assertTrue(pack[0]["is_hint"])
         self.assertTrue(pack[0]["is_strong"])
 
+    def test_class_definition_anchors_are_core(self):
+        # Phase 2D-fix-4 test: class-definition anchor extras are all CORE
+        anchors = get_anchors("class-definition")
+        df = {a: 500 for a in anchors}  # high document frequency
+        core, support = split_anchors("class-definition", anchors, df=df, total_chunks=1000)
+
+        required_core = [
+            "class definition", "defining a class", "class declaration", "declare a class",
+            "instance variables", "instance methods", "class body", "blueprint", "public class"
+        ]
+        for term in required_core:
+            self.assertIn(term, core, f"Expected '{term}' to be CORE for class-definition")
+
 
 class TestQuotaMathematics(unittest.TestCase):
     def test_quota_allocation_rules(self):
