@@ -1,8 +1,10 @@
 {
   "javanotes9": {
-    "method-overriding": [
-      [256, 269]
-    ]
+    "inheritance-basics": [[258, 260]],
+    "inheritance-hierarchy": [[260, 262]],
+    "method-overriding": [[263, 266]],
+    "dynamic-method-dispatch": [[263, 266]],
+    "runtime-polymorphism": [[263, 266]]
   },
   "JavaNotesForProfessionals": {},
   "thinkjava2": {}

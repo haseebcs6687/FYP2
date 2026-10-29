@@ -5,7 +5,7 @@
 ## Overview
 - **Total Canonical Concepts:** 44
 - **Source Textbooks:** 3 (JavaNotesForProfessionals, javanotes9, thinkjava2)
-- **Total Target Batches:** 207 (2,484 total questions, 12 MCQs / batch)
+- **Total Target Batches:** 213 (2,556 total questions, 12 MCQs / batch)
 
 ### Concepts Utilizing Strict PACK_ALIASES Borrowing
 No concepts relied on cross-concept borrowing.
@@ -17,9 +17,8 @@ No concepts relied on cross-concept borrowing.
 - `object-composition`: Total = **0 batches** (0 MCQs) | Heading Hits = 0
 - `constructor-basics`: Total = **0 batches** (0 MCQs) | Heading Hits = 0
 - `constructor-overloading`: Total = **3 batches** (36 MCQs) | Heading Hits = 0
-- `inheritance-basics`: Total = **2 batches** (24 MCQs) | Heading Hits = 1
-- `dynamic-method-dispatch`: Total = **1 batches** (12 MCQs) | Heading Hits = 1
-- `runtime-polymorphism`: Total = **1 batches** (12 MCQs) | Heading Hits = 0
+- `dynamic-method-dispatch`: Total = **3 batches** (36 MCQs) | Heading Hits = 5
+- `runtime-polymorphism`: Total = **3 batches** (36 MCQs) | Heading Hits = 4
 - `access-modifiers`: Total = **2 batches** (24 MCQs) | Heading Hits = 0
 - `data-hiding`: Total = **2 batches** (24 MCQs) | Heading Hits = 0
 - `defensive-copying`: Total = **0 batches** (0 MCQs) | Heading Hits = 0
@@ -39,9 +38,8 @@ No concepts relied on cross-concept borrowing.
 - `object-composition`: Total = **0 batches**
 - `constructor-basics`: Total = **0 batches**
 - `constructor-overloading`: Total = **3 batches**
-- `inheritance-basics`: Total = **2 batches**
-- `dynamic-method-dispatch`: Total = **1 batches**
-- `runtime-polymorphism`: Total = **1 batches**
+- `dynamic-method-dispatch`: Total = **3 batches**
+- `runtime-polymorphism`: Total = **3 batches**
 - `access-modifiers`: Total = **2 batches**
 - `data-hiding`: Total = **2 batches**
 - `defensive-copying`: Total = **0 batches**
@@ -89,10 +87,10 @@ No concepts relied on cross-concept borrowing.
   - `exception-chaining`: Coverage = 32.5 (0 strong chunks, norm top-30 = 32.53%) [WEAK]
   - `javabeans`: Coverage = 30.6 (0 strong chunks, norm top-30 = 30.59%) [WEAK]
   - `method-overloading`: Coverage = 29.5 (1 strong chunks, norm top-30 = 28.5%) [WEAK]
+  - `dynamic-method-dispatch`: Coverage = 26.4 (4 strong chunks, norm top-30 = 22.36%)
   - `data-hiding`: Coverage = 24.5 (2 strong chunks, norm top-30 = 22.47%) [WEAK]
-  - `dynamic-method-dispatch`: Coverage = 22.4 (0 strong chunks, norm top-30 = 22.36%) [WEAK]
+  - `inheritance-hierarchy`: Coverage = 20.7 (4 strong chunks, norm top-30 = 16.74%)
   - `object-composition`: Coverage = 20.2 (0 strong chunks, norm top-30 = 20.21%) [WEAK]
-  - `inheritance-hierarchy`: Coverage = 17.7 (1 strong chunks, norm top-30 = 16.74%) [WEAK]
   - `defensive-copying`: Coverage = 11.6 (0 strong chunks, norm top-30 = 11.57%) [WEAK]
 
 ### thinkjava2
@@ -125,7 +123,7 @@ No concepts relied on cross-concept borrowing.
 | `this-keyword` | classes-objects | 48.6 (7s / **1b**) | ⚠️ **46.5** (0s / **0b**) | 77.5 (9s / **4b**) | **5** | 60 |
 | `reference-semantics` | classes-objects | 61.6 (4s / **2b**) | ⚠️ **53.1** (0s / **0b**) | ⚠️ **74.0** (0s / **0b**) | **2** *(THIN)* | 24 |
 | `object-composition` | classes-objects | ⚠️ **24.8** (2s / **0b**) | ⚠️ **20.2** (0s / **0b**) | ⚠️ **36.5** (2s / **0b**) | **0** *(THIN)* | 0 |
-| `garbage-collection` | classes-objects | 85.0 (20s / **1b**) | 35.4 (4s / **2b**) | 44.8 (5s / **2b**) | **5** | 60 |
+| `garbage-collection` | classes-objects | 85.0 (20s / **2b**) | 35.4 (4s / **2b**) | 44.8 (5s / **2b**) | **6** | 72 |
 | `local-vs-instance-variables` | classes-objects | 82.1 (18s / **1b**) | 91.2 (25s / **6b**) | 93.4 (13s / **6b**) | **13** | 156 |
 | `default-values` | classes-objects | 73.4 (33s / **1b**) | 49.3 (8s / **4b**) | 54.4 (4s / **2b**) | **7** | 84 |
 | `constructor-basics` | constructors | ⚠️ **52.4** (0s / **0b**) | ⚠️ **57.9** (1s / **0b**) | ⚠️ **77.1** (2s / **0b**) | **0** *(THIN)* | 0 |
@@ -134,13 +132,13 @@ No concepts relied on cross-concept borrowing.
 | `default-constructor` | constructors | 62.5 (9s / **1b**) | 55.7 (6s / **3b**) | ⚠️ **66.5** (2s / **0b**) | **4** | 48 |
 | `super-keyword` | constructors | 73.6 (11s / **4b**) | ⚠️ **40.9** (0s / **0b**) | ⚠️ **58.8** (0s / **0b**) | **4** | 48 |
 | `copy-constructor` | constructors | 97.9 (9s / **4b**) | ⚠️ **73.6** (1s / **0b**) | ⚠️ **75.2** (0s / **0b**) | **4** | 48 |
-| `inheritance-basics` | inheritance | 56.8 (2s / **1b**) | ⚠️ **51.0** (0s / **0b**) | 72.3 (3s / **1b**) | **2** *(THIN)* | 24 |
-| `inheritance-hierarchy` | inheritance | 45.8 (18s / **4b**) | ⚠️ **17.7** (1s / **0b**) | ⚠️ **7.5** (0s / **0b**) | **4** | 48 |
-| `multiple-inheritance` | inheritance | 84.4 (34s / **1b**) | 49.2 (4s / **2b**) | 56.2 (4s / **2b**) | **5** | 60 |
-| `method-overriding` | inheritance | 112.1 (47s / **3b**) | 54.7 (19s / **6b**) | ⚠️ **30.1** (0s / **0b**) | **9** | 108 |
+| `inheritance-basics` | inheritance | 56.8 (2s / **1b**) | 55.0 (4s / **2b**) | 72.3 (3s / **1b**) | **4** | 48 |
+| `inheritance-hierarchy` | inheritance | 45.8 (18s / **2b**) | 20.7 (4s / **2b**) | ⚠️ **7.5** (0s / **0b**) | **4** | 48 |
+| `multiple-inheritance` | inheritance | 84.4 (34s / **2b**) | 49.2 (4s / **2b**) | 56.2 (4s / **2b**) | **6** | 72 |
+| `method-overriding` | inheritance | 112.1 (47s / **3b**) | 44.7 (9s / **4b**) | ⚠️ **30.1** (0s / **0b**) | **7** | 84 |
 | `method-overloading` | polymorphism | 54.7 (14s / **4b**) | ⚠️ **29.5** (1s / **0b**) | ⚠️ **37.3** (1s / **0b**) | **4** | 48 |
-| `dynamic-method-dispatch` | polymorphism | 60.1 (2s / **1b**) | ⚠️ **22.4** (0s / **0b**) | ⚠️ **0.0** (0s / **0b**) | **1** *(THIN)* | 12 |
-| `runtime-polymorphism` | polymorphism | 46.7 (3s / **1b**) | ⚠️ **34.4** (0s / **0b**) | ⚠️ **15.5** (2s / **0b**) | **1** *(THIN)* | 12 |
+| `dynamic-method-dispatch` | polymorphism | 60.1 (2s / **1b**) | 26.4 (4s / **2b**) | ⚠️ **0.0** (0s / **0b**) | **3** *(THIN)* | 36 |
+| `runtime-polymorphism` | polymorphism | 46.7 (3s / **1b**) | 38.4 (4s / **2b**) | ⚠️ **15.5** (2s / **0b**) | **3** *(THIN)* | 36 |
 | `access-modifiers` | encapsulation | 66.3 (4s / **2b**) | ⚠️ **60.8** (0s / **0b**) | ⚠️ **61.1** (0s / **0b**) | **2** *(THIN)* | 24 |
 | `data-hiding` | encapsulation | ⚠️ **38.3** (2s / **0b**) | ⚠️ **24.5** (2s / **0b**) | 37.7 (4s / **2b**) | **2** *(THIN)* | 24 |
 | `getters-setters` | encapsulation | 68.1 (12s / **1b**) | ⚠️ **44.1** (1s / **0b**) | 37.9 (7s / **3b**) | **4** | 48 |
