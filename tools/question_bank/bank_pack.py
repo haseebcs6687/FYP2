@@ -6,13 +6,13 @@ Builds a focused "source pack" of textbook chunks for a given concept tag
 and batch index. Grounded in textbook page numbers, concept anchors,
 and misconception catalog.
 
-Features (Phase 2D-fix-2):
-  - CORE vs SUPPORT anchors based on phrase length, non-letter chars, and PDF document frequency (< 3%)
-  - ANCHOR_EXTRA for disambiguating key concepts (treated as CORE)
-  - No single generic word x3 strong rule
-  - HEADING HIT detection (chapter/section headings with CORE phrases)
-  - Alias borrowing for under-covered concepts (PACK_ALIASES)
-  - Full inspect CLI distinguishing CORE/SUPPORT and marking [HEADING-HIT]
+Phase 2D-fix-3 Updates:
+  - Concept TITLE and TAG words are CORE unless in GENERIC_SUPPORT_WORDS or FILLER_WORDS (stem matching).
+  - Single-word anchors not in title/tag are CORE via df < 3% ONLY if not in LOOSE_WORDS; otherwise SUPPORT.
+  - ANCHOR_EXTRA extended for interface-basics, finally-block, try-with-resources, copy-constructor, immutability, getters-setters.
+  - Strict borrowing: borrowed chunks MUST contain >= 1 CORE anchor of the TARGET concept.
+  - Human page overrides via tools/question_bank/page_hints.json (put first, marked [HINT], treated as [STRONG]).
+  - Inspection mode prints [HINT] badges and distinguishes CORE/SUPPORT.
 
 Usage (CLI):
     python tools/question_bank/bank_pack.py --pdf javanotes9 --concept method-overriding --batch 0
@@ -40,6 +40,7 @@ from tools.question_bank.bank_prepare import BM25Index
 # In-memory caches to speed up batch runs
 _INDEX_CACHE = {}
 _CHUNKS_CACHE = {}
+_PAGE_HINTS_CACHE = None
 
 GENERIC_STOPWORDS = {
     "class", "classes", "object", "objects", "method", "methods", "java", "variable",
@@ -57,12 +58,29 @@ GENERIC_SUPPORT_WORDS = {
     "final", "string", "dynamic", "chaining", "duplicate"
 }
 
+FILLER_WORDS = {
+    "basics", "keyword", "definition", "introduction", "overview", "concepts", "members"
+}
+
+LOOSE_WORDS = {
+    "contract", "cleanup", "invariant", "resource", "resources", "basics", "constant", "clone"
+}
+
 ANCHOR_EXTRA = {
     "method-overriding": ["redefine", "redefines", "overrides", "@override"],
-    "dynamic-method-dispatch": ["dynamic binding", "late binding", "dynamically bound", "runtime polymorphism"],
+    "dynamic-method-dispatch": [
+        "dispatch", "dynamic binding", "late binding", "dynamically bound", "runtime polymorphism",
+        "overridden method", "polymorphic call"
+    ],
     "this-keyword": ["this.", "this(", "this keyword"],
     "constructor-chaining": ["this(", "super(", "constructor chaining", "call another constructor"],
     "static-members": ["static method", "static variable", "static field", "class variable", "static member"],
+    "interface-basics": ["implements", "interface"],
+    "finally-block": ["finally block", "finally clause", "finally"],
+    "try-with-resources": ["autocloseable", "try-with-resources", "suppressed exception", "close()"],
+    "copy-constructor": ["copy constructor", "clone()", "deep copy", "shallow copy"],
+    "immutability": ["immutable class", "immutable object"],
+    "getters-setters": ["getter", "setter", "getters", "setters", "accessor", "mutator"],
 }
 
 PACK_ALIASES = {
@@ -73,15 +91,42 @@ PACK_ALIASES = {
     "javabeans": ["getters-setters"],
 }
 
+PAGE_HINTS_FILE = BASE_DIR / "tools" / "question_bank" / "page_hints.json"
+
+
+def get_page_hints(pdfshort: str, concept_tag: str, hints_path: Path = None) -> list[list[int]]:
+    """Loads human page hints for a (pdf, concept) from page_hints.json."""
+    global _PAGE_HINTS_CACHE
+    p_file = hints_path or PAGE_HINTS_FILE
+    if _PAGE_HINTS_CACHE is None or hints_path is not None:
+        if p_file.exists():
+            try:
+                with open(p_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if hints_path is None:
+                        _PAGE_HINTS_CACHE = data
+                    else:
+                        return data.get(pdfshort, {}).get(concept_tag, [])
+            except Exception:
+                if hints_path is None:
+                    _PAGE_HINTS_CACHE = {}
+                else:
+                    return []
+        else:
+            if hints_path is None:
+                _PAGE_HINTS_CACHE = {}
+            else:
+                return []
+    return (_PAGE_HINTS_CACHE or {}).get(pdfshort, {}).get(concept_tag, [])
+
 
 def get_anchors(concept_tag: str) -> list[str]:
     """
     Returns the list of anchor terms for a concept:
       - Concept keywords from core.concepts.CONCEPTS[concept_tag]["keywords"]
       - Plus meaningful words of its title, lower-cased.
-      - Plus ANCHOR_EXTRA entries if defined.
-      - Generic words and trivial stop words are never single-word anchors.
-      - Multi-word phrases that contain them are preserved (e.g. 'abstract class').
+      - Plus ANCHOR_EXTRA entries.
+      - Canonical concept tag phrases (e.g. 'interface basics', 'try catch').
     """
     meta = CONCEPTS.get(concept_tag, {})
     keywords = meta.get("keywords", [])
@@ -108,11 +153,6 @@ def get_anchors(concept_tag: str) -> list[str]:
     if "-" in concept_tag:
         anchors.add(concept_tag)
 
-    if concept_tag == "try-catch":
-        anchors.update(["catch block", "try block", "catch("])
-    elif concept_tag == "exception-chaining":
-        anchors.update(["chained exception", "chained exceptions"])
-
     if concept_tag in ANCHOR_EXTRA:
         for extra in ANCHOR_EXTRA[concept_tag]:
             e = extra.strip().lower()
@@ -124,31 +164,62 @@ def get_anchors(concept_tag: str) -> list[str]:
 
 def split_anchors(concept_tag: str, anchors: list[str], df: dict, total_chunks: int) -> tuple[set[str], set[str]]:
     """
-    Splits anchors into CORE and SUPPORT per (pdf, concept):
-      - CORE = any multi-word phrase anchor,
-               any token anchor containing a non-letter char (@override, super(, this(), this.),
-               any anchor in ANCHOR_EXTRA (tools-side),
-               and any single-word anchor whose document frequency in that PDF is < 3%.
-      - SUPPORT = every other single-word anchor (e.g. this, reference, static, copy, dynamic, chaining...).
+    Splits anchors into CORE and SUPPORT per (pdf, concept) - Phase 2D-fix-3 rules:
+      - Phrases (2+ words), symbol tokens (@override, super(, this(), this., close()),
+        and ANCHOR_EXTRA entries stay CORE.
+      - Any single word appearing in concept TITLE or TAG is CORE unless in GENERIC_SUPPORT_WORDS
+        or FILLER_WORDS (matching by first 7 letters stem: immutability matches immutable, abstraction matches abstract).
+      - Single-word anchors NOT in title/tag are CORE via df < 3% rule ONLY if NOT in LOOSE_WORDS; otherwise SUPPORT.
+      - Everything else is SUPPORT.
     """
     core = set()
     support = set()
     extras = {e.lower() for e in ANCHOR_EXTRA.get(concept_tag, [])}
 
+    meta = CONCEPTS.get(concept_tag, {})
+    title = meta.get("title", "")
+    title_tag_words = set(re.findall(r"[a-z0-9]+", (title + " " + concept_tag).lower()))
+    valid_title_tag_words = {
+        w for w in title_tag_words
+        if w not in GENERIC_SUPPORT_WORDS and w not in FILLER_WORDS
+    }
+
     for a in anchors:
         a_low = a.lower()
+
+        # Rule 1: ANCHOR_EXTRA entries stay CORE
         if a_low in extras:
             core.add(a_low)
-        elif " " in a_low or any(not ch.isalnum() for ch in a_low):
+            continue
+
+        # Rule 2: Phrases (2+ words) and symbol tokens stay CORE
+        if " " in a_low or any(not ch.isalnum() for ch in a_low):
             core.add(a_low)
-        elif a_low in GENERIC_SUPPORT_WORDS:
-            support.add(a_low)
+            continue
+
+        # Rule 3: Single-word anchor in TITLE or TAG (via stem matching first 7 letters)
+        is_title_or_tag = False
+        if a_low not in GENERIC_SUPPORT_WORDS and a_low not in FILLER_WORDS:
+            for w in valid_title_tag_words:
+                if a_low == w:
+                    is_title_or_tag = True
+                    break
+                if len(a_low) >= 7 and len(w) >= 7 and a_low[:7] == w[:7]:
+                    is_title_or_tag = True
+                    break
+
+        if is_title_or_tag:
+            core.add(a_low)
         else:
-            freq = df.get(a_low, 0)
-            if total_chunks > 0 and (freq / total_chunks) < 0.03:
-                core.add(a_low)
-            else:
+            # Rule 4: Not in title/tag: check LOOSE_WORDS and DF < 3%
+            if a_low in GENERIC_SUPPORT_WORDS or a_low in FILLER_WORDS or a_low in LOOSE_WORDS:
                 support.add(a_low)
+            else:
+                freq = df.get(a_low, 0)
+                if total_chunks > 0 and (freq / total_chunks) < 0.03:
+                    core.add(a_low)
+                else:
+                    support.add(a_low)
 
     return core, support
 
@@ -168,25 +239,20 @@ def build_concept_query(concept_tag: str) -> tuple[str, list[str]]:
     keywords = list(meta.get("keywords", []))
     summary = meta.get("summary", "")
 
-    # Include extra keywords if defined
     if concept_tag in ANCHOR_EXTRA:
         keywords.extend(ANCHOR_EXTRA[concept_tag])
 
     parts = []
-    # concept keywords x3
     for _ in range(3):
         parts.extend(keywords)
 
-    # title words x3
     title_words = [w for w in title.split() if w.strip()]
     for _ in range(3):
         parts.extend(title_words)
 
-    # summary x1
     if summary:
         parts.append(summary)
 
-    # misconception TITLES and FACETS x1 (NO wrong_belief)
     for m in misconceptions_for(concept_tag):
         t = m.get("title")
         f = m.get("facet")
@@ -205,7 +271,6 @@ def check_chunk_anchors(text_lower: str, anchors: list[str]) -> tuple[dict[str, 
         if a not in text_lower:
             continue
         if any(not ch.isalnum() for ch in a):
-            # Token with symbol like @override, super(, this., this(
             if a[-1].isalnum():
                 pattern = r"(?<!\w)" + re.escape(a) + r"(?!\w)"
             else:
@@ -256,26 +321,17 @@ def check_heading_hit(text: str, core_anchors: set[str], concept_tag: str) -> bo
     if not head_lines:
         return False
 
-    # Core phrases to check in heading: multi-word phrases, non-letter tokens, or specific core anchors
     core_phrases = [a for a in core_anchors if (" " in a or any(not ch.isalnum() for ch in a))]
     if concept_tag in ANCHOR_EXTRA:
         core_phrases.extend([e.lower() for e in ANCHOR_EXTRA[concept_tag]])
 
-    # Also add specific single-word core anchors that are not generic support words
     for a in core_anchors:
-        if a not in GENERIC_SUPPORT_WORDS and len(a) >= 4 and a not in core_phrases:
+        if a not in GENERIC_SUPPORT_WORDS and a not in FILLER_WORDS and len(a) >= 4 and a not in core_phrases:
             core_phrases.append(a)
 
-    # Concept-specific heading phrases from canonical tag and title keywords
     tag_phrase = concept_tag.replace("-", " ")
     if tag_phrase not in core_phrases:
         core_phrases.append(tag_phrase)
-    meta = CONCEPTS.get(concept_tag, {})
-    for kw in meta.get("keywords", []):
-        k = kw.strip().lower()
-        if k not in GENERIC_SUPPORT_WORDS and k not in GENERIC_STOPWORDS and len(k) >= 4:
-            if k not in core_phrases:
-                core_phrases.append(k)
 
     for l in head_lines[:4]:
         if l.startswith(("//", "/*", "*", "package ", "import ", "@", "public ", "private ", "protected ")):
@@ -389,6 +445,7 @@ def _extract_candidates_for_concept(index, chunks_map, concept_tag: str):
             "hit_list": hit_list,
             "heading_hit": h_hit,
             "chapter_following_hit": False,
+            "is_hint": False,
             "source_concept": concept_tag,
             "is_borrowed": False,
         })
@@ -434,6 +491,7 @@ def _extract_candidates_for_concept(index, chunks_map, concept_tag: str):
                         "hit_list": next_hit_list,
                         "heading_hit": False,
                         "chapter_following_hit": True,
+                        "is_hint": False,
                         "source_concept": concept_tag,
                         "is_borrowed": False,
                     }
@@ -451,29 +509,43 @@ def build_pack(
     max_words: int = 2200,
     work_dir: Path = None,
     allow_borrow: bool = True,
+    hints_file: Path = None,
 ) -> SourcePack:
     """
     Builds a source pack of textbook chunks:
+      - Applies human page overrides from page_hints.json first (marked [HINT], treated as [STRONG]).
       - Uses weighted query + keyword phrase bonus (+20%).
       - Selects candidate chunks (containing >= 1 anchor).
       - Identifies strong chunks:
-          * (>= 1 CORE anchor hit) AND (>= 2 distinct anchors OR CORE anchor appears >= 2 times)
+          * Page hint hit ([HINT])
+          * OR (>= 1 CORE anchor hit) AND (>= 2 distinct anchors OR CORE anchor appears >= 2 times)
             AND (score >= 40% best score)
-          * OR chunk has a HEADING HIT (or is one of next 3 chunks of chapter with >= 1 CORE anchor).
-      - If fewer than 2 strong chunks and allow_borrow is True, borrows from PACK_ALIASES.
-      - Ranks by: strong chunks first (sorted by score descending), then regular candidates.
-      - Batch rotation: batch k starts at rank k*4, wrapping around within strong chunks only.
-      - Accumulates chunks up to max_words.
+          * OR chunk has a HEADING HIT (or next 3 chapter chunks with >= 1 CORE anchor).
+      - Strict borrowing: if own strong < 3 and allow_borrow, borrows from PACK_ALIASES ONLY chunks
+        that contain >= 1 CORE anchor of the TARGET concept.
+      - Rotation: batch k rotates by k*4, wrapping within strong chunks only.
     """
     index, chunks_map = _get_index_and_chunks(pdfshort, work_dir)
     candidates, core_anchors, support_anchors, best_score = _extract_candidates_for_concept(index, chunks_map, concept_tag)
+
+    # Apply page hints override
+    hints = get_page_hints(pdfshort, concept_tag, hints_file)
+    for c in candidates:
+        if hints:
+            c_start = c["page_start"]
+            c_end = c["page_end"]
+            c["is_hint"] = any(max(c_start, h[0]) <= min(c_end, h[1]) for h in hints)
+        else:
+            c["is_hint"] = False
 
     strong_chunks = []
     regular_chunks = []
 
     for c in candidates:
         is_strong = False
-        if c["heading_hit"] or c["chapter_following_hit"]:
+        if c.get("is_hint"):
+            is_strong = True
+        elif c["heading_hit"] or c["chapter_following_hit"]:
             is_strong = True
         else:
             core_hits = [a for a in c["hit_list"] if a in core_anchors]
@@ -489,14 +561,21 @@ def build_pack(
         else:
             regular_chunks.append(c)
 
-    # Check if borrowing is needed
+    # Rule 2: Borrowing is used ONLY when the target's own strong_count < 3
     is_borrowed = False
     source_alias = None
-    if len(strong_chunks) < 2 and allow_borrow and concept_tag in PACK_ALIASES:
+    if len(strong_chunks) < 3 and allow_borrow and concept_tag in PACK_ALIASES:
         for alias in PACK_ALIASES[concept_tag]:
             alias_cands, a_core, a_supp, a_best = _extract_candidates_for_concept(index, chunks_map, alias)
             alias_strong = []
             for ac in alias_cands:
+                # Borrowed chunk allowed ONLY if it contains >= 1 CORE anchor of the TARGET concept
+                target_hits, target_hit_list = check_chunk_anchors(
+                    ac["text"].lower(), list(core_anchors)
+                )
+                if not any(a in core_anchors for a in target_hit_list):
+                    continue
+
                 ac_is_strong = False
                 if ac["heading_hit"] or ac["chapter_following_hit"]:
                     ac_is_strong = True
@@ -507,13 +586,14 @@ def build_pack(
                         sc_ok = (ac["score"] >= 0.40 * a_best)
                         if dist_ok and sc_ok:
                             ac_is_strong = True
-                ac["is_strong"] = ac_is_strong
+
                 if ac_is_strong:
+                    ac["is_strong"] = True
                     ac["source_concept"] = alias
                     ac["is_borrowed"] = True
                     alias_strong.append(ac)
 
-            if len(alias_strong) >= 2:
+            if alias_strong:
                 strong_chunks.extend(alias_strong)
                 is_borrowed = True
                 source_alias = alias
@@ -522,21 +602,23 @@ def build_pack(
     if len(candidates) < 3 and not strong_chunks:
         return SourcePack([], status="NO_MATERIAL", candidate_count=len(candidates), strong_count=0)
 
-    strong_chunks.sort(key=lambda x: x["score"], reverse=True)
+    # Order chunks: hinted chunks FIRST, then other strong chunks by score, then regular chunks
+    hinted_pool = [c for c in strong_chunks if c.get("is_hint")]
+    non_hinted_strong = [c for c in strong_chunks if not c.get("is_hint")]
+    hinted_pool.sort(key=lambda x: x["score"], reverse=True)
+    non_hinted_strong.sort(key=lambda x: x["score"], reverse=True)
     regular_chunks.sort(key=lambda x: x["score"], reverse=True)
 
-    # Batch rotation: wrap around within STRONG chunks only (if >= 3 strong chunks)
-    if len(strong_chunks) >= 3:
-        n_strong = len(strong_chunks)
+    if len(non_hinted_strong) >= 3:
+        n_strong = len(non_hinted_strong)
         start_idx = (batch_idx * 4) % n_strong
-        ordered_pool = strong_chunks[start_idx:] + strong_chunks[:start_idx] + regular_chunks
-    elif strong_chunks:
-        all_pool = strong_chunks + regular_chunks
-        start_idx = (batch_idx * 4) % len(all_pool)
-        ordered_pool = all_pool[start_idx:] + all_pool[:start_idx]
+        rotated_strong = non_hinted_strong[start_idx:] + non_hinted_strong[:start_idx]
+    elif non_hinted_strong:
+        rotated_strong = non_hinted_strong
     else:
-        start_idx = (batch_idx * 4) % len(regular_chunks)
-        ordered_pool = regular_chunks[start_idx:] + regular_chunks[:start_idx]
+        rotated_strong = []
+
+    ordered_pool = hinted_pool + rotated_strong + regular_chunks
 
     pack_chunks = []
     total_words = 0
@@ -562,6 +644,7 @@ def build_pack(
             "score": round(c["score"], 3),
             "words": w_count,
             "is_strong": c["is_strong"],
+            "is_hint": c.get("is_hint", False),
             "heading_hit": c.get("heading_hit", False),
             "chapter_following_hit": c.get("chapter_following_hit", False),
             "anchors_hit": c_hits,
@@ -624,6 +707,8 @@ def main():
             badges.append("[STRONG]")
         else:
             badges.append("[CANDIDATE]")
+        if c.get("is_hint"):
+            badges.append("[HINT]")
         if c.get("heading_hit"):
             badges.append("[HEADING-HIT]")
         elif c.get("chapter_following_hit"):
@@ -638,14 +723,14 @@ def main():
         num_anchors = len(anchors_hit)
 
         if args.inspect:
-            snip = c["text"][:250].replace("\n", " ")
+            snip = c["text"][:300].replace("\n", " ")
             print(f"\nChunk {i}: pp.{c['page_start']}-{c['page_end']} {badge_str}")
             print(f"  Source Concept: {c.get('source_concept')}")
             print(f"  Distinct Anchors ({num_anchors}):")
             print(f"    CORE ({len(core_hits)}): {core_hits}")
             print(f"    SUPPORT ({len(supp_hits)}): {supp_hits}")
             print(f"  Score: {c['score']} | Words: {c['words']}")
-            print(f"  Text: {snip}...")
+            print(f"  Text: {snip}")
         else:
             print(f"\n[Chunk {i}] ID: {c['chunk_id']} | pp.{c['page_start']}-{c['page_end']} {badge_str} | Score: {c['score']} | Words: {c['words']}")
             print(f"  Anchors ({num_anchors}): CORE={core_hits} SUPPORT={supp_hits}")

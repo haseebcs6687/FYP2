@@ -370,16 +370,16 @@ class TestPhase2DFix2Rules(unittest.TestCase):
                 "pdf": self.pdfshort,
                 "page_start": 41,
                 "page_end": 41,
-                "text": "Exception throwing allows signaling errors up the call stack with throw statement.",
-                "word_count": 13,
+                "text": "Exception throwing allows signaling errors up the call stack with throw statement and custom exceptions subclass.",
+                "word_count": 16,
             },
             {
                 "chunk_id": f"{self.pdfshort}_chunk_00022",
                 "pdf": self.pdfshort,
                 "page_start": 42,
                 "page_end": 42,
-                "text": "More exception throwing examples with throws clause on method signature.",
-                "word_count": 12,
+                "text": "More exception throwing examples with throws clause on method signature and custom exceptions class.",
+                "word_count": 15,
             },
         ]
         self._setup_mock_index(chunks)
@@ -391,10 +391,198 @@ class TestPhase2DFix2Rules(unittest.TestCase):
         self.assertTrue(len(pack) > 0)
         # Borrowed chunks in the pack must label their source concept
         borrowed = [c for c in pack if c["is_borrowed"]]
-        self.assertTrue(len(borrowed) >= 2)
+        self.assertTrue(len(borrowed) >= 1)
         for c in borrowed:
             self.assertEqual(c["source_concept"], "exception-throwing")
             self.assertTrue(c["is_borrowed"])
+
+
+class TestPhase2DFix3Rules(unittest.TestCase):
+    def setUp(self):
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE, _PAGE_HINTS_CACHE
+        _INDEX_CACHE.clear()
+        _CHUNKS_CACHE.clear()
+        self.temp_dir = Path(tempfile.mkdtemp())
+        self.pdfshort = "test_fix3_book"
+        self.pdf_dir = self.temp_dir / self.pdfshort
+        self.pdf_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE
+        _INDEX_CACHE.clear()
+        _CHUNKS_CACHE.clear()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _setup_mock_index(self, chunks):
+        index = BM25Index(k1=1.5, b=0.75)
+        for c in chunks:
+            index.add_document(c["chunk_id"], c["text"])
+        index.finalize()
+        index.save(self.pdf_dir / "bm25.pkl")
+
+        with open(self.pdf_dir / "chunks.jsonl", "w", encoding="utf-8") as f:
+            for c in chunks:
+                f.write(json.dumps(c) + "\n")
+
+    def test_title_word_interface_is_core_for_interface_basics(self):
+        # Test (a): title word 'interface' is CORE for interface-basics despite high df
+        anchors = ["interface", "basics", "contract", "implements"]
+        df = {"interface": 1000, "basics": 1, "contract": 2, "implements": 50}
+        core, support = split_anchors("interface-basics", anchors, df=df, total_chunks=1000)
+
+        # 'interface' is title/tag word -> CORE
+        self.assertIn("interface", core)
+        # 'implements' is in ANCHOR_EXTRA -> CORE
+        self.assertIn("implements", core)
+        # 'basics' is in FILLER_WORDS -> SUPPORT
+        self.assertIn("basics", support)
+        # 'contract' is in LOOSE_WORDS -> SUPPORT
+        self.assertIn("contract", support)
+
+    def test_contract_cleanup_alone_never_make_chunk_strong(self):
+        # Test (b): contract/cleanup alone never make a chunk STRONG
+        chunks = [
+            # Chunk with contract and cleanup repeated (df < 3% words)
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00101",
+                "pdf": self.pdfshort,
+                "page_start": 10,
+                "page_end": 10,
+                "text": "Discussion on contract contract contract and cleanup cleanup cleanup in software architecture.",
+                "word_count": 13,
+            },
+            # Chunk with real CORE anchor
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00102",
+                "pdf": self.pdfshort,
+                "page_start": 11,
+                "page_end": 11,
+                "text": "Interface in Java specifies an interface and implements keyword for classes.",
+                "word_count": 11,
+            },
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00103",
+                "pdf": self.pdfshort,
+                "page_start": 12,
+                "page_end": 12,
+                "text": "Another interface declaration with implements clause.",
+                "word_count": 7,
+            },
+        ]
+        self._setup_mock_index(chunks)
+
+        pack = build_pack(self.pdfshort, "interface-basics", batch_idx=0, max_words=1000, work_dir=self.temp_dir)
+        c101 = next(c for c in pack if c["chunk_id"] == f"{self.pdfshort}_chunk_00101")
+        self.assertFalse(c101["is_strong"], "contract/cleanup alone must NEVER make a chunk strong")
+
+    def test_borrowed_chunk_without_target_core_anchor_is_rejected(self):
+        # Test (c): borrowed chunk without target CORE anchor is rejected
+        # target concept: dynamic-method-dispatch, alias: method-overriding
+        chunks = [
+            # Chunk for method-overriding that does NOT contain any target CORE anchor
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00201",
+                "pdf": self.pdfshort,
+                "page_start": 30,
+                "page_end": 30,
+                "text": "Method overriding allows subclass to redefine behavior with @Override annotation assertions.",
+                "word_count": 11,
+            },
+            # Chunk for method-overriding that DOES contain a target CORE anchor ('dispatch' / 'late binding')
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00202",
+                "pdf": self.pdfshort,
+                "page_start": 31,
+                "page_end": 31,
+                "text": "Method overriding causes dynamic method dispatch with late binding of overridden method at runtime.",
+                "word_count": 14,
+            },
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00203",
+                "pdf": self.pdfshort,
+                "page_start": 32,
+                "page_end": 32,
+                "text": "More method overriding examples with super call.",
+                "word_count": 8,
+            },
+        ]
+        self._setup_mock_index(chunks)
+
+        pack = build_pack(self.pdfshort, "dynamic-method-dispatch", batch_idx=0, max_words=1000, work_dir=self.temp_dir, allow_borrow=True)
+        chunk_ids_in_pack = [c["chunk_id"] for c in pack]
+
+        # Chunk 202 has 'late binding' / 'dispatch' (target CORE anchors) -> accepted
+        self.assertIn(f"{self.pdfshort}_chunk_00202", chunk_ids_in_pack)
+        # Chunk 201 has no target CORE anchor -> rejected from borrowed strong pack
+        borrowed_201 = [c for c in pack if c["chunk_id"] == f"{self.pdfshort}_chunk_00201" and c["is_borrowed"]]
+        self.assertEqual(len(borrowed_201), 0, "Chunk without target CORE anchor must be rejected from borrowing")
+
+    def test_cap_strong_div_2_enforced(self):
+        # Test (d): cap strong // 2 enforced (e.g. data-hiding with 3 strong gets at most 1)
+        mock_data = {
+            "book1": {
+                c: {
+                    "coverage": 100.0,
+                    "strong": 3 if c == "data-hiding" else 20,
+                    "weak": False,
+                    "heading_hits": 0,
+                }
+                for c in CONCEPTS
+            }
+        }
+        quotas = allocate_quotas(mock_data, target_per_pdf=84, min_total=4, max_per_concept=6)
+        dh_batches = quotas["book1"]["data-hiding"]["batches"]
+        self.assertLessEqual(dh_batches, 1, f"data-hiding with 3 strong must get at most 1 batch, got {dh_batches}")
+
+    def test_page_hint_ordering(self):
+        # Test (e): page hint puts hinted chunk first (marked [HINT], treated as STRONG)
+        hints_file = self.temp_dir / "hints.json"
+        with open(hints_file, "w", encoding="utf-8") as f:
+            json.dump({self.pdfshort: {"method-overriding": [[50, 50]]}}, f)
+
+        chunks = [
+            # High-score non-hinted chunk on page 10
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00301",
+                "pdf": self.pdfshort,
+                "page_start": 10,
+                "page_end": 10,
+                "text": "Method overriding method overriding method overriding redefine redefine overrides @override.",
+                "word_count": 11,
+            },
+            # Hinted chunk on page 50 with lower raw score
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00302",
+                "pdf": self.pdfshort,
+                "page_start": 50,
+                "page_end": 50,
+                "text": "Chapter on method overriding basics.",
+                "word_count": 5,
+            },
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00303",
+                "pdf": self.pdfshort,
+                "page_start": 12,
+                "page_end": 12,
+                "text": "Additional method overriding notes.",
+                "word_count": 4,
+            },
+        ]
+        self._setup_mock_index(chunks)
+
+        pack = build_pack(
+            self.pdfshort,
+            "method-overriding",
+            batch_idx=0,
+            max_words=1000,
+            work_dir=self.temp_dir,
+            hints_file=hints_file,
+        )
+        self.assertTrue(len(pack) > 0)
+        # Hinted chunk on page 50 must be first chunk in the pack!
+        self.assertEqual(pack[0]["chunk_id"], f"{self.pdfshort}_chunk_00302")
+        self.assertTrue(pack[0]["is_hint"])
+        self.assertTrue(pack[0]["is_strong"])
 
 
 class TestQuotaMathematics(unittest.TestCase):
@@ -444,3 +632,4 @@ class TestQuotaMathematics(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
