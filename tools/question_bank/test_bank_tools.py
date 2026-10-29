@@ -386,17 +386,15 @@ class TestPhase2DFix2Rules(unittest.TestCase):
         ]
         self._setup_mock_index(chunks)
 
-        # custom-exceptions borrows from exception-throwing via PACK_ALIASES
+        # Phase 2D-fix-7: PACK_ALIASES is empty, borrowing is completely disabled
+        from tools.question_bank.bank_pack import PACK_ALIASES
+        self.assertEqual(PACK_ALIASES, {})
+
         pack = build_pack(self.pdfshort, "custom-exceptions", batch_idx=0, max_words=1000, work_dir=self.temp_dir, allow_borrow=True)
-        self.assertTrue(pack.borrowed)
-        self.assertEqual(pack.source_concept, "exception-throwing")
-        self.assertTrue(len(pack) > 0)
-        # Borrowed chunks in the pack must label their source concept
-        borrowed = [c for c in pack if c["is_borrowed"]]
-        self.assertTrue(len(borrowed) >= 1)
-        for c in borrowed:
-            self.assertEqual(c["source_concept"], "exception-throwing")
-            self.assertTrue(c["is_borrowed"])
+        self.assertFalse(pack.borrowed)
+        self.assertNotEqual(pack.status, "BORROWED")
+        borrowed = [c for c in pack if c.get("is_borrowed")]
+        self.assertEqual(len(borrowed), 0)
 
 
 class TestPhase2DFix3Rules(unittest.TestCase):
@@ -1049,7 +1047,7 @@ class TestTOCSectionMapping(unittest.TestCase):
         self.assertEqual(matched[0]["title"], "5.3 Constructors in Detail")
 
     def test_page_order_rotation(self):
-        """(4) TOC/hint chunks are ordered by PAGE ORDER and batch rotation walks through them (batch k at 4k)."""
+        """(4) Hint chunks are ordered by PAGE ORDER and batch rotation walks through them (batch k at 4k)."""
         from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE, build_pack
         _INDEX_CACHE.clear()
         _CHUNKS_CACHE.clear()
@@ -1070,6 +1068,53 @@ class TestTOCSectionMapping(unittest.TestCase):
             for c in chunks:
                 f.write(json.dumps(c) + "\n")
 
+        hints_data = {"mockpdf": {"constructor-basics": [[10, 17]]}}
+        h_file = self.temp_dir / "hints.json"
+        with open(h_file, "w", encoding="utf-8") as f:
+            json.dump(hints_data, f)
+
+        from tools.question_bank.bank_prepare import BM25Index
+        bm = BM25Index()
+        for c in chunks:
+            bm.add_document(c["chunk_id"], c["text"])
+        bm.save(p_dir / "bm25.pkl")
+
+        p0 = build_pack(pdfshort, "constructor-basics", batch_idx=0, max_words=200, work_dir=self.temp_dir, hints_file=h_file)
+        self.assertEqual(p0.status, "OK")
+        self.assertEqual(p0[0]["chunk_id"], "chunk_000")
+        self.assertEqual(p0[0]["page_start"], 10)
+        # Check that returned chunks come in page order
+        for idx in range(len(p0) - 1):
+            self.assertLessEqual(p0[idx]["page_start"], p0[idx + 1]["page_start"])
+
+        p1 = build_pack(pdfshort, "constructor-basics", batch_idx=1, max_words=200, work_dir=self.temp_dir, hints_file=h_file)
+        self.assertEqual(p1.status, "OK")
+        self.assertEqual(p1[0]["chunk_id"], "chunk_004")
+        self.assertEqual(p1[0]["page_start"], 14)
+
+    def test_automatic_toc_match_never_creates_strong(self):
+        """(5) Phase 2D-fix-7: Automatic TOC match never creates STRONG chunks (review only)."""
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE, build_pack
+        _INDEX_CACHE.clear()
+        _CHUNKS_CACHE.clear()
+
+        pdfshort = "mockpdf_toc_only"
+        p_dir = self.temp_dir / pdfshort
+        p_dir.mkdir(parents=True)
+        chunks = []
+        for i in range(8):
+            chunks.append({
+                "chunk_id": f"chunk_{i:03d}",
+                "page_start": 10 + i,
+                "page_end": 10 + i,
+                "text": f"Generic code and text here without strong phrase anchors {i}.",
+                "word_count": 50,
+            })
+        with open(p_dir / "chunks.jsonl", "w", encoding="utf-8") as f:
+            for c in chunks:
+                f.write(json.dumps(c) + "\n")
+
+        # TOC matches concept, but no hints file and no anchor-strong hits
         toc = [{"level": 2, "title": "Constructors and Objects", "page_start": 10, "page_end": 17}]
         with open(p_dir / "toc.json", "w", encoding="utf-8") as f:
             json.dump(toc, f)
@@ -1080,39 +1125,54 @@ class TestTOCSectionMapping(unittest.TestCase):
             bm.add_document(c["chunk_id"], c["text"])
         bm.save(p_dir / "bm25.pkl")
 
-        p0 = build_pack(pdfshort, "constructor-basics", batch_idx=0, max_words=200, work_dir=self.temp_dir)
-        self.assertEqual(p0.status, "OK")
-        self.assertEqual(p0[0]["chunk_id"], "chunk_000")
-        self.assertEqual(p0[0]["page_start"], 10)
+        # Must return NO_MATERIAL because TOC matches never create STRONG chunks
+        pack = build_pack(pdfshort, "constructor-basics", batch_idx=0, max_words=200, work_dir=self.temp_dir)
+        self.assertEqual(pack.status, "NO_MATERIAL")
+        self.assertEqual(pack.strong_count, 0)
 
-        p1 = build_pack(pdfshort, "constructor-basics", batch_idx=1, max_words=200, work_dir=self.temp_dir)
-        self.assertEqual(p1.status, "OK")
-        self.assertEqual(p1[0]["chunk_id"], "chunk_004")
-        self.assertEqual(p1[0]["page_start"], 14)
+    def test_failing_check_drops_range(self):
+        """(6) Automatic verification: a hint range with a failing check is dropped."""
+        from tools.question_bank.verify_hints import verify_hints_data
 
-    def test_hint_beats_toc(self):
-        """(5) Human page hints win over TOC matches, and explicit [] disables TOC."""
-        from tools.question_bank.bank_pack import get_effective_ranges
-
-        hints_data = {"test_pdf": {"constructor-basics": [[50, 55]]}}
-        h_file = self.temp_dir / "hints.json"
+        hints_data = {
+            "JavaNotesForProfessionals": {
+                "constructor-basics": [[249, 252]],
+                "default-constructor": [[249, 249]],
+            }
+        }
+        h_file = self.temp_dir / "test_drop_hints.json"
         with open(h_file, "w", encoding="utf-8") as f:
             json.dump(hints_data, f)
 
-        ranges, src = get_effective_ranges("test_pdf", "constructor-basics", hints_file=h_file)
-        self.assertEqual(src, "HINT")
-        self.assertEqual(ranges, [[50, 55]])
+        # Check on page 250 that will intentionally FAIL
+        custom_checks = [
+            "JN|250|nonexistent text that definitely fails verification"
+        ]
 
-        hints_data_disabled = {"test_pdf": {"constructor-basics": []}}
-        with open(h_file, "w", encoding="utf-8") as f:
-            json.dump(hints_data_disabled, f)
+        verified, checks, dropped = verify_hints_data(
+            hints_path=h_file,
+            checks_list=custom_checks,
+        )
 
-        ranges, src = get_effective_ranges("test_pdf", "constructor-basics", hints_file=h_file)
-        self.assertEqual(src, "DISABLED")
-        self.assertEqual(ranges, [])
+        # Range [249, 252] covers failing page 250 -> dropped
+        # Range [249, 249] does NOT cover page 250 -> kept
+        self.assertEqual(len(dropped), 1)
+        self.assertEqual(dropped[0]["concept"], "constructor-basics")
+        self.assertEqual(dropped[0]["range"], [249, 252])
+        self.assertNotIn([249, 252], verified["JavaNotesForProfessionals"].get("constructor-basics", []))
+        self.assertIn([249, 249], verified["JavaNotesForProfessionals"].get("default-constructor", []))
+
+    def test_every_range_valid(self):
+        """(7) Automatic verification: all 126 ranges in tools/question_bank/page_hints.json pass checks and bounds."""
+        from tools.question_bank.verify_hints import verify_hints_data
+        verified, checks, dropped = verify_hints_data()
+        self.assertEqual(len(dropped), 0, f"Found dropped ranges: {dropped}")
+        failed_checks = [c for c in checks if c["status"] == "FAIL"]
+        self.assertEqual(len(failed_checks), 0, f"Found failing checks: {failed_checks}")
+        self.assertEqual(len(checks), 84)
 
     def test_no_outline_fallback_warning(self):
-        """(6) Extracting TOC on a PDF with no outline prints a clear warning and falls back to regex."""
+        """(8) Extracting TOC on a PDF with no outline prints a clear warning and falls back to regex."""
         import io
         from contextlib import redirect_stdout
         import fitz
