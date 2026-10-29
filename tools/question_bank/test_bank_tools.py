@@ -37,6 +37,8 @@ from tools.question_bank.bank_coverage import allocate_quotas
 from tools.question_bank.bank_pack import (
     ANCHOR_EXTRA,
     PACK_ALIASES,
+    UNAMBIGUOUS_SINGLE_WORDS,
+    all_core,
     build_pack,
     check_chunk_anchors,
     check_heading_hit,
@@ -428,12 +430,13 @@ class TestPhase2DFix3Rules(unittest.TestCase):
         # Test (a): title word 'interface' is CORE for interface-basics despite high df
         anchors = ["interface", "basics", "contract", "implements"]
         df = {"interface": 1000, "basics": 1, "contract": 2, "implements": 50}
-        core, support = split_anchors("interface-basics", anchors, df=df, total_chunks=1000)
+        phrase_core, word_core, support = split_anchors("interface-basics", anchors, df=df, total_chunks=1000)
+        core = all_core(phrase_core, word_core)
 
-        # 'interface' is title/tag word -> CORE
+        # 'interface' is title/tag word -> WORD_CORE
         self.assertIn("interface", core)
-        # 'implements' is in ANCHOR_EXTRA -> CORE
-        self.assertIn("implements", core)
+        # 'implements' is in ANCHOR_EXTRA -> PHRASE_CORE
+        self.assertIn("implements", phrase_core)
         # 'basics' is in FILLER_WORDS -> SUPPORT
         self.assertIn("basics", support)
         # 'contract' is in LOOSE_WORDS -> SUPPORT
@@ -502,8 +505,8 @@ class TestPhase2DFix3Rules(unittest.TestCase):
                 "pdf": self.pdfshort,
                 "page_start": 32,
                 "page_end": 32,
-                "text": "More method overriding examples with super call.",
-                "word_count": 8,
+                "text": "More method overriding examples with dynamic method dispatch and runtime polymorphism.",
+                "word_count": 10,
             },
         ]
         self._setup_mock_index(chunks)
@@ -585,17 +588,17 @@ class TestPhase2DFix3Rules(unittest.TestCase):
         self.assertTrue(pack[0]["is_strong"])
 
     def test_class_definition_anchors_are_core(self):
-        # Phase 2D-fix-4 test: class-definition anchor extras are all CORE
+        # Phase 2D-fix-4 test: class-definition anchor extras are all PHRASE_CORE
         anchors = get_anchors("class-definition")
         df = {a: 500 for a in anchors}  # high document frequency
-        core, support = split_anchors("class-definition", anchors, df=df, total_chunks=1000)
+        phrase_core, word_core, support = split_anchors("class-definition", anchors, df=df, total_chunks=1000)
 
-        required_core = [
+        required_phrase_core = [
             "class definition", "defining a class", "class declaration", "declare a class",
             "instance variables", "instance methods", "class body", "blueprint", "public class"
         ]
-        for term in required_core:
-            self.assertIn(term, core, f"Expected '{term}' to be CORE for class-definition")
+        for term in required_phrase_core:
+            self.assertIn(term, phrase_core, f"Expected '{term}' to be PHRASE_CORE for class-definition")
 
 
 class TestQuotaMathematics(unittest.TestCase):
@@ -643,6 +646,318 @@ class TestQuotaMathematics(unittest.TestCase):
         self.assertEqual(sum(totals.values()), 252)
 
 
+class TestPhase2DFix5Rules(unittest.TestCase):
+    """Unit tests for Phase 2D-fix-5: PHRASE_CORE requirement, NO_MATERIAL threshold,
+    enforced borrowing, forced hints, this. demotion, data-hiding anchors."""
+
+    def setUp(self):
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE
+        _INDEX_CACHE.clear()
+        _CHUNKS_CACHE.clear()
+        self.temp_dir = Path(tempfile.mkdtemp())
+        self.pdfshort = "test_fix5_book"
+        self.pdf_dir = self.temp_dir / self.pdfshort
+        self.pdf_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE
+        _INDEX_CACHE.clear()
+        _CHUNKS_CACHE.clear()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _setup_mock_index(self, chunks):
+        index = BM25Index(k1=1.5, b=0.75)
+        for c in chunks:
+            index.add_document(c["chunk_id"], c["text"])
+        index.finalize()
+        index.save(self.pdf_dir / "bm25.pkl")
+        with open(self.pdf_dir / "chunks.jsonl", "w", encoding="utf-8") as f:
+            for c in chunks:
+                f.write(json.dumps(c) + "\n")
+
+    def test_this_dot_is_support_not_phrase_core(self):
+        """'this.' must be SUPPORT (English noise), not PHRASE_CORE."""
+        anchors = get_anchors("this-keyword")
+        df = {a: 1 for a in anchors}
+        phrase_core, word_core, support = split_anchors("this-keyword", anchors, df=df, total_chunks=100)
+        self.assertNotIn("this.", phrase_core, "this. must NOT be PHRASE_CORE")
+        self.assertNotIn("this.", word_core, "this. must NOT be WORD_CORE")
+        self.assertIn("this.", support, "this. must be SUPPORT")
+        # But this( should remain PHRASE_CORE (symbol token)
+        self.assertIn("this(", phrase_core, "this( must be PHRASE_CORE")
+
+    def test_unambiguous_single_words_are_phrase_core(self):
+        """Each word in UNAMBIGUOUS_SINGLE_WORDS is PHRASE_CORE regardless of df."""
+        concept = "interface-basics"
+        for word in ["implements", "dispatch", "shadowing", "immutable", "accessor"]:
+            if word in UNAMBIGUOUS_SINGLE_WORDS:
+                df = {word: 800}
+                phrase_core, word_core, support = split_anchors(concept, [word], df=df, total_chunks=1000)
+                self.assertIn(word, phrase_core, f"'{word}' must be PHRASE_CORE")
+
+    def test_word_core_alone_does_not_make_chunk_strong(self):
+        """A chunk with only WORD_CORE hits must not be STRONG."""
+        # Use finally-block: 'finally' is the tag word -> WORD_CORE.
+        # Without 'finally block' or 'finally clause' (PHRASE_CORE), chunk is only CANDIDATE.
+        chunks = [
+            {
+                "chunk_id": f"{self.pdfshort}_w1",
+                "pdf": self.pdfshort,
+                "page_start": 5,
+                "page_end": 5,
+                "text": "Finally the program cleans up. And finally it terminates. Finally done.",
+                "word_count": 12,
+            },
+            {
+                "chunk_id": f"{self.pdfshort}_w2",
+                "pdf": self.pdfshort,
+                "page_start": 6,
+                "page_end": 6,
+                "text": "The finally block executes unconditionally after the try block finishes.",
+                "word_count": 11,
+            },
+            {
+                "chunk_id": f"{self.pdfshort}_w3",
+                "pdf": self.pdfshort,
+                "page_start": 7,
+                "page_end": 7,
+                "text": "Using finally clause ensures resources are released even if an exception is thrown.",
+                "word_count": 13,
+            },
+        ]
+        self._setup_mock_index(chunks)
+        pack = build_pack(self.pdfshort, "finally-block", batch_idx=0, max_words=1000, work_dir=self.temp_dir)
+        # w1 has only 'finally' (WORD_CORE) three times but no PHRASE_CORE -> must NOT be strong
+        w1 = next((c for c in pack if c["chunk_id"] == f"{self.pdfshort}_w1"), None)
+        if w1 is not None:  # it may be excluded if NO_MATERIAL
+            self.assertFalse(w1["is_strong"], "WORD_CORE-only chunk must not be STRONG")
+        # w2 has 'finally block' (PHRASE_CORE) -> must be strong
+        w2 = next((c for c in pack if c["chunk_id"] == f"{self.pdfshort}_w2"), None)
+        if w2 is not None:
+            self.assertTrue(w2["is_strong"], "'finally block' is PHRASE_CORE -> must be STRONG")
+
+    def test_no_material_returned_when_fewer_than_2_strong(self):
+        """NO_MATERIAL is returned when there are < 2 STRONG/HINT chunks."""
+        # Only 1 strong chunk possible (one chunk with PHRASE_CORE, one WORD_CORE-only)
+        chunks = [
+            {
+                "chunk_id": f"{self.pdfshort}_nm1",
+                "pdf": self.pdfshort,
+                "page_start": 5,
+                "page_end": 5,
+                "text": "Overriding a method with @Override annotation.",
+                "word_count": 6,
+            },
+            {
+                "chunk_id": f"{self.pdfshort}_nm2",
+                "pdf": self.pdfshort,
+                "page_start": 6,
+                "page_end": 6,
+                "text": "Subclass method override pattern.",
+                "word_count": 4,
+            },
+        ]
+        self._setup_mock_index(chunks)
+        pack = build_pack(
+            self.pdfshort, "method-overriding", batch_idx=0, max_words=1000,
+            work_dir=self.temp_dir, allow_borrow=False
+        )
+        self.assertEqual(pack.status, "NO_MATERIAL",
+            f"Expected NO_MATERIAL but got {pack.status} with {pack.strong_count} strong chunks")
+
+    def test_hint_chunks_force_included_even_without_anchors(self):
+        """Hinted chunks are included even if they have no anchor matches."""
+        hints_file = self.temp_dir / "hints.json"
+        with open(hints_file, "w", encoding="utf-8") as f:
+            json.dump({self.pdfshort: {"method-overriding": [[100, 100]]}}, f)
+
+        chunks = [
+            # High-scoring chunk with anchors
+            {
+                "chunk_id": f"{self.pdfshort}_h1",
+                "pdf": self.pdfshort,
+                "page_start": 10,
+                "page_end": 10,
+                "text": "Method overriding with @Override annotation redefines parent behavior.",
+                "word_count": 9,
+            },
+            # Hinted chunk on page 100 with NO anchor matches
+            {
+                "chunk_id": f"{self.pdfshort}_h2",
+                "pdf": self.pdfshort,
+                "page_start": 100,
+                "page_end": 100,
+                "text": "See the example on the next page for a complete demonstration.",
+                "word_count": 11,
+            },
+            {
+                "chunk_id": f"{self.pdfshort}_h3",
+                "pdf": self.pdfshort,
+                "page_start": 11,
+                "page_end": 11,
+                "text": "Subclass overrides parent method to redefine behavior using @override.",
+                "word_count": 9,
+            },
+        ]
+        self._setup_mock_index(chunks)
+        pack = build_pack(
+            self.pdfshort, "method-overriding", batch_idx=0, max_words=2000,
+            work_dir=self.temp_dir, hints_file=hints_file
+        )
+        hint_ids = [c["chunk_id"] for c in pack if c["is_hint"]]
+        self.assertIn(f"{self.pdfshort}_h2", hint_ids,
+            "Hinted chunk with no anchors must still be force-included")
+        # Hinted chunk comes first
+        self.assertEqual(pack[0]["chunk_id"], f"{self.pdfshort}_h2",
+            "Hinted chunks must appear first in the pack")
+
+    def test_data_hiding_phrase_anchors_are_phrase_core(self):
+        """data-hiding ANCHOR_EXTRA must all be PHRASE_CORE (they are multi-word phrases)."""
+        anchors = get_anchors("data-hiding")
+        df = {a: 500 for a in anchors}
+        phrase_core, word_core, support = split_anchors("data-hiding", anchors, df=df, total_chunks=1000)
+        for phrase in ["data hiding", "information hiding", "private field", "private variable", "encapsulation"]:
+            self.assertIn(phrase, phrase_core, f"'{phrase}' must be PHRASE_CORE for data-hiding")
+
+    def test_borrowing_requires_target_phrase_core(self):
+        """Borrowed chunk must contain >= 1 PHRASE_CORE anchor of the TARGET concept."""
+        # target: dynamic-method-dispatch, alias: method-overriding
+        # Chunk A: has @override (PHRASE_CORE for method-overriding) but no target PHRASE_CORE
+        #          (no 'dispatch', 'late binding', 'dynamic binding', etc.) -> REJECTED
+        # Chunk B: has @override AND 'late binding' (target PHRASE_CORE) -> ACCEPTED
+        chunks = [
+            {
+                "chunk_id": f"{self.pdfshort}_b1",
+                "pdf": self.pdfshort,
+                "page_start": 5,
+                "page_end": 5,
+                "text": "Subclass overrides parent with @Override annotation to redefine behavior.",
+                "word_count": 10,
+            },
+            {
+                "chunk_id": f"{self.pdfshort}_b2",
+                "pdf": self.pdfshort,
+                "page_start": 6,
+                "page_end": 6,
+                "text": "Method overriding causes late binding and dynamic binding at runtime via dynamic method dispatch.",
+                "word_count": 14,
+            },
+            {
+                "chunk_id": f"{self.pdfshort}_b3",
+                "pdf": self.pdfshort,
+                "page_start": 7,
+                "page_end": 7,
+                "text": "Overriding method redefines behavior with @Override and triggers dynamic binding polymorphic call.",
+                "word_count": 13,
+            },
+        ]
+        self._setup_mock_index(chunks)
+        pack = build_pack(
+            self.pdfshort, "dynamic-method-dispatch", batch_idx=0, max_words=2000,
+            work_dir=self.temp_dir, allow_borrow=True
+        )
+        pack_ids = {c["chunk_id"] for c in pack}
+        # b1 has no target PHRASE_CORE -> may not be BORROWED (it's allowed as candidate/regular)
+        b1_borrowed = [c for c in pack if c["chunk_id"] == f"{self.pdfshort}_b1" and c.get("is_borrowed")]
+        self.assertEqual(len(b1_borrowed), 0, "Chunk without target PHRASE_CORE must not be BORROWED-strong")
+
+
+class TestIntegration(unittest.TestCase):
+    """Integration tests against real bank_work data (skipped if data not present)."""
+
+    BANK_WORK = BASE_DIR / "data" / "bank_work"
+
+    def _skip_if_no_data(self, pdfshort: str):
+        pdf_dir = self.BANK_WORK / pdfshort
+        if not (pdf_dir / "bm25.pkl").exists() or not (pdf_dir / "chunks.jsonl").exists():
+            self.skipTest(f"No bank_work data for {pdfshort} – run bank_prepare.py first")
+
+    def test_no_ok_pack_with_zero_strong(self):
+        """(a) No pack with status OK has 0 strong/hint chunks."""
+        pdfs = [p.name for p in self.BANK_WORK.iterdir() if p.is_dir() and (p / "bm25.pkl").exists()]
+        if not pdfs:
+            self.skipTest("No bank_work data found")
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE
+        _INDEX_CACHE.clear()
+        _CHUNKS_CACHE.clear()
+        for pdf in pdfs:
+            for concept in list(CONCEPTS.keys())[:20]:  # sample 20 concepts per PDF
+                try:
+                    pack = build_pack(pdf, concept, batch_idx=0, work_dir=self.BANK_WORK)
+                    if pack.status == "OK":
+                        strong_hint = [c for c in pack if c["is_strong"] or c["is_hint"]]
+                        self.assertGreater(
+                            len(strong_hint), 0,
+                            f"{pdf}/{concept}: status=OK but 0 strong/hint chunks"
+                        )
+                except FileNotFoundError:
+                    continue
+
+    def test_borrowed_chunks_have_target_phrase_core(self):
+        """(b) Every BORROWED chunk in real packs has target PHRASE_CORE >= 1."""
+        pdfs = [p.name for p in self.BANK_WORK.iterdir() if p.is_dir() and (p / "bm25.pkl").exists()]
+        if not pdfs:
+            self.skipTest("No bank_work data found")
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE, split_anchors, get_anchors
+        _INDEX_CACHE.clear()
+        _CHUNKS_CACHE.clear()
+        for pdf in pdfs:
+            for concept in PACK_ALIASES:
+                try:
+                    pack = build_pack(pdf, concept, batch_idx=0, work_dir=self.BANK_WORK)
+                    # Get phrase_core for the TARGET concept
+                    from tools.question_bank.bank_pack import _get_index_and_chunks
+                    try:
+                        index, chunks_map = _get_index_and_chunks(pdf, self.BANK_WORK)
+                    except FileNotFoundError:
+                        continue
+                    anchors = get_anchors(concept)
+                    phrase_core, _, _ = split_anchors(concept, anchors, index.df, index.doc_count)
+                    for chunk in pack:
+                        if chunk.get("is_borrowed"):
+                            hits = set(chunk.get("anchors_hit", []))
+                            phrase_hits = hits & phrase_core
+                            self.assertGreater(
+                                len(phrase_hits), 0,
+                                f"{pdf}/{concept}: borrowed chunk {chunk['chunk_id']} has no target PHRASE_CORE"
+                            )
+                except FileNotFoundError:
+                    continue
+
+    def test_specific_no_material_concepts(self):
+        """(c) Known thin concepts must return NO_MATERIAL on their respective PDFs."""
+        cases = [
+            ("javanotes9", "dynamic-method-dispatch"),
+            ("thinkjava2", "method-overriding"),
+            ("thinkjava2", "finally-block"),
+            ("thinkjava2", "try-with-resources"),
+            ("thinkjava2", "copy-constructor"),
+        ]
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE
+        for pdfshort, concept in cases:
+            _INDEX_CACHE.clear()
+            _CHUNKS_CACHE.clear()
+            self._skip_if_no_data(pdfshort)
+            pack = build_pack(pdfshort, concept, batch_idx=0, work_dir=self.BANK_WORK)
+            self.assertEqual(
+                pack.status, "NO_MATERIAL",
+                f"{pdfshort}/{concept}: expected NO_MATERIAL, got {pack.status} (strong={pack.strong_count})"
+            )
+
+    def test_method_overriding_javanotes9_page_hints(self):
+        """(d) method-overriding/javanotes9 has >= 3 chunks inside pages 256-269."""
+        pdfshort = "javanotes9"
+        self._skip_if_no_data(pdfshort)
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE
+        _INDEX_CACHE.clear()
+        _CHUNKS_CACHE.clear()
+        pack = build_pack(pdfshort, "method-overriding", batch_idx=0, work_dir=self.BANK_WORK)
+        in_range = [c for c in pack if c["page_start"] <= 269 and c["page_end"] >= 256]
+        self.assertGreaterEqual(
+            len(in_range), 3,
+            f"method-overriding/javanotes9: expected >= 3 chunks in pp.256-269, got {len(in_range)}"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
-

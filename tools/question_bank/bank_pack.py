@@ -6,13 +6,14 @@ Builds a focused "source pack" of textbook chunks for a given concept tag
 and batch index. Grounded in textbook page numbers, concept anchors,
 and misconception catalog.
 
-Phase 2D-fix-3 Updates:
-  - Concept TITLE and TAG words are CORE unless in GENERIC_SUPPORT_WORDS or FILLER_WORDS (stem matching).
-  - Single-word anchors not in title/tag are CORE via df < 3% ONLY if not in LOOSE_WORDS; otherwise SUPPORT.
-  - ANCHOR_EXTRA extended for interface-basics, finally-block, try-with-resources, copy-constructor, immutability, getters-setters.
-  - Strict borrowing: borrowed chunks MUST contain >= 1 CORE anchor of the TARGET concept.
-  - Human page overrides via tools/question_bank/page_hints.json (put first, marked [HINT], treated as [STRONG]).
-  - Inspection mode prints [HINT] badges and distinguishes CORE/SUPPORT.
+Phase 2D-fix-5 Updates:
+  - PHRASE_CORE/WORD_CORE split: a chunk is STRONG only if it has >= 1 PHRASE_CORE hit
+    (or an UNAMBIGUOUS single-word hit). WORD_CORE alone = CANDIDATE.
+  - NO_MATERIAL returned if < 2 STRONG/HINT chunks in a PDF (candidates alone never form a pack).
+  - Borrowing enforced in build_pack itself: borrowed chunk kept only if target PHRASE_CORE >= 1.
+  - Page hints force-include ALL overlapping chunks (no anchor needed, up to 6), ordered by score.
+  - 'this.' demoted to SUPPORT (bare English word); this(, this keyword, current object kept as PHRASE_CORE.
+  - data-hiding ANCHOR_EXTRA extended with phrase anchors.
 
 Usage (CLI):
     python tools/question_bank/bank_pack.py --pdf javanotes9 --concept method-overriding --batch 0
@@ -66,17 +67,28 @@ LOOSE_WORDS = {
     "contract", "cleanup", "invariant", "resource", "resources", "basics", "constant", "clone"
 }
 
+# Single words that are unambiguous enough to count as PHRASE_CORE even without a phrase partner.
+# These are rare, domain-specific enough that they cannot be English noise.
+UNAMBIGUOUS_SINGLE_WORDS = {
+    "immutable", "autocloseable", "getter", "setter", "getters", "setters",
+    "accessor", "mutator", "implements", "dispatch", "shadowing", "polymorphic",
+}
+
+# 'this.' in English prose is a determiner + period - demote to SUPPORT.
+# Keep the other this-keyword tokens as PHRASE_CORE.
+_THIS_DOT_SUPPORT = {"this."}
+
 ANCHOR_EXTRA = {
     "method-overriding": ["redefine", "redefines", "overrides", "@override"],
     "dynamic-method-dispatch": [
         "dispatch", "dynamic binding", "late binding", "dynamically bound", "runtime polymorphism",
         "overridden method", "polymorphic call"
     ],
-    "this-keyword": ["this.", "this(", "this keyword"],
+    "this-keyword": ["this.", "this(", "this keyword", "current object", "implicit parameter", "shadowing"],
     "constructor-chaining": ["this(", "super(", "constructor chaining", "call another constructor"],
     "static-members": ["static method", "static variable", "static field", "class variable", "static member"],
     "interface-basics": ["implements", "interface"],
-    "finally-block": ["finally block", "finally clause", "finally"],
+    "finally-block": ["finally block", "finally clause"],
     "try-with-resources": ["autocloseable", "try-with-resources", "suppressed exception", "close()"],
     "copy-constructor": ["copy constructor", "clone()", "deep copy", "shallow copy"],
     "immutability": ["immutable class", "immutable object"],
@@ -84,6 +96,9 @@ ANCHOR_EXTRA = {
     "class-definition": [
         "class definition", "defining a class", "class declaration", "declare a class",
         "instance variables", "instance methods", "class body", "blueprint", "public class"
+    ],
+    "data-hiding": [
+        "data hiding", "information hiding", "private field", "private variable", "encapsulation"
     ],
 }
 
@@ -166,17 +181,29 @@ def get_anchors(concept_tag: str) -> list[str]:
     return sorted(list(anchors))
 
 
-def split_anchors(concept_tag: str, anchors: list[str], df: dict, total_chunks: int) -> tuple[set[str], set[str]]:
+def split_anchors(
+    concept_tag: str, anchors: list[str], df: dict, total_chunks: int
+) -> tuple[set[str], set[str], set[str]]:
     """
-    Splits anchors into CORE and SUPPORT per (pdf, concept) - Phase 2D-fix-3 rules:
-      - Phrases (2+ words), symbol tokens (@override, super(, this(), this., close()),
-        and ANCHOR_EXTRA entries stay CORE.
-      - Any single word appearing in concept TITLE or TAG is CORE unless in GENERIC_SUPPORT_WORDS
-        or FILLER_WORDS (matching by first 7 letters stem: immutability matches immutable, abstraction matches abstract).
-      - Single-word anchors NOT in title/tag are CORE via df < 3% rule ONLY if NOT in LOOSE_WORDS; otherwise SUPPORT.
-      - Everything else is SUPPORT.
+    Phase 2D-fix-5: Splits anchors into PHRASE_CORE, WORD_CORE, and SUPPORT.
+
+    PHRASE_CORE (can make a chunk STRONG on their own):
+      - Multi-word phrases (2+ words)
+      - Symbol tokens (@override, super(, this(, close(), etc.) — but NOT 'this.' (English noise)
+      - Any entry in ANCHOR_EXTRA[concept_tag]
+      - Any single word in UNAMBIGUOUS_SINGLE_WORDS
+
+    WORD_CORE (in CORE but cannot make a chunk STRONG alone):
+      - Single words from concept TITLE or TAG that are not in GENERIC_SUPPORT_WORDS / FILLER_WORDS
+        (stem: first 7 letters)
+      - Single words not in title/tag with df < 3%, not in LOOSE_WORDS
+      - Exception: 'constructors' stem-matches 'constructor' but constructors alone is never PHRASE_CORE.
+
+    SUPPORT:
+      - Everything else.
     """
-    core = set()
+    phrase_core = set()
+    word_core = set()
     support = set()
     extras = {e.lower() for e in ANCHOR_EXTRA.get(concept_tag, [])}
 
@@ -191,17 +218,32 @@ def split_anchors(concept_tag: str, anchors: list[str], df: dict, total_chunks: 
     for a in anchors:
         a_low = a.lower()
 
-        # Rule 1: ANCHOR_EXTRA entries stay CORE
+        # Rule 0: 'this.' is English noise — always SUPPORT
+        if a_low in _THIS_DOT_SUPPORT:
+            support.add(a_low)
+            continue
+
+        # Rule 1: ANCHOR_EXTRA entries are PHRASE_CORE
         if a_low in extras:
-            core.add(a_low)
+            phrase_core.add(a_low)
             continue
 
-        # Rule 2: Phrases (2+ words) and symbol tokens stay CORE
-        if " " in a_low or any(not ch.isalnum() for ch in a_low):
-            core.add(a_low)
+        # Rule 2: Multi-word phrases are PHRASE_CORE
+        if " " in a_low:
+            phrase_core.add(a_low)
             continue
 
-        # Rule 3: Single-word anchor in TITLE or TAG (via stem matching first 7 letters)
+        # Rule 3: Symbol tokens (contain non-alnum chars, except 'this.') are PHRASE_CORE
+        if any(not ch.isalnum() for ch in a_low):
+            phrase_core.add(a_low)
+            continue
+
+        # Rule 4: Unambiguous single words are PHRASE_CORE
+        if a_low in UNAMBIGUOUS_SINGLE_WORDS:
+            phrase_core.add(a_low)
+            continue
+
+        # Rule 5: Single-word anchor in TITLE or TAG (stem matching first 7 letters)
         is_title_or_tag = False
         if a_low not in GENERIC_SUPPORT_WORDS and a_low not in FILLER_WORDS:
             for w in valid_title_tag_words:
@@ -213,19 +255,24 @@ def split_anchors(concept_tag: str, anchors: list[str], df: dict, total_chunks: 
                     break
 
         if is_title_or_tag:
-            core.add(a_low)
+            word_core.add(a_low)
         else:
-            # Rule 4: Not in title/tag: check LOOSE_WORDS and DF < 3%
+            # Rule 6: Not in title/tag: check LOOSE_WORDS and DF < 3%
             if a_low in GENERIC_SUPPORT_WORDS or a_low in FILLER_WORDS or a_low in LOOSE_WORDS:
                 support.add(a_low)
             else:
                 freq = df.get(a_low, 0)
                 if total_chunks > 0 and (freq / total_chunks) < 0.03:
-                    core.add(a_low)
+                    word_core.add(a_low)
                 else:
                     support.add(a_low)
 
-    return core, support
+    return phrase_core, word_core, support
+
+
+def all_core(phrase_core: set, word_core: set) -> set:
+    """Convenience: union of PHRASE_CORE and WORD_CORE for anchor-hit checks."""
+    return phrase_core | word_core
 
 
 def build_concept_query(concept_tag: str) -> tuple[str, list[str]]:
@@ -325,17 +372,26 @@ def check_heading_hit(text: str, core_anchors: set[str], concept_tag: str) -> st
     if not head_lines:
         return None
 
-    core_phrases = [a for a in core_anchors if (" " in a or any(not ch.isalnum() for ch in a))]
+    core_phrases = [
+        a for a in core_anchors
+        if a not in _THIS_DOT_SUPPORT and (" " in a or any(not ch.isalnum() for ch in a) or a in UNAMBIGUOUS_SINGLE_WORDS)
+    ]
     if concept_tag in ANCHOR_EXTRA:
-        core_phrases.extend([e.lower() for e in ANCHOR_EXTRA[concept_tag]])
-
-    for a in core_anchors:
-        if a not in GENERIC_SUPPORT_WORDS and a not in FILLER_WORDS and len(a) >= 4 and a not in core_phrases:
-            core_phrases.append(a)
+        for extra in ANCHOR_EXTRA[concept_tag]:
+            e = extra.strip().lower()
+            if e not in _THIS_DOT_SUPPORT and (" " in e or any(not ch.isalnum() for ch in e) or e in UNAMBIGUOUS_SINGLE_WORDS):
+                if e not in core_phrases:
+                    core_phrases.append(e)
 
     tag_phrase = concept_tag.replace("-", " ")
-    if tag_phrase not in core_phrases:
+    if " " in tag_phrase and tag_phrase not in core_phrases:
         core_phrases.append(tag_phrase)
+
+    # Fall back to single-word core anchors ONLY if the concept has no phrase/unambiguous anchors
+    if not core_phrases:
+        for a in core_anchors:
+            if a not in GENERIC_SUPPORT_WORDS and a not in FILLER_WORDS and len(a) >= 4 and a not in core_phrases:
+                core_phrases.append(a)
 
     for l in head_lines[:4]:
         if l.startswith(("//", "/*", "*", "package ", "import ", "@", "public ", "private ", "protected ")):
@@ -407,14 +463,17 @@ class SourcePack(list):
 
 
 def _extract_candidates_for_concept(index, chunks_map, concept_tag: str):
-    """Internal helper to score and filter candidate chunks for a concept."""
+    """Internal helper to score and filter candidate chunks for a concept.
+    Returns: (candidates, phrase_core, word_core, support_anchors, best_score, anchors, chunk_ids_in_order)
+    """
     anchors = get_anchors(concept_tag)
-    core_anchors, support_anchors = split_anchors(concept_tag, anchors, index.df, index.doc_count)
+    phrase_core, word_core, support_anchors = split_anchors(concept_tag, anchors, index.df, index.doc_count)
+    core_anchors = all_core(phrase_core, word_core)
     query, keywords = build_concept_query(concept_tag)
 
     raw_scores = dict(index.score(query))
     if not raw_scores:
-        return [], core_anchors, support_anchors, 0.0
+        return [], phrase_core, word_core, support_anchors, 0.0, anchors
 
     candidates = []
     chunk_ids_in_order = sorted(chunks_map.keys())
@@ -436,7 +495,7 @@ def _extract_candidates_for_concept(index, chunks_map, concept_tag: str):
         if has_exact_keyword_phrase(t_lower, keywords):
             score *= 1.20
 
-        h_hit_text = check_heading_hit(chunk["text"], core_anchors, concept_tag)
+        h_hit_text = check_heading_hit(chunk["text"], phrase_core, concept_tag)
         h_hit = bool(h_hit_text)
 
         candidates.append({
@@ -457,7 +516,7 @@ def _extract_candidates_for_concept(index, chunks_map, concept_tag: str):
         })
 
     if not candidates:
-        return [], core_anchors, support_anchors, 0.0
+        return [], phrase_core, word_core, support_anchors, 0.0, anchors
 
     cand_map = {c["chunk_id"]: c for c in candidates}
 
@@ -482,7 +541,8 @@ def _extract_candidates_for_concept(index, chunks_map, concept_tag: str):
 
             next_t_lower = next_chunk.get("text_lower") or next_chunk["text"].lower()
             next_hits, next_hit_list = check_chunk_anchors(next_t_lower, anchors)
-            if any(a in core_anchors for a in next_hit_list):
+            effective_pc = phrase_core if phrase_core else core_anchors
+            if any(a in effective_pc for a in next_hit_list):
                 if next_cid in cand_map:
                     cand_map[next_cid]["chapter_following_hit"] = True
                 else:
@@ -505,7 +565,24 @@ def _extract_candidates_for_concept(index, chunks_map, concept_tag: str):
                     cand_map[next_cid] = cand_entry
 
     best_score = max(c["score"] for c in candidates)
-    return candidates, core_anchors, support_anchors, best_score
+    return candidates, phrase_core, word_core, support_anchors, best_score, anchors
+
+
+def _is_chunk_strong(c: dict, phrase_core: set, word_core: set, best_score: float) -> bool:
+    """Phase 2D-fix-5: A chunk is STRONG only if it has >= 1 PHRASE_CORE hit
+    (or UNAMBIGUOUS single-word hit). WORD_CORE alone => CANDIDATE only.
+    HEADING_HIT or CHAPTER_FOLLOWING_HIT also makes it STRONG."""
+    if c.get("is_hint") or c.get("heading_hit") or c.get("chapter_following_hit"):
+        return True
+    phrase_hits = [a for a in c.get("hit_list", []) if a in phrase_core]
+    if len(phrase_hits) >= 1:
+        all_hits = c.get("hit_list", [])
+        distinct_ok = (len(all_hits) >= 2) or any(c.get("hits", {}).get(a, 0) >= 2 for a in phrase_hits)
+        score_ok = (c["score"] >= 0.40 * best_score)
+        if distinct_ok and score_ok:
+            return True
+    return False
+
 
 
 def build_pack(
@@ -518,100 +595,142 @@ def build_pack(
     hints_file: Path = None,
 ) -> SourcePack:
     """
-    Builds a source pack of textbook chunks:
-      - Applies human page overrides from page_hints.json first (marked [HINT], treated as [STRONG]).
-      - Uses weighted query + keyword phrase bonus (+20%).
-      - Selects candidate chunks (containing >= 1 anchor).
-      - Identifies strong chunks:
-          * Page hint hit ([HINT])
-          * OR (>= 1 CORE anchor hit) AND (>= 2 distinct anchors OR CORE anchor appears >= 2 times)
-            AND (score >= 40% best score)
-          * OR chunk has a HEADING HIT (or next 3 chapter chunks with >= 1 CORE anchor).
-      - Strict borrowing: if own strong < 3 and allow_borrow, borrows from PACK_ALIASES ONLY chunks
-        that contain >= 1 CORE anchor of the TARGET concept.
-      - Rotation: batch k rotates by k*4, wrapping within strong chunks only.
+    Builds a source pack of textbook chunks (Phase 2D-fix-5 rules):
+      - Force-includes ALL chunks overlapping hinted pages (no anchor needed, up to 6, by score).
+      - STRONG requires >= 1 PHRASE_CORE hit (or heading/chapter hit or hint).
+        WORD_CORE alone => CANDIDATE, never STRONG.
+      - Returns NO_MATERIAL if < 2 STRONG+HINT chunks (candidates alone never form a pack).
+      - Strict borrowing: only borrow if target PHRASE_CORE >= 1 in the borrowed chunk.
+      - Rotation: batch k rotates by k*4 within non-hinted strong chunks.
     """
     index, chunks_map = _get_index_and_chunks(pdfshort, work_dir)
-    candidates, core_anchors, support_anchors, best_score = _extract_candidates_for_concept(index, chunks_map, concept_tag)
+    candidates, phrase_core, word_core, support_anchors, best_score, anchors = _extract_candidates_for_concept(
+        index, chunks_map, concept_tag
+    )
+    core_anchors = all_core(phrase_core, word_core)
 
-    # Apply page hints override
+    # --- Step 1: Force-include hinted chunks (no anchor required) ---
     hints = get_page_hints(pdfshort, concept_tag, hints_file)
+    hinted_cids: set[str] = set()
+    hinted_pool: list[dict] = []
+    cand_map_by_id = {c["chunk_id"]: c for c in candidates}
+
+    if hints:
+        # Gather all chunks overlapping any hinted range
+        for cid, chunk in chunks_map.items():
+            c_start = chunk["page_start"]
+            c_end = chunk["page_end"]
+            if any(max(c_start, h[0]) <= min(c_end, h[1]) for h in hints):
+                if cid in cand_map_by_id:
+                    c = cand_map_by_id[cid]
+                else:
+                    # Chunk not in candidates; add it without anchor check
+                    t_lower = chunk.get("text_lower") or chunk["text"].lower()
+                    h_hits, h_hit_list = check_chunk_anchors(t_lower, anchors) if anchors else ({}, [])
+                    c = {
+                        "chunk_id": cid,
+                        "text": chunk["text"],
+                        "page_start": c_start,
+                        "page_end": c_end,
+                        "score": 1.0,
+                        "words": chunk.get("word_count") or len(chunk["text"].split()),
+                        "hits": h_hits,
+                        "hit_list": h_hit_list,
+                        "heading_hit": False,
+                        "heading_text": "",
+                        "chapter_following_hit": False,
+                        "source_concept": concept_tag,
+                        "is_borrowed": False,
+                    }
+                c["is_hint"] = True
+                c["is_strong"] = True
+                hinted_cids.add(cid)
+                hinted_pool.append(c)
+
+        hinted_pool.sort(key=lambda x: x["score"], reverse=True)
+        hinted_pool = hinted_pool[:6]  # at most 6 hint chunks
+
+    # Mark is_hint on candidates too
     for c in candidates:
-        if hints:
-            c_start = c["page_start"]
-            c_end = c["page_end"]
-            c["is_hint"] = any(max(c_start, h[0]) <= min(c_end, h[1]) for h in hints)
-        else:
-            c["is_hint"] = False
+        c["is_hint"] = c["chunk_id"] in hinted_cids
 
-    strong_chunks = []
-    regular_chunks = []
+    # --- Step 2: Classify candidates as STRONG or CANDIDATE ---
+    strong_chunks: list[dict] = []
+    regular_chunks: list[dict] = []
 
     for c in candidates:
-        is_strong = False
-        if c.get("is_hint"):
-            is_strong = True
-        elif c["heading_hit"] or c["chapter_following_hit"]:
-            is_strong = True
-        else:
-            core_hits = [a for a in c["hit_list"] if a in core_anchors]
-            if len(core_hits) >= 1:
-                distinct_ok = (len(c["hit_list"]) >= 2) or any(c["hits"][a] >= 2 for a in core_hits)
-                score_ok = (c["score"] >= 0.40 * best_score)
-                if distinct_ok and score_ok:
-                    is_strong = True
-
+        if c["chunk_id"] in hinted_cids:
+            c["is_strong"] = True
+            strong_chunks.append(c)
+            continue
+        is_strong = _is_chunk_strong(c, phrase_core, word_core, best_score)
         c["is_strong"] = is_strong
         if is_strong:
             strong_chunks.append(c)
         else:
             regular_chunks.append(c)
 
-    # Rule 2: Borrowing is used ONLY when the target's own strong_count < 3
+    # Add hinted chunks not already in candidates
+    extra_hint_ids = hinted_cids - {c["chunk_id"] for c in strong_chunks}
+    for c in hinted_pool:
+        if c["chunk_id"] in extra_hint_ids:
+            strong_chunks.append(c)
+
+    own_strong_count = len([c for c in strong_chunks if not c.get("is_borrowed")])
+
+    # --- Step 3: Borrowing ONLY when own strong < 3 ---
     is_borrowed = False
     source_alias = None
-    if len(strong_chunks) < 3 and allow_borrow and concept_tag in PACK_ALIASES:
+    if own_strong_count < 3 and allow_borrow and concept_tag in PACK_ALIASES:
         for alias in PACK_ALIASES[concept_tag]:
-            alias_cands, a_core, a_supp, a_best = _extract_candidates_for_concept(index, chunks_map, alias)
-            alias_strong = []
+            alias_cands, a_phrase, a_word, a_supp, a_best, a_anchors = _extract_candidates_for_concept(
+                index, chunks_map, alias
+            )
+            alias_strong: list[dict] = []
             for ac in alias_cands:
-                # Borrowed chunk allowed ONLY if it contains >= 1 CORE anchor of the TARGET concept
-                target_hits, target_hit_list = check_chunk_anchors(
-                    ac["text"].lower(), list(core_anchors)
-                )
-                if not any(a in core_anchors for a in target_hit_list):
+                # PHRASE_CORE of TARGET concept required in the borrowed chunk
+                ac_text_lower = ac.get("text_lower") or ac["text"].lower()
+                _, target_phrase_hits = check_chunk_anchors(ac_text_lower, list(phrase_core))
+                if not target_phrase_hits:
                     continue
-
-                ac_is_strong = False
-                if ac["heading_hit"] or ac["chapter_following_hit"]:
-                    ac_is_strong = True
-                else:
-                    ac_core_hits = [a for a in ac["hit_list"] if a in a_core]
-                    if len(ac_core_hits) >= 1:
-                        dist_ok = (len(ac["hit_list"]) >= 2) or any(ac["hits"][a] >= 2 for a in ac_core_hits)
-                        sc_ok = (ac["score"] >= 0.40 * a_best)
-                        if dist_ok and sc_ok:
-                            ac_is_strong = True
-
+                ac_is_strong = _is_chunk_strong(ac, a_phrase, a_word, a_best)
                 if ac_is_strong:
-                    ac["is_strong"] = True
-                    ac["source_concept"] = alias
-                    ac["is_borrowed"] = True
-                    alias_strong.append(ac)
+                    ac_copy = dict(ac)
+                    ac_copy["is_strong"] = True
+                    ac_copy["source_concept"] = alias
+                    ac_copy["is_borrowed"] = True
+                    ac_copy["is_hint"] = False
+                    ac_copy["phrase_core_hit"] = target_phrase_hits
+                    alias_strong.append(ac_copy)
 
             if alias_strong:
-                strong_chunks.extend(alias_strong)
+                existing_cids = {c["chunk_id"] for c in strong_chunks}
+                for ac in alias_strong:
+                    if ac["chunk_id"] not in existing_cids:
+                        strong_chunks.append(ac)
+                        existing_cids.add(ac["chunk_id"])
+                    else:
+                        for c in strong_chunks:
+                            if c["chunk_id"] == ac["chunk_id"]:
+                                c["is_borrowed"] = True
+                                c["source_concept"] = alias
                 is_borrowed = True
                 source_alias = alias
                 break
 
-    if len(candidates) < 3 and not strong_chunks:
-        return SourcePack([], status="NO_MATERIAL", candidate_count=len(candidates), strong_count=0)
+    # --- Step 4: NO_MATERIAL if < 2 strong+hint chunks ---
+    strong_hint_count = len([c for c in strong_chunks])
+    if strong_hint_count < 2:
+        return SourcePack(
+            [], status="NO_MATERIAL",
+            candidate_count=len(candidates),
+            strong_count=own_strong_count,
+        )
 
-    # Order chunks: hinted chunks FIRST, then other strong chunks by score, then regular chunks
-    hinted_pool = [c for c in strong_chunks if c.get("is_hint")]
+    # --- Step 5: Order and fill pack ---
+    hinted_strong = [c for c in strong_chunks if c.get("is_hint")]
     non_hinted_strong = [c for c in strong_chunks if not c.get("is_hint")]
-    hinted_pool.sort(key=lambda x: x["score"], reverse=True)
+    hinted_strong.sort(key=lambda x: x["score"], reverse=True)
     non_hinted_strong.sort(key=lambda x: x["score"], reverse=True)
     regular_chunks.sort(key=lambda x: x["score"], reverse=True)
 
@@ -624,11 +743,11 @@ def build_pack(
     else:
         rotated_strong = []
 
-    ordered_pool = hinted_pool + rotated_strong + regular_chunks
+    ordered_pool = hinted_strong + rotated_strong + regular_chunks
 
-    pack_chunks = []
+    pack_chunks: list[dict] = []
     total_words = 0
-    seen_ids = set()
+    seen_ids: set[str] = set()
 
     for c in ordered_pool:
         if c["chunk_id"] in seen_ids:
@@ -638,8 +757,13 @@ def build_pack(
         if pack_chunks and (total_words + w_count > max_words):
             break
 
-        c_hits = c.get("hit_list", [])
-        c_core = [a for a in c_hits if a in core_anchors]
+        if c.get("is_borrowed") or c.get("is_hint"):
+            t_low = c.get("text_lower") or c["text"].lower()
+            _, c_hits = check_chunk_anchors(t_low, anchors)
+        else:
+            c_hits = c.get("hit_list", [])
+        c_phrase = [a for a in c_hits if a in phrase_core]
+        c_word = [a for a in c_hits if a in word_core]
         c_supp = [a for a in c_hits if a in support_anchors]
 
         pack_chunks.append({
@@ -655,7 +779,10 @@ def build_pack(
             "heading_text": c.get("heading_text", ""),
             "chapter_following_hit": c.get("chapter_following_hit", False),
             "anchors_hit": c_hits,
-            "core_anchors_hit": c_core,
+            "phrase_core_hit": c_phrase,
+            "word_core_hit": c_word,
+            # Legacy key for compat with existing inspect/dump code:
+            "core_anchors_hit": c_phrase + c_word,
             "support_anchors_hit": c_supp,
             "num_anchors": len(c_hits),
             "source_concept": c.get("source_concept", concept_tag),
@@ -667,6 +794,18 @@ def build_pack(
         if total_words >= max_words:
             break
 
+    # Phase 2D-fix-5: assert and drop any borrowed chunk without target PHRASE_CORE >= 1
+    final_pack = []
+    for c in pack_chunks:
+        if c.get("is_borrowed"):
+            t_low = c.get("text_lower") or c["text"].lower()
+            _, t_hits = check_chunk_anchors(t_low, list(phrase_core))
+            if not t_hits:
+                continue
+            c["phrase_core_hit"] = t_hits
+        final_pack.append(c)
+    pack_chunks = final_pack
+
     return SourcePack(
         pack_chunks,
         status="OK" if not is_borrowed else "BORROWED",
@@ -675,6 +814,7 @@ def build_pack(
         borrowed=is_borrowed,
         source_concept=source_alias or concept_tag,
     )
+
 
 
 def main():

@@ -35,10 +35,13 @@ from tools.question_bank.bank_pack import (
     ANCHOR_EXTRA,
     GENERIC_SUPPORT_WORDS,
     PACK_ALIASES,
+    _is_chunk_strong,
+    all_core,
     build_concept_query,
     check_chunk_anchors,
     check_heading_hit,
     get_anchors,
+    get_page_hints,
     has_exact_keyword_phrase,
     split_anchors,
 )
@@ -83,7 +86,8 @@ def compute_pdf_coverage(pdfshort: str, work_dir: Path) -> dict:
 
     for tag in CONCEPTS:
         anchors = get_anchors(tag)
-        core_anchors, support_anchors = split_anchors(tag, anchors, idx.df, idx.doc_count)
+        phrase_core, word_core, support_anchors = split_anchors(tag, anchors, idx.df, idx.doc_count)
+        core_anchors = all_core(phrase_core, word_core)
         query, keywords = build_concept_query(tag)
         raw_scores = dict(idx.score(query))
 
@@ -104,7 +108,7 @@ def compute_pdf_coverage(pdfshort: str, work_dir: Path) -> dict:
             if has_exact_keyword_phrase(t_lower, keywords):
                 score *= 1.20
 
-            h_hit_text = check_heading_hit(chunk["text"], core_anchors, tag)
+            h_hit_text = check_heading_hit(chunk["text"], phrase_core, tag)
             h_hit = bool(h_hit_text)
 
             candidates.append({
@@ -146,7 +150,8 @@ def compute_pdf_coverage(pdfshort: str, work_dir: Path) -> dict:
                     break  # new chapter started
 
                 nxt_hits, nxt_hit_list = check_chunk_anchors(nxt_c["text_lower"], anchors)
-                if any(a in core_anchors for a in nxt_hit_list):
+                effective_pc = phrase_core if phrase_core else core_anchors
+                if any(a in effective_pc for a in nxt_hit_list):
                     if nxt_cid in cand_map:
                         cand_map[nxt_cid]["chapter_following_hit"] = True
                     else:
@@ -165,27 +170,35 @@ def compute_pdf_coverage(pdfshort: str, work_dir: Path) -> dict:
         best = max(c["score"] for c in candidates)
         best_scores[tag] = best
         h_hits = sum(1 for c in candidates if c["heading_hit"])
-        heading_hit_counts[tag] = h_hits
+
+        hints = get_page_hints(pdfshort, tag)
+        hinted_cids = set()
+        if hints:
+            for cid, chunk in chunks_map.items():
+                c_start = chunk["page_start"]
+                c_end = chunk["page_end"]
+                if any(max(c_start, h[0]) <= min(c_end, h[1]) for h in hints):
+                    hinted_cids.add(cid)
 
         strong = []
         for c in candidates:
-            is_strong = False
-            if c["heading_hit"] or c["chapter_following_hit"]:
-                is_strong = True
-            else:
-                c_core_hits = [a for a in c["hit_list"] if a in core_anchors]
-                if len(c_core_hits) >= 1:
-                    dist_ok = (len(c["hit_list"]) >= 2) or any(c["hits"][a] >= 2 for a in c_core_hits)
-                    sc_ok = (c["score"] >= 0.40 * best)
-                    if dist_ok and sc_ok:
-                        is_strong = True
-
+            if c["chunk_id"] in hinted_cids:
+                c["is_hint"] = True
+                strong.append(c)
+                continue
+            is_strong = _is_chunk_strong(c, phrase_core, word_core, best)
             if is_strong:
                 strong.append(c)
+
+        cand_cids = {c["chunk_id"] for c in candidates}
+        for hcid in hinted_cids:
+            if hcid not in cand_cids:
+                strong.append({"chunk_id": hcid, "score": 1.0, "is_hint": True})
 
         sorted_cand = sorted(candidates, key=lambda x: x["score"], reverse=True)
         raw_sums[tag] = sum(c["score"] for c in sorted_cand[:30])
         strong_counts[tag] = len(strong)
+        heading_hit_counts[tag] = h_hits + len(hinted_cids)
 
     max_sum = max(raw_sums.values()) if raw_sums and max(raw_sums.values()) > 0 else 1.0
 
