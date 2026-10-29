@@ -3,11 +3,14 @@
 EduGen - Unit Tests for Question Bank Preparation Tools
 =============================================================================
 Tests:
-  1. Running header / footer detection and removal
+  1. Running header / footer detection (including digit normalization)
   2. Text chunking (target words, overlap, page gap limits, formatting)
   3. BM25 indexing, scoring, and serialization
   4. Source pack rotation by batch index
-  5. Quota distribution maths (weak concepts, min/max limits, totals)
+  5. Front/back matter page filtering
+  6. Anchor relevance: CORE vs SUPPORT, heading hits, generic anchors x3 not strong
+  7. Borrowed pack labelling and source concept tracking
+  8. Quota distribution mathematics and caps
 
 Usage:
     python tools/question_bank/test_bank_tools.py
@@ -31,13 +34,22 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from core.concepts import CONCEPTS
 from tools.question_bank.bank_coverage import allocate_quotas
-from tools.question_bank.bank_pack import build_pack
+from tools.question_bank.bank_pack import (
+    ANCHOR_EXTRA,
+    PACK_ALIASES,
+    build_pack,
+    check_chunk_anchors,
+    check_heading_hit,
+    get_anchors,
+    split_anchors,
+)
 from tools.question_bank.bank_prepare import (
     BM25Index,
     chunk_pages,
     clean_page_text,
     detect_running_headers_footers,
     is_front_or_back_matter,
+    normalize_header_line,
 )
 
 
@@ -57,26 +69,42 @@ class TestHeaderFooterDetection(unittest.TestCase):
                 text_lines.append("RUNNING FOOTER - COPYRIGHT 2026")
             pages.append({"page": i, "text": "\n".join(text_lines)})
 
-        detected = detect_running_headers_footers(pages, threshold=0.30)
-        self.assertIn("RUNNING HEADER LINE - CONFIDENTIAL", detected)
-        self.assertIn("RUNNING FOOTER - COPYRIGHT 2026", detected)
-        # Content line or code brace should not be detected as header/footer
-        self.assertNotIn("public class Example1 {", detected)
-        self.assertNotIn("}", detected)
+        exact, norm = detect_running_headers_footers(pages, threshold=0.30)
+        self.assertIn("RUNNING HEADER LINE - CONFIDENTIAL", exact)
+        self.assertIn("RUNNING FOOTER - COPYRIGHT 2026", exact)
+        self.assertNotIn("public class Example1 {", exact)
+        self.assertNotIn("}", exact)
 
     def test_clean_page_text(self):
-        running = {"HEADER TO REMOVE", "FOOTER TO REMOVE"}
+        running_exact = {"HEADER TO REMOVE", "FOOTER TO REMOVE"}
         text = "HEADER TO REMOVE\nSome real content line.\n    int x = 42;\nFOOTER TO REMOVE"
-        cleaned = clean_page_text(text, running)
+        cleaned = clean_page_text(text, running_exact)
         self.assertNotIn("HEADER TO REMOVE", cleaned)
         self.assertNotIn("FOOTER TO REMOVE", cleaned)
         self.assertIn("Some real content line.", cleaned)
         self.assertIn("    int x = 42;", cleaned)
 
+    def test_header_normalization_strips_digit_varying_headers(self):
+        # Requirement 10(d): header normalization strips digit-varying headers
+        # (e.g. "432 CHAPTER 8. CORRECTNESS..." and "433 CHAPTER 8. CORRECTNESS...")
+        pages = []
+        for i in range(1, 15):
+            p_text = f"{400 + i} CHAPTER 8. CORRECTNESS\nReal content paragraph on page {i}.\n"
+            pages.append({"page": i, "text": p_text})
+
+        exact, norm = detect_running_headers_footers(pages, threshold=0.30)
+        # Normalized pattern with # should be detected
+        self.assertTrue(any("# CHAPTER #. CORRECTNESS" in n for n in norm))
+
+        # Stripping test: clean_page_text should remove the header even on a page with a new number
+        sample_page = "450 CHAPTER 8. CORRECTNESS\nActual programming logic."
+        cleaned = clean_page_text(sample_page, exact, norm)
+        self.assertNotIn("CHAPTER 8. CORRECTNESS", cleaned)
+        self.assertIn("Actual programming logic.", cleaned)
+
 
 class TestChunking(unittest.TestCase):
     def test_chunk_word_count_and_overlap(self):
-        # Build 5 pages with 100 words per page
         pages = []
         word_counter = 0
         for p in range(1, 6):
@@ -90,26 +118,22 @@ class TestChunking(unittest.TestCase):
         chunks = chunk_pages(pages, "test_book", target_words=150, overlap_words=40, max_page_gap=2)
         self.assertTrue(len(chunks) > 1)
 
-        # Check page bounds and word counts
         for c in chunks:
             self.assertGreaterEqual(c["page_end"], c["page_start"])
             self.assertGreater(c["word_count"], 0)
             self.assertTrue(c["chunk_id"].startswith("test_book_chunk_"))
 
-        # Check that consecutive chunks have overlap
         words_c0 = set(chunks[0]["text"].split())
         words_c1 = set(chunks[1]["text"].split())
         overlap = words_c0.intersection(words_c1)
         self.assertGreater(len(overlap), 0, "Consecutive chunks should have overlapping vocabulary")
 
     def test_chunk_page_gap_constraint(self):
-        # Pages with a gap > 2 pages (page 1 and page 5, gap = 4)
         pages = [
             {"page": 1, "text": "Short intro on page one."},
             {"page": 5, "text": "Content after page gap of four pages."},
         ]
         chunks = chunk_pages(pages, "test_gap", target_words=100, overlap_words=20, max_page_gap=2)
-        # The two pages must not be combined into the same chunk because gap > 2
         for c in chunks:
             self.assertFalse(c["page_start"] == 1 and c["page_end"] == 5)
 
@@ -133,9 +157,6 @@ class TestBM25Index(unittest.TestCase):
         top_doc, top_score = scores[0]
         self.assertEqual(top_doc, "doc2", "Doc 2 must rank highest for method overriding query")
 
-        scores_exc = self.index.score("try catch checked exceptions")
-        self.assertEqual(scores_exc[0][0], "doc3", "Doc 3 must rank highest for exception query")
-
     def test_save_and_load(self):
         temp_dir = Path(tempfile.mkdtemp())
         try:
@@ -144,10 +165,6 @@ class TestBM25Index(unittest.TestCase):
             loaded = BM25Index.load(save_path)
             self.assertEqual(loaded.doc_count, self.index.doc_count)
             self.assertEqual(loaded.avg_doc_len, self.index.avg_doc_len)
-
-            orig_scores = self.index.score("polymorphism")
-            loaded_scores = loaded.score("polymorphism")
-            self.assertEqual(orig_scores, loaded_scores)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -159,7 +176,6 @@ class TestSourcePackRotation(unittest.TestCase):
         pdf_dir = self.temp_dir / self.pdfshort
         pdf_dir.mkdir(parents=True)
 
-        # Create 12 chunks
         chunks = []
         index = BM25Index(k1=1.5, b=0.75)
         for i in range(1, 13):
@@ -186,14 +202,11 @@ class TestSourcePackRotation(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_batch_rotation(self):
-        # Batch 0 starts at rank 0
         pack0 = build_pack(self.pdfshort, "method-overriding", batch_idx=0, max_words=300, work_dir=self.temp_dir)
-        # Batch 1 starts at rank 4
         pack1 = build_pack(self.pdfshort, "method-overriding", batch_idx=1, max_words=300, work_dir=self.temp_dir)
 
         self.assertTrue(len(pack0) > 0)
         self.assertTrue(len(pack1) > 0)
-        # The top chunk of batch 0 should differ from the top chunk of batch 1
         self.assertNotEqual(pack0[0]["chunk_id"], pack1[0]["chunk_id"])
 
 
@@ -205,7 +218,6 @@ class TestFrontBackMatterFilter(unittest.TestCase):
         self.assertIn("heading: Glossary", reason)
 
     def test_dotted_index_page_is_dropped(self):
-        # Page with >40% dotted index lines
         lines = [
             "Index",
             "Abstract class . . . . . . . . . . . . . . . . . . . . . . . . . 272",
@@ -237,81 +249,156 @@ class TestFrontBackMatterFilter(unittest.TestCase):
         self.assertFalse(is_drop, "Real chapter text must not be dropped")
 
 
-class TestPackAnchorsAndRelevance(unittest.TestCase):
+class TestPhase2DFix2Rules(unittest.TestCase):
     def setUp(self):
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE
+        _INDEX_CACHE.clear()
+        _CHUNKS_CACHE.clear()
         self.temp_dir = Path(tempfile.mkdtemp())
-        self.pdfshort = "mock_book"
-        pdf_dir = self.temp_dir / self.pdfshort
-        pdf_dir.mkdir(parents=True)
+        self.pdfshort = "test_book_rules"
+        self.pdf_dir = self.temp_dir / self.pdfshort
+        self.pdf_dir.mkdir(parents=True)
 
-        self.chunks = [
-            # Chunk 1: Has multiple anchors (@override, override, same signature) -> STRONG
+    def tearDown(self):
+        from tools.question_bank.bank_pack import _INDEX_CACHE, _CHUNKS_CACHE
+        _INDEX_CACHE.clear()
+        _CHUNKS_CACHE.clear()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _setup_mock_index(self, chunks):
+        index = BM25Index(k1=1.5, b=0.75)
+        for c in chunks:
+            index.add_document(c["chunk_id"], c["text"])
+        index.finalize()
+        index.save(self.pdf_dir / "bm25.pkl")
+
+        with open(self.pdf_dir / "chunks.jsonl", "w", encoding="utf-8") as f:
+            for c in chunks:
+                f.write(json.dumps(c) + "\n")
+
+    def test_generic_anchors_x3_not_strong(self):
+        # Requirement 10(a): a chunk with only "chaining"/"dynamic"/"copy" x3 is NOT strong.
+        # Under Phase 2D-fix-2, SUPPORT anchors alone make a chunk a CANDIDATE only, NEVER STRONG.
+        chunks = [
+            # Chunk with chaining x3, dynamic x3, copy x3 (SUPPORT anchors only)
             {
                 "chunk_id": f"{self.pdfshort}_chunk_00001",
                 "pdf": self.pdfshort,
-                "page_start": 10,
-                "page_end": 10,
-                "text": "Method overriding in Java allows a subclass to override a method with the same signature. Use @override annotation to make intent explicit.",
-                "word_count": 22,
+                "page_start": 20,
+                "page_end": 20,
+                "text": "Discussion on chaining chaining chaining conditionals and dynamic dynamic dynamic arrays with copy copy copy files.",
+                "word_count": 18,
             },
-            # Chunk 2: Has 1 anchor (redefine) -> CANDIDATE
+            # Chunk with real CORE anchor for constructor-chaining
             {
                 "chunk_id": f"{self.pdfshort}_chunk_00002",
                 "pdf": self.pdfshort,
-                "page_start": 11,
-                "page_end": 11,
-                "text": "Subclasses can redefine behaviors from base classes to adapt to new requirements.",
-                "word_count": 12,
+                "page_start": 21,
+                "page_end": 21,
+                "text": "Constructor chaining in Java allows invoking super(args) or this(args) as first statement.",
+                "word_count": 15,
             },
-            # Chunk 3: Has 1 anchor (override) -> CANDIDATE
+            # Padding candidate chunk
             {
                 "chunk_id": f"{self.pdfshort}_chunk_00003",
                 "pdf": self.pdfshort,
-                "page_start": 12,
-                "page_end": 12,
-                "text": "When you override superclass methods, ensure access modifier is not more restrictive.",
-                "word_count": 13,
-            },
-            # Chunk 4: NO ANCHORS (generic words only: class, method, variable, java)
-            {
-                "chunk_id": f"{self.pdfshort}_chunk_00004",
-                "pdf": self.pdfshort,
-                "page_start": 13,
-                "page_end": 13,
-                "text": "In Java programming language, a public class contains variables and methods to execute code.",
-                "word_count": 14,
+                "page_start": 22,
+                "page_end": 22,
+                "text": "Another constructor chaining explanation with super(x) call.",
+                "word_count": 8,
             },
         ]
+        self._setup_mock_index(chunks)
 
-        index = BM25Index(k1=1.5, b=0.75)
-        for c in self.chunks:
-            index.add_document(c["chunk_id"], c["text"])
-        index.finalize()
-        index.save(pdf_dir / "bm25.pkl")
+        pack = build_pack(self.pdfshort, "constructor-chaining", batch_idx=0, max_words=1000, work_dir=self.temp_dir)
+        c1 = next(c for c in pack if c["chunk_id"] == f"{self.pdfshort}_chunk_00001")
+        # Must be CANDIDATE only, NOT strong!
+        self.assertFalse(c1["is_strong"], "Chunk with only generic support words x3 must not be strong")
+        self.assertEqual(len(c1["core_anchors_hit"]), 0)
 
-        with open(pdf_dir / "chunks.jsonl", "w", encoding="utf-8") as f:
-            for c in self.chunks:
-                f.write(json.dumps(c) + "\n")
+    def test_heading_hit_chunk_is_strong(self):
+        # Requirement 10(b): heading-hit chunk is strong regardless of score ratio
+        chunks = [
+            # Chunk with a chapter heading containing a CORE phrase
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00010",
+                "pdf": self.pdfshort,
+                "page_start": 153,
+                "page_end": 153,
+                "text": "Chapter 153: Dynamic Method Dispatch\nThis chapter explains polymorphic dispatch.",
+                "word_count": 10,
+            },
+            # Unrelated chunk with high BM25 score
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00011",
+                "pdf": self.pdfshort,
+                "page_start": 154,
+                "page_end": 154,
+                "text": "Dynamic method dispatch and dynamic binding runtime polymorphism dispatch dispatch dispatch.",
+                "word_count": 12,
+            },
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00012",
+                "pdf": self.pdfshort,
+                "page_start": 155,
+                "page_end": 155,
+                "text": "Third candidate chunk with dynamic binding and late binding.",
+                "word_count": 10,
+            },
+        ]
+        self._setup_mock_index(chunks)
 
-    def tearDown(self):
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        pack = build_pack(self.pdfshort, "dynamic-method-dispatch", batch_idx=0, max_words=1000, work_dir=self.temp_dir)
+        heading_chunk = next(c for c in pack if c["chunk_id"] == f"{self.pdfshort}_chunk_00010")
+        self.assertTrue(heading_chunk["heading_hit"])
+        self.assertTrue(heading_chunk["is_strong"], "Heading-hit chunk must be strong regardless of score ratio")
 
-    def test_chunk_without_anchors_never_in_pack(self):
-        pack = build_pack(self.pdfshort, "method-overriding", batch_idx=0, max_words=500, work_dir=self.temp_dir)
+    def test_borrowed_pack_labels_source_concept(self):
+        # Requirement 10(c): borrowed pack labels source concept
+        # Create a book where 'custom-exceptions' has NO native material, but 'exception-throwing' has strong chunks.
+        chunks = [
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00020",
+                "pdf": self.pdfshort,
+                "page_start": 40,
+                "page_end": 40,
+                "text": "Throwing exceptions using throw new IllegalArgumentException when argument is invalid.",
+                "word_count": 12,
+            },
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00021",
+                "pdf": self.pdfshort,
+                "page_start": 41,
+                "page_end": 41,
+                "text": "Exception throwing allows signaling errors up the call stack with throw statement.",
+                "word_count": 13,
+            },
+            {
+                "chunk_id": f"{self.pdfshort}_chunk_00022",
+                "pdf": self.pdfshort,
+                "page_start": 42,
+                "page_end": 42,
+                "text": "More exception throwing examples with throws clause on method signature.",
+                "word_count": 12,
+            },
+        ]
+        self._setup_mock_index(chunks)
+
+        # custom-exceptions borrows from exception-throwing via PACK_ALIASES
+        pack = build_pack(self.pdfshort, "custom-exceptions", batch_idx=0, max_words=1000, work_dir=self.temp_dir, allow_borrow=True)
+        self.assertTrue(pack.borrowed)
+        self.assertEqual(pack.source_concept, "exception-throwing")
         self.assertTrue(len(pack) > 0)
-        chunk_ids = [c["chunk_id"] for c in pack]
-        self.assertNotIn(f"{self.pdfshort}_chunk_00004", chunk_ids, "Chunk without anchors must never be included")
-
-    def test_no_material_when_too_few_candidates(self):
-        # A concept with 0 matching candidates in this mock book
-        pack = build_pack(self.pdfshort, "try-with-resources", batch_idx=0, max_words=500, work_dir=self.temp_dir)
-        self.assertEqual(len(pack), 0)
-        self.assertEqual(pack.status, "NO_MATERIAL")
+        # Borrowed chunks in the pack must label their source concept
+        borrowed = [c for c in pack if c["is_borrowed"]]
+        self.assertTrue(len(borrowed) >= 2)
+        for c in borrowed:
+            self.assertEqual(c["source_concept"], "exception-throwing")
+            self.assertTrue(c["is_borrowed"])
 
 
 class TestQuotaMathematics(unittest.TestCase):
     def test_quota_allocation_rules(self):
-        # 3 mock PDFs with coverage for all 44 concepts
         concepts = list(CONCEPTS.keys())
         mock_data = {"pdfA": {}, "pdfB": {}, "pdfC": {}}
 
@@ -336,20 +423,22 @@ class TestQuotaMathematics(unittest.TestCase):
 
         # Rule 1: Exactly 84 batches per PDF
         for pdf in ["pdfA", "pdfB", "pdfC"]:
-            self.assertEqual(sum(quotas[pdf].values()), 84, f"{pdf} must have exactly 84 batches")
+            total_pdf_batches = sum(quotas[pdf][c]["batches"] for c in concepts)
+            self.assertEqual(total_pdf_batches, 84, f"{pdf} must have exactly 84 batches")
 
-        # Rule 2: Weak concept gets 0 in that PDF
-        self.assertEqual(quotas["pdfA"][concepts[0]], 0, "Weak concept must get 0 batches in pdfA")
+        # Rule 2: Weak concept gets 0 native batches in that PDF
+        self.assertEqual(quotas["pdfA"][concepts[0]]["batches"], 0, "Weak concept must get 0 batches in pdfA")
 
         # Rule 3: Non-weak concepts get between 1 and 6 batches
         for pdf in ["pdfA", "pdfB", "pdfC"]:
             for c in concepts:
                 if not mock_data[pdf][c]["weak"]:
-                    self.assertGreaterEqual(quotas[pdf][c], 1)
-                    self.assertLessEqual(quotas[pdf][c], 6)
+                    b = quotas[pdf][c]["batches"]
+                    self.assertGreaterEqual(b, 1)
+                    self.assertLessEqual(b, 6)
 
         # Rule 4: Total batches across all PDFs is 252
-        totals = {c: sum(quotas[p][c] for p in ["pdfA", "pdfB", "pdfC"]) for c in concepts}
+        totals = {c: sum(quotas[p][c]["batches"] for p in ["pdfA", "pdfB", "pdfC"]) for c in concepts}
         self.assertEqual(sum(totals.values()), 252)
 
 

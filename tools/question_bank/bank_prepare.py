@@ -131,46 +131,90 @@ class BM25Index:
         return obj
 
 
-def detect_running_headers_footers(pages: list[dict], threshold: float = 0.30) -> set[str]:
+def normalize_header_line(line: str) -> str:
+    """Normalize line by replacing numbers with # and stripping whitespace."""
+    return re.sub(r"\d+", "#", line.strip())
+
+
+def detect_running_headers_footers(pages: list[dict], threshold: float = 0.30) -> tuple[set[str], set[str]]:
     """
-    Find lines that repeat across more than threshold (default 30%) of pages.
-    Ignores purely trivial syntax lines like single braces.
+    Find lines and normalized patterns that repeat across pages.
+    Digit normalization allows catching headers like '432 CHAPTER 8. CORRECTNESS...'
+    and '8.4. ASSERTIONS AND ANNOTATIONS 433' where page numbers change.
+    Returns (exact_lines, normalized_patterns).
     """
     total_pages = len(pages)
     if total_pages < 10:
-        return set()
+        return set(), set()
 
-    line_page_counts = Counter()
+    exact_counts = Counter()
+    norm_counts = Counter()
     trivial_lines = {"{", "}", "};", "*/", "/*", ";", "...", "//"}
 
     for p in pages:
-        text = p.get("text", "")
-        # Get unique stripped lines on this page
-        seen_on_page = set()
-        for line in text.splitlines():
-            s = line.strip()
-            if s and len(s) >= 3 and s not in trivial_lines:
-                seen_on_page.add(s)
-        for s in seen_on_page:
-            line_page_counts[s] += 1
+        lines = [l.strip() for l in p.get("text", "").splitlines() if l.strip()]
+        if not lines:
+            continue
+        # Check first 3 and last 3 lines for headers/footers
+        cand_lines = lines[:3] + lines[-3:]
+        seen_exact = set()
+        seen_norm = set()
+        for l in cand_lines:
+            if len(l) >= 2 and l not in trivial_lines:
+                seen_exact.add(l)
+                seen_norm.add(normalize_header_line(l))
+        for l in seen_exact:
+            exact_counts[l] += 1
+        for n in seen_norm:
+            norm_counts[n] += 1
 
-    headers_footers = set()
-    for line, count in line_page_counts.items():
-        if (count / total_pages) > threshold:
-            headers_footers.add(line)
+    headers_exact = {l for l, c in exact_counts.items() if (c / total_pages) > threshold}
+    headers_norm = {
+        n for n, c in norm_counts.items()
+        if (c >= 6 or (c / total_pages) > 0.04) and ("#" in n or re.match(r"^(?:chapter|section)\b", n, re.IGNORECASE))
+    }
 
-    return headers_footers
+    return headers_exact, headers_norm
 
 
-def clean_page_text(text: str, running_lines: set[str]) -> str:
+def clean_page_text(text: str, running_exact: set[str], running_norm: set[str] = None) -> str:
     """Remove running header/footer lines while preserving formatting and code lines."""
-    if not running_lines:
+    if not running_exact and not running_norm:
+        return text
+
+    if running_norm is None:
+        running_norm = set()
+
+    lines = text.splitlines()
+    if not lines:
         return text
 
     clean_lines = []
-    for line in text.splitlines():
-        if line.strip() in running_lines:
+    total_lines = len(lines)
+    for idx, line in enumerate(lines):
+        s = line.strip()
+        if not s:
+            clean_lines.append(line)
             continue
+
+        if s in running_exact:
+            continue
+
+        if idx < 3 or idx >= total_lines - 3:
+            n = normalize_header_line(s)
+            if n in running_norm:
+                continue
+            if re.match(r"^#+$", n):
+                continue
+            if re.match(r"^#+\s+(?:chapter|section)\s+#+\.?.*$", n, re.IGNORECASE):
+                continue
+            if re.match(r"^(?:chapter|section)\s+#+\.?.*?\s+#+$", n, re.IGNORECASE):
+                continue
+            if re.match(r"^#+\.#+\.?\s+.*?#*$", n):
+                continue
+            if re.match(r"^#+\s+#+\.#+\.?\s+.*$", n):
+                continue
+
         clean_lines.append(line)
     return "\n".join(clean_lines)
 
@@ -405,12 +449,11 @@ def process_pdf(pdf_path: Path, work_dir: Path, force: bool = False) -> dict:
             "duration": duration,
         }
 
-    # Step 3: Header/footer removal
-    headers_footers = detect_running_headers_footers(pages, threshold=0.30)
-    print(f"  Detected {len(headers_footers)} running header/footer lines.")
-    if headers_footers:
-        for p in pages:
-            p["text"] = clean_page_text(p["text"], headers_footers)
+    # Step 3: Header/footer removal (with digit normalization)
+    headers_exact, headers_norm = detect_running_headers_footers(pages, threshold=0.30)
+    print(f"  Detected {len(headers_exact)} exact lines and {len(headers_norm)} normalized header/footer patterns.")
+    for p in pages:
+        p["text"] = clean_page_text(p["text"], headers_exact, headers_norm)
 
     # Step 3b: Front/back matter filter (apply BEFORE chunking)
     dropped_pages = []
