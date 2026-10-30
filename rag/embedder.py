@@ -100,16 +100,39 @@ class OllamaEmbedder(BaseEmbedder):
 
     def embed(self, texts):
         import requests
+        texts = list(texts)
+        if not texts:
+            return []
         out = []
-        for text in texts:
-            resp = requests.post(
-                self.host + "/api/embeddings",
-                json={"model": self.model_name, "prompt": text},
-                timeout=120,
-            )
-            resp.raise_for_status()
-            vec = resp.json().get("embedding") or []
-            out.append(_l2(vec))
+        batch_size = 64
+        for i in range(0, len(texts), batch_size):
+            chunk_batch = texts[i:i + batch_size]
+            try:
+                resp = requests.post(
+                    self.host + "/api/embed",
+                    json={"model": self.model_name, "input": chunk_batch},
+                    timeout=120,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    embeddings = data.get("embeddings") or []
+                    if len(embeddings) == len(chunk_batch):
+                        for vec in embeddings:
+                            out.append(_l2(vec))
+                        continue
+            except Exception:
+                pass
+
+            # Fallback to single-item /api/embeddings
+            for text in chunk_batch:
+                resp = requests.post(
+                    self.host + "/api/embeddings",
+                    json={"model": self.model_name, "prompt": text},
+                    timeout=120,
+                )
+                resp.raise_for_status()
+                vec = resp.json().get("embedding") or []
+                out.append(_l2(vec))
         return out
 
 
@@ -162,7 +185,19 @@ def _l2(vec):
 # Factory
 # ─────────────────────────────────────────────────────────────
 def get_embedder(backend=None, quiet=False):
-    backend = (backend or os.environ.get("EDUGEN_EMBEDDING_BACKEND") or "auto").lower()
+    env_backend = os.environ.get("EDUGEN_EMBEDDING_BACKEND")
+    if backend is None:
+        # If ollama with nomic-embed-text works, use it as active backend
+        try:
+            emb = OllamaEmbedder()
+            if not quiet:
+                print("[RAG] Embedder: {} ({}d, model='{}')".format(emb.name, emb.dim, emb.model_name))
+            return emb
+        except Exception:
+            backend = (env_backend or "auto").lower()
+    else:
+        backend = backend.lower()
+
     attempts = {
         "auto": ["sentence-transformers", "ollama", "hashing"],
         "sentence-transformers": ["sentence-transformers"],
@@ -187,3 +222,4 @@ def get_embedder(backend=None, quiet=False):
             errors.append("{}: {}".format(choice, exc))
 
     raise RuntimeError("No embedding backend available -> " + " | ".join(errors))
+

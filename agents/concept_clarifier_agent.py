@@ -114,6 +114,7 @@ class ConceptClarifierAgent(object):
                     "grounded": grounded,
                     "sources": retrieval.get("citations", []),
                     "passages": retrieval.get("passages", []),
+                    "retrieval_trace": retrieval.get("trace"),
                     "generated_by": "llm+rag" if grounded else "llm",
                     "model": self.model,
                 })
@@ -214,6 +215,7 @@ class ConceptClarifierAgent(object):
             "grounded": bool(retrieval.get("passages")),
             "sources": retrieval.get("citations", []),
             "passages": retrieval.get("passages", []),
+            "retrieval_trace": retrieval.get("trace"),
             "generated_by": "local-note",
             "model": None,
             "offline_reason": (
@@ -246,6 +248,7 @@ class ConceptClarifierAgent(object):
                     "total_generated": len(questions),
                     "grounded": grounded,
                     "sources": retrieval.get("citations", []),
+                    "retrieval_trace": retrieval.get("trace"),
                     "generated_by": "llm+rag" if grounded else "llm",
                     "model": self.model,
                 }
@@ -315,6 +318,7 @@ class ConceptClarifierAgent(object):
             "total_generated": 0,
             "grounded": False,
             "sources": retrieval.get("citations", []),
+            "retrieval_trace": retrieval.get("trace"),
             "generated_by": "unavailable",
             "model": None,
             "error": reason,
@@ -339,6 +343,36 @@ class ConceptClarifierAgent(object):
                 "info",
                 {"sources": [c["source"] for c in result.get("citations", [])]},
             )
+
+            # Log retrieval to database and activity log (Requirement 5)
+            try:
+                from core.agent_log import add_log
+                from core.db_repo import record_rag_retrieval
+
+                trace = result.get("trace") or {}
+                top_items = trace.get("top") or []
+                top1_cos = top_items[0].get("cosine", 0.0) if top_items else 0.0
+                cand_count = trace.get("candidates", len(top_items))
+                emb_sig = trace.get("embedder", "unknown")
+                concept = brief.get("concept", "")
+                mode = brief.get("mode", "lesson")
+
+                record_rag_retrieval(
+                    run_id=None,
+                    student_id=None,
+                    concept=concept,
+                    mode=mode,
+                    query=brief.get("query", ""),
+                    embedder=emb_sig,
+                    results=top_items,
+                )
+                add_log(
+                    "Concept Clarifier",
+                    f"RAG: {concept} {mode} -> top1 cosine {top1_cos:.2f}, {cand_count} candidates, embedder {emb_sig}",
+                    "info",
+                )
+            except Exception:
+                pass
         elif result.get("error"):
             self._emit("Knowledge base unavailable: {}".format(result["error"]), "warning")
         return result

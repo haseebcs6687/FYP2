@@ -17,6 +17,7 @@ Add a book:
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -26,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.concepts import CONCEPTS                       # noqa: E402
-from rag.chunker import chunk_document, iter_corpus_files  # noqa: E402
+from rag.chunker import chunk_document, chunk_question_record, iter_corpus_files  # noqa: E402
 from rag.embedder import get_embedder                    # noqa: E402
 from rag.vector_store import VectorStore                 # noqa: E402
 
@@ -50,7 +51,7 @@ def build(corpus_dir=None, index_dir=None, backend=None, rebuild=False, dry_run=
         print("  Put .md / .txt / .pdf files in {} and run again.".format(corpus_dir))
         return None
 
-    # ── 1. chunk ────────────────────────────────────────────
+    # ── 1. chunk books and notes ────────────────────────────
     t0 = time.time()
     chunks, skipped = [], []
     for path, collection in files:
@@ -63,12 +64,31 @@ def build(corpus_dir=None, index_dir=None, backend=None, rebuild=False, dry_run=
             skipped.append((path.name, str(exc)))
             print("  ! {:<46} SKIPPED ({})".format(str(path.name)[:46], exc))
 
+    # ── 1b. chunk question bank (collection: 'question') ────
+    q_dir = corpus_dir / "questions" / "raw"
+    q_chunks = []
+    if q_dir.exists():
+        for q_file in sorted(q_dir.glob("*.jsonl")):
+            try:
+                with open(q_file, "r", encoding="utf-8") as fh:
+                    for line_no, line in enumerate(fh, start=1):
+                        line_str = line.strip()
+                        if not line_str or line_str.startswith("#"):
+                            continue
+                        rec = json.loads(line_str)
+                        q_chunk = chunk_question_record(rec)
+                        q_chunks.append(q_chunk)
+            except Exception as exc:
+                print(f"  ! Error reading {q_file.name}: {exc}")
+        chunks.extend(q_chunks)
+        print("  + Ingested {:>4} question MCQs into collection 'question'".format(len(q_chunks)))
+
     if not chunks:
         print("\n  Nothing could be chunked. Check the files and try again.")
         return None
 
-    print("\n  Chunked {} documents into {} chunks in {:.1f}s".format(
-        len(files) - len(skipped), len(chunks), time.time() - t0))
+    print("\n  Chunked {} documents + {} questions into {} chunks in {:.1f}s".format(
+        len(files) - len(skipped), len(q_chunks), len(chunks), time.time() - t0))
 
     covered = {t for c in chunks for t in c.get("concept_tags", [])}
     missing = sorted(set(CONCEPTS) - covered)

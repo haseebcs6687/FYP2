@@ -23,6 +23,7 @@ import re
 from pathlib import Path
 
 from core.concepts import CONCEPTS
+from rag.levels import infer_level
 
 SUPPORTED_EXTENSIONS = {".md", ".txt", ".pdf"}
 
@@ -34,6 +35,7 @@ _HEADING_RE = re.compile(r"^(#{1,4})\s+(.+?)\s*$", re.MULTILINE)
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _WS_RE = re.compile(r"[ \t]+")
 _MULTINEWLINE_RE = re.compile(r"\n{3,}")
+PAGE_MARKER_RE = re.compile(r"===PAGE:(\d+)===")
 
 # Pre-compute keyword -> tag lookups once
 _KEYWORD_INDEX = []
@@ -48,15 +50,27 @@ for _tag, _meta in CONCEPTS.items():
 # Loading
 # ─────────────────────────────────────────────────────────────
 def load_pdf(path):
-    """Extract text from a PDF. Tries pypdf, then pdfplumber."""
+    """Extract text from a PDF with page markers. Tries pymupdf (fitz), then pypdf, then pdfplumber."""
     text_parts = []
+    try:
+        import fitz  # pymupdf
+        doc = fitz.open(str(path))
+        for page_idx, page in enumerate(doc, start=1):
+            t = page.get_text() or ""
+            if t.strip():
+                text_parts.append(f"\n\n===PAGE:{page_idx}===\n\n" + t)
+        if text_parts:
+            return "\n\n".join(text_parts)
+    except Exception:
+        pass
+
     try:
         from pypdf import PdfReader
         reader = PdfReader(str(path))
-        for page in reader.pages:
+        for page_idx, page in enumerate(reader.pages, start=1):
             t = page.extract_text() or ""
             if t.strip():
-                text_parts.append(t)
+                text_parts.append(f"\n\n===PAGE:{page_idx}===\n\n" + t)
         if text_parts:
             return "\n\n".join(text_parts)
     except Exception:
@@ -65,10 +79,12 @@ def load_pdf(path):
     try:
         import pdfplumber
         with pdfplumber.open(str(path)) as pdf:
-            for page in pdf.pages:
+            for page_idx, page in enumerate(pdf.pages, start=1):
                 t = page.extract_text() or ""
                 if t.strip():
-                    text_parts.append(t)
+                    text_parts.append(f"\n\n===PAGE:{page_idx}===\n\n" + t)
+        if text_parts:
+            return "\n\n".join(text_parts)
     except Exception as exc:
         raise RuntimeError(
             "Could not read {}. Install a PDF reader:  pip install pypdf  ({})".format(path.name, exc)
@@ -112,7 +128,7 @@ def load_document(path):
 
 
 def clean_text(text):
-    """Normalise whitespace and strip PDF page-number noise."""
+    """Normalise whitespace and strip PDF page-number noise, preserving page markers."""
     text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"\n\s*\d{1,4}\s*\n", "\n\n", text)      # stray page numbers
     text = re.sub(r"\n\s*Page \|\s*\d+\s*\n", "\n\n", text)
@@ -190,18 +206,28 @@ def _pack(body, target=CHUNK_TARGET_CHARS, overlap=CHUNK_OVERLAP_CHARS):
     return [c for c in chunks if len(c) >= CHUNK_MIN_CHARS] or ([body] if body.strip() else [])
 
 
-def chunk_document(path, source_label=None, collection="library"):
+def chunk_document(path, source_label=None, collection="book"):
     """
     Read one file and return a list of chunk dicts ready for embedding.
 
-    Chunk shape:
-      { id, text, source, collection, title, section, concept_tags }
+    Chunk metadata:
+      { id, text, collection, concept_tags, type, difficulty, level, source, page, ... }
     """
     path = Path(path)
     doc = load_document(path)
     text, meta = doc["text"], doc["meta"]
     if not text.strip():
         return []
+
+    col = (collection or "").lower()
+    if "book" in col or path.suffix.lower() == ".pdf":
+        norm_collection = "book"
+    elif "note" in col or path.suffix.lower() in (".md", ".txt"):
+        norm_collection = "note"
+    elif "question" in col:
+        norm_collection = "question"
+    else:
+        norm_collection = "note"
 
     doc_title = meta.get("title") or path.stem.replace("_", " ").replace("-", " ").title()
     declared = meta.get("concept_tags") or meta.get("tags") or meta.get("concepts") or []
@@ -214,27 +240,99 @@ def chunk_document(path, source_label=None, collection="library"):
     source = source_label or path.name
     chunks = []
     index = 0
+    current_page = 1
 
     for section_title, body in _split_sections(text):
         for piece in _pack(body):
+            page_matches = PAGE_MARKER_RE.findall(piece)
+            if page_matches:
+                try:
+                    current_page = int(page_matches[-1])
+                except ValueError:
+                    pass
+                piece = PAGE_MARKER_RE.sub("", piece).strip()
+
+            if not piece:
+                continue
+
             heading_context = "{} - {}".format(doc_title, section_title).strip(" -")
             tags = list(declared)
             for tag in infer_concept_tags(section_title + " " + piece):
                 if tag not in tags:
                     tags.append(tag)
+
+            has_code = "```" in piece or "class " in piece or "public " in piece or "System.out" in piece
+            chunk_type = "example" if has_code else "lesson"
+            level = infer_level(piece, heading=heading_context)
+
             chunks.append({
                 "id": "{}::{}".format(source, index),
                 "text": piece,
+                "collection": norm_collection,
+                "concept_tags": tags[:6],
+                "type": chunk_type,
+                "difficulty": None,
+                "level": level,
                 "source": source,
-                "collection": collection,
+                "page": current_page,
                 "title": doc_title,
                 "section": section_title,
                 "heading": heading_context,
-                "concept_tags": tags[:6],
             })
             index += 1
 
     return chunks
+
+
+def chunk_question_record(rec: dict) -> dict:
+    """
+    Ingest one MCQ record into collection 'question'.
+    Embedded text = question text + the correct option + the explanation (NOT wrong options).
+    """
+    q_text = rec.get("question", "").strip()
+    c_idx = rec.get("correct_index", 0)
+    options = rec.get("options", [])
+    c_text = options[c_idx].get("text", "").strip() if (isinstance(c_idx, int) and 0 <= c_idx < len(options)) else ""
+    expl = rec.get("explanation", "").strip()
+    embedded_text = f"{q_text}\nCorrect answer: {c_text}\nExplanation: {expl}".strip()
+
+    diff = rec.get("difficulty", "Medium")
+    if diff == "Easy":
+        level = "basic"
+    elif diff == "Hard":
+        level = "advanced"
+    else:
+        level = "standard"
+
+    concept = rec.get("concept", "")
+    src = rec.get("source", {})
+    qid = rec.get("question_id") or rec.get("id", "")
+    misconceptions = [
+        opt.get("misconception_id")
+        for opt in options
+        if opt.get("misconception_id")
+    ]
+
+    return {
+        "id": qid,
+        "text": embedded_text,
+        "collection": "question",
+        "concept_tags": [concept] if concept else [],
+        "type": "mcq",
+        "difficulty": diff,
+        "level": level,
+        "source": src.get("pdf", "question_bank"),
+        "page": src.get("page", 1),
+        "question_id": qid,
+        "concept": concept,
+        "qtype": rec.get("qtype", "concept"),
+        "correct_index": c_idx,
+        "raw_record": rec,
+        "misconception_ids": misconceptions,
+        "title": qid,
+        "section": concept,
+        "heading": f"{concept} ({diff})",
+    }
 
 
 def iter_corpus_files(corpus_dir):
@@ -250,5 +348,13 @@ def iter_corpus_files(corpus_dir):
             if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
             rel = path.relative_to(corpus_dir)
-            collection = rel.parts[0] if len(rel.parts) > 1 else "root"
-            yield path, collection
+            raw_col = rel.parts[0].lower() if len(rel.parts) > 1 else "root"
+            if "book" in raw_col:
+                col = "book"
+            elif "note" in raw_col:
+                col = "note"
+            elif "question" in raw_col:
+                col = "question"
+            else:
+                col = "book" if path.suffix.lower() == ".pdf" else "note"
+            yield path, col

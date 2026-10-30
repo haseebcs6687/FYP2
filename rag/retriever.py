@@ -25,6 +25,7 @@ generation - the system degrades, it does not break.
 """
 
 import threading
+import time
 
 from core.concepts import CONCEPTS, prerequisites_of, search_text_for
 from rag.embedder import get_embedder
@@ -120,6 +121,7 @@ class Retriever(object):
     # ── retrieval ────────────────────────────────────────────
     def retrieve(self, brief):
         """Run a retrieval brief. Always returns a dict, never raises."""
+        t0 = time.time()
         result = {
             "ready": False,
             "passages": [],
@@ -127,25 +129,97 @@ class Retriever(object):
             "citations": [],
             "brief": brief,
             "error": None,
+            "trace": None,
         }
 
         if not self.is_ready():
             result["error"] = self._load_error or "RAG index is empty. Run: python -m rag.ingest"
             return result
 
+        concept = brief.get("concept")
+        difficulty = brief.get("difficulty", "Medium")
+        mode = brief.get("mode", "lesson")
+        include_prereqs = bool(brief.get("include_prereqs", False))
+
+        # Collection filter: Lesson retrieval must NEVER return 'question' chunks unless asked
+        if "collections" in brief and brief["collections"]:
+            collections = brief["collections"]
+        elif mode == "question" or brief.get("collection") == "question":
+            collections = ["question"]
+        else:
+            collections = ["book", "note"]
+
+        # Concept filtering
+        if concept:
+            tags = [concept]
+            if include_prereqs:
+                tags += [p for p in prerequisites_of(concept)]
+        else:
+            tags = brief.get("concept_tags")
+
+        # Types filter
+        types = brief.get("types")
+
+        # Target level soft boost for lesson retrieval
+        level_map = {"Easy": "basic", "Medium": "standard", "Hard": "advanced"}
+        target_level = level_map.get(difficulty, "standard") if mode == "lesson" else None
+
+        query_text = brief.get("query", "")
+
         try:
-            query_vector = self._embedder.embed_one(brief.get("query", ""))
+            query_vector = self._embedder.embed_one(query_text)
+            top_k_req = int(brief.get("top_k", 6))
             passages = self.store.search(
                 query_vector,
-                query_text=brief.get("query", ""),
-                concept_tags=brief.get("concept_tags"),
-                top_k=int(brief.get("top_k", 6)) * 2,
+                query_text=query_text,
+                concept_tags=tags,
+                top_k=top_k_req * 2,
+                collections=collections,
+                types=types,
+                difficulty=brief.get("difficulty") if "question" in collections else None,
+                target_level=target_level,
+                exclude_ids=brief.get("exclude_ids"),
+                near_duplicate_threshold=0.90 if "question" in collections else None,
             )
+            candidates_count = self.store.last_candidates_count
         except Exception as exc:                            # noqa: BLE001
             result["error"] = "Retrieval failed: {}".format(exc)
             return result
 
-        passages = _dedupe(passages)[: int(brief.get("top_k", 6))]
+        passages = _dedupe(passages)[:top_k_req]
+        latency_ms = round((time.time() - t0) * 1000.0, 2)
+
+        top_trace = [
+            {
+                "chunk_id": p.get("chunk_id") or p.get("id"),
+                "source": p.get("source"),
+                "page": p.get("page", 1),
+                "concept": p.get("concept") or (p.get("concept_tags", [""])[0] if p.get("concept_tags") else ""),
+                "collection": p.get("collection"),
+                "level": p.get("level"),
+                "difficulty": p.get("difficulty"),
+                "cosine": p.get("cosine", p.get("vector_score", 0.0)),
+                "lexical": p.get("lexical", p.get("lexical_score", 0.0)),
+                "final": p.get("final", p.get("score", 0.0)),
+            }
+            for p in passages
+        ]
+
+        trace = {
+            "query": query_text,
+            "filters": {
+                "collections": collections,
+                "concept": concept,
+                "include_prereqs": include_prereqs,
+                "types": types,
+                "difficulty": difficulty,
+                "target_level": target_level,
+            },
+            "embedder": self._embedder.signature() if self._embedder else "none",
+            "candidates": candidates_count,
+            "latency_ms": latency_ms,
+            "top": top_trace,
+        }
 
         result["ready"] = True
         result["passages"] = passages
@@ -159,7 +233,43 @@ class Retriever(object):
             }
             for i, p in enumerate(passages)
         ]
+        result["trace"] = trace
         return result
+
+    def retrieve_reference_questions(self, concept, difficulty, k=3, exclude_ids=()):
+        """
+        Stage 1: filter collection='question', concept=concept, strict difficulty, exclude_ids.
+        Stage 2: 0.7*cosine + 0.3*lexical with near-duplicate rejection (cosine >= 0.90).
+        Returns list of full question records (raw_record) annotated with scores.
+        """
+        if not self.is_ready():
+            return []
+
+        meta = CONCEPTS.get(concept)
+        query_text = search_text_for(concept) if meta else (concept or "").replace("-", " ")
+        query_vector = self._embedder.embed_one(query_text)
+
+        passages = self.store.search(
+            query_vector,
+            query_text=query_text,
+            concept_tags=[concept],
+            top_k=k,
+            collections=["question"],
+            types=["mcq"],
+            difficulty=difficulty,
+            exclude_ids=set(exclude_ids or []),
+            near_duplicate_threshold=0.90,
+        )
+
+        records = []
+        for p in passages:
+            rec = dict(p.get("raw_record") or {})
+            rec["retrieval_score"] = p.get("score")
+            rec["cosine"] = p.get("cosine")
+            rec["lexical"] = p.get("lexical")
+            rec["chunk_id"] = p.get("chunk_id")
+            records.append(rec)
+        return records
 
     def search_raw(self, query, top_k=8, concept_tags=None):
         """Plain search used by the Library page so students can explore the corpus."""
@@ -167,7 +277,7 @@ class Retriever(object):
             return {"ready": False, "results": [], "error": self._load_error}
         vector = self._embedder.embed_one(query)
         results = _dedupe(self.store.search(
-            vector, query_text=query, concept_tags=concept_tags, top_k=top_k * 2
+            vector, query_text=query, concept_tags=concept_tags, collections=["book", "note"], top_k=top_k * 2
         ))[:top_k]
         return {"ready": True, "results": results, "error": None}
 

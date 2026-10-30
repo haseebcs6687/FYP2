@@ -40,9 +40,8 @@ except ImportError:      # pragma: no cover
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_INDEX_DIR = Path(os.environ.get("EDUGEN_RAG_INDEX") or (BASE_DIR / "data" / "rag_index"))
 
-ALPHA_VECTOR = 0.62
-BETA_LEXICAL = 0.26
-GAMMA_TAGS = 0.12
+ALPHA_VECTOR = 0.70
+BETA_LEXICAL = 0.30
 
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
 _STOP = {
@@ -64,6 +63,7 @@ class VectorStore(object):
         self.meta = {}
         self._df = {}               # document frequency for lexical scoring
         self._chunk_tokens = []
+        self.last_candidates_count = 0
 
     # ── persistence ──────────────────────────────────────────
     @property
@@ -167,14 +167,22 @@ class VectorStore(object):
 
     # ── search ───────────────────────────────────────────────
     def search(self, query_vector, query_text="", concept_tags=None, top_k=5,
-               collections=None, min_score=0.0):
-        """Return the top_k chunks ranked by the hybrid score."""
+               collections=None, types=None, difficulty=None, target_level=None,
+               exclude_ids=None, near_duplicate_threshold=None, min_score=0.0):
+        """
+        Two-stage search:
+          Stage 1: Metadata filtering (collection, concept_tags, types, difficulty, exclude_ids).
+          Stage 2: Hybrid scoring (0.7 * cosine + 0.3 * lexical), soft level boost, near-duplicate rejection.
+        """
         if not self.chunks:
+            self.last_candidates_count = 0
             return []
 
         concept_tags = set(concept_tags or [])
+        collections_set = set(collections) if collections else None
+        types_set = set(types) if types else None
+        exclude_set = set(exclude_ids or [])
         query_tokens = tokenize(query_text)
-        results = []
 
         if HAS_NUMPY and self.vectors is not None and len(self.vectors):
             qv = np.asarray(query_vector, dtype="float32")
@@ -183,44 +191,121 @@ class VectorStore(object):
         else:
             sims = [_cosine(query_vector, v) for v in (self.vectors or [])]
 
+        candidates = []
         for idx, chunk in enumerate(self.chunks):
-            if collections and chunk.get("collection") not in collections:
+            # Stage 1: Collection filter
+            if collections_set and chunk.get("collection") not in collections_set:
                 continue
 
+            # Stage 1: Type filter
+            if types_set and chunk.get("type") not in types_set:
+                continue
+
+            # Stage 1: Exclude IDs
+            cid = chunk.get("id")
+            qid = chunk.get("question_id")
+            if exclude_set and (cid in exclude_set or qid in exclude_set):
+                continue
+
+            # Stage 1: Concept filter (when concept_tags provided)
+            chunk_tags = set(chunk.get("concept_tags", []))
+            chunk_concept = chunk.get("concept")
+            if concept_tags:
+                if chunk_concept:
+                    if chunk_concept not in concept_tags and not (chunk_tags & concept_tags):
+                        continue
+                elif not (chunk_tags & concept_tags):
+                    continue
+
+            # Stage 1: Difficulty filter (strict for question collection)
+            if difficulty and chunk.get("difficulty") and chunk.get("difficulty") != difficulty:
+                continue
+
+            candidates.append(idx)
+
+        self.last_candidates_count = len(candidates)
+
+        scored_results = []
+        for idx in candidates:
+            chunk = self.chunks[idx]
             vector_score = float(sims[idx]) if idx < len(sims) else 0.0
-            vector_score = max(0.0, min(1.0, (vector_score + 1.0) / 2.0 if vector_score < 0 else vector_score))
+            cosine_score = max(0.0, min(1.0, (vector_score + 1.0) / 2.0 if vector_score < 0 else vector_score))
             lexical_score = self._lexical_score(query_tokens, idx)
 
-            chunk_tags = set(chunk.get("concept_tags", []))
-            if concept_tags and chunk_tags:
-                tag_score = len(concept_tags & chunk_tags) / float(len(concept_tags))
-            else:
-                tag_score = 0.0
+            # Stage 2 hybrid score: 0.7 * cosine + 0.3 * lexical
+            score = (ALPHA_VECTOR * cosine_score + BETA_LEXICAL * lexical_score)
 
-            final = (ALPHA_VECTOR * vector_score
-                     + BETA_LEXICAL * lexical_score
-                     + GAMMA_TAGS * tag_score)
+            # Soft level boost +0.08 for lesson retrieval
+            if target_level and chunk.get("level") == target_level:
+                score += 0.08
 
-            if final < min_score:
+            if score < min_score:
                 continue
 
-            results.append({
+            scored_results.append({
+                "_idx": idx,
                 "chunk_id": chunk["id"],
+                "id": chunk["id"],
                 "text": chunk["text"],
                 "source": chunk["source"],
+                "page": chunk.get("page", 1),
+                "concept": chunk.get("concept") or (chunk.get("concept_tags", [""])[0] if chunk.get("concept_tags") else ""),
+                "concept_tags": chunk.get("concept_tags", []),
                 "collection": chunk.get("collection", "root"),
+                "type": chunk.get("type", "lesson"),
+                "level": chunk.get("level", "standard"),
+                "difficulty": chunk.get("difficulty"),
+                "score": round(score, 4),
+                "final": round(score, 4),
+                "cosine": round(cosine_score, 4),
+                "vector_score": round(cosine_score, 4),
+                "lexical": round(lexical_score, 4),
+                "lexical_score": round(lexical_score, 4),
                 "title": chunk.get("title", ""),
                 "section": chunk.get("section", ""),
                 "heading": chunk.get("heading", ""),
-                "concept_tags": chunk.get("concept_tags", []),
-                "score": round(final, 4),
-                "vector_score": round(vector_score, 4),
-                "lexical_score": round(lexical_score, 4),
-                "tag_score": round(tag_score, 4),
+                "raw_record": chunk.get("raw_record"),
+                "question_id": chunk.get("question_id"),
+                "qtype": chunk.get("qtype"),
+                "correct_index": chunk.get("correct_index"),
+                "misconception_ids": chunk.get("misconception_ids", []),
             })
 
-        results.sort(key=lambda r: r["score"], reverse=True)
-        return results[:top_k]
+        scored_results.sort(key=lambda r: r["score"], reverse=True)
+
+        # Stage 2: near-duplicate rejection if requested
+        if near_duplicate_threshold and self.vectors is not None:
+            selected = []
+            selected_vecs = []
+            for r in scored_results:
+                v = self.vectors[r["_idx"]]
+                if HAS_NUMPY:
+                    v_norm = float(np.linalg.norm(v)) or 1.0
+                    v_unit = np.asarray(v, dtype="float32") / v_norm
+                    if selected_vecs:
+                        cosines = [float(np.dot(v_unit, sv)) for sv in selected_vecs]
+                        if any(c >= near_duplicate_threshold for c in cosines):
+                            continue
+                    selected.append(r)
+                    selected_vecs.append(v_unit)
+                else:
+                    if selected_vecs:
+                        cosines = [_cosine(v, sv) for sv in selected_vecs]
+                        if any(c >= near_duplicate_threshold for c in cosines):
+                            continue
+                    selected.append(r)
+                    selected_vecs.append(v)
+
+                if len(selected) >= top_k:
+                    break
+            final_list = selected
+        else:
+            final_list = scored_results[:top_k]
+
+        for r in final_list:
+            r.pop("_idx", None)
+
+        return final_list
 
     def stats(self):
         by_collection, by_source = {}, {}
