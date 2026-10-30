@@ -134,12 +134,13 @@ def main():
     ok, err = validate_question_record(q_bad)
     check("misconception from foreign concept rejected", not ok and "invalid misconception_id" in err, err)
 
-    # 12. More than 1 distractor has null misconception_id
-    q_bad = make_valid_question()
-    q_bad["options"][1]["misconception_id"] = None
-    q_bad["options"][2]["misconception_id"] = None
-    ok, err = validate_question_record(q_bad)
-    check("multiple null distractors rejected", not ok and "At most 1 wrong distractor" in err, err)
+    # 12. Relaxed null rule: 0 to 3 wrong options may have null misconception_id
+    q_nulls = make_valid_question()
+    q_nulls["options"][1]["misconception_id"] = None
+    q_nulls["options"][2]["misconception_id"] = None
+    q_nulls["options"][3]["misconception_id"] = None
+    ok, err = validate_question_record(q_nulls)
+    check("up to 3 null distractors accepted under relaxed null rule", ok, err)
 
     # 13. Duplicate misconception_id across distractors
     q_bad = make_valid_question()
@@ -198,6 +199,20 @@ def main():
         check("accepted file contains 2 questions", len(acc_lines) == 2, f"got {len(acc_lines)}")
         check("rejected file contains 2 questions", len(rej_lines) == 2, f"got {len(rej_lines)}")
         check("rejected file records have 'reason'", all("reason" in r for r in rej_lines))
+
+        # Test double traversal fix: process_input on a directory with a jsonl file
+        in_dir = os.path.join(tmp_dir, "input_dir")
+        os.makedirs(in_dir, exist_ok=True)
+        sample_file = os.path.join(in_dir, "batch.jsonl")
+        q_folder = make_valid_question()
+        q_folder["question"] = "Unique folder question text for traversal check."
+        with open(sample_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps(q_folder) + "\n")
+
+        dir_val_out = os.path.join(tmp_dir, "dir_val_out")
+        dir_validator = QuestionValidator(out_dir=dir_val_out)
+        dir_validator.process_input(in_dir)
+        check("folder processed without double traversal duplication", len(dir_validator.accepted) == 1 and len(dir_validator.rejected) == 0)
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

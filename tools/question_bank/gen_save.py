@@ -13,7 +13,7 @@ Validation Gates (run BEFORE install):
   5. Code qtypes: >= 2 questions in {code_output, bug_find}
      (exempt concepts: abstraction-basics, design-patterns, abstract-class-vs-interface).
   6. Misconceptions: every distractor misconception_id belongs to THIS concept
-     (or null, max 1 null per question).
+     (or null, 0-3 nulls per question meaning "no verified catalog match").
   7. Provenance: source.pdf == entry pdf, source.page within pack page bounds.
   8. Wording: no question contains "according to the text/book/passage/figure/chapter".
   9. [Gate 1] Explanations never refer to options by letter or number:

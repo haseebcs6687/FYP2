@@ -137,8 +137,6 @@ def validate_question_record(rec: dict) -> tuple[bool, str]:
         m_id = opt.get("misconception_id")
         if m_id is None:
             null_distractor_count += 1
-            if null_distractor_count > 1:
-                return False, "At most 1 wrong distractor may have 'misconception_id' = null (pure careless/unrelated)"
         else:
             if not isinstance(m_id, str):
                 return False, f"Distractor at index {idx} has invalid non-string misconception_id: {m_id}"
@@ -262,7 +260,7 @@ class QuestionValidator:
         if p.is_file():
             self.process_file(p)
         else:
-            files = sorted(list(p.glob("*.jsonl")) + list(p.glob("**/*.jsonl")))
+            files = sorted(list({f.resolve() for f in p.glob("**/*.jsonl") if f.is_file()}))
             if not files:
                 print(f"Warning: No .jsonl files found under {p}")
             for f in files:

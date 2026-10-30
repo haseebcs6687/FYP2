@@ -41,7 +41,7 @@ Each question record is a valid JSON object matching the following structure:
 | `question` | string | Yes | Non-empty string. Java code snippets must be wrapped in markdown code fences (` ```java ... ``` `). All markdown code fences must be properly closed/balanced. Minimum 15 characters. |
 | `options` | array | Yes | Array of **exactly 4** option objects. All 4 option `text` strings must be non-empty and pairwise distinct. |
 | `options[].text` | string | Yes | The textual display for the option. |
-| `options[].misconception_id` | string or null | Yes | `null` for the correct answer. For distractors, must be a valid misconception ID from `core/misconceptions.py` belonging to this question's `concept`. At most one distractor may have `null` for a pure careless/unrelated distractor. |
+| `options[].misconception_id` | string or null | Yes | `null` for the correct answer. For distractors, must be a valid misconception ID from `core/misconceptions.py` belonging to this question's `concept`, or `null` (0-3 per question allowed) meaning "no verified catalog match". |
 | `correct_index` | integer | Yes | Integer `0`, `1`, `2`, or `3` indicating the zero-based index of the correct option in `options`. |
 | `explanation` | string | Yes | Non-empty string explaining why the correct option is right and addressing the primary distractor misconception. |
 | `source` | object | Yes | Object containing provenance metadata (`pdf` string and `page` string/number). |
@@ -56,8 +56,8 @@ Each question record is a valid JSON object matching the following structure:
    - The option at index `correct_index` must have `"misconception_id": null`.
    - The other 3 options are incorrect distractors.
 2. **Misconception Catalog Grounding:**
-   - Every wrong option must either reference a valid misconception ID registered for this question's `concept` in `core/misconceptions.py`, or be `null` (permitted for at most **one** careless or unrelated distractor per question).
-   - When the concept's catalog has 3 or more misconceptions, the wrong options should map to **distinct** misconceptions (no two wrong options should target the same misconception ID in the same question).
+   - Every wrong option must either reference a valid misconception ID registered for this question's `concept` in `core/misconceptions.py`, or be `null` (0 to 3 wrong options per question may have `null`, meaning "no verified catalog match").
+   - When the concept's catalog has 3 or more misconceptions and multiple distractors carry non-null tags, they must map to **distinct** misconceptions (no two wrong options should target the same misconception ID in the same question).
 3. **No Duplicate Options:**
    - All four option `text` values must be unique after trimming whitespace.
 4. **Code Syntax & Compilability:**
