@@ -59,6 +59,12 @@ ROUND2_CONCEPTS = [
     "try-catch",
 ]
 
+DEFAULT_FOCUS_MAP = {
+    "dynamic-method-dispatch": "the overridden version that runs is chosen by the RUNTIME object's class, not the reference type; fields, static and private methods are NOT dispatched; super.m(); constructor calling an overridable method",
+    "runtime-polymorphism": "one supertype/interface reference (array, List, parameter) driving different behaviours; upcasting/downcasting, instanceof, ClassCastException; why code written against the supertype works for new subclasses",
+    "method-overriding": "rules of a valid override: signature, access, covariant return, checked exceptions, final/static/private, super.m()",
+}
+
 
 def load_quotas(path: Path = None) -> dict:
     q_file = path or QUOTAS_FILE
@@ -146,7 +152,7 @@ def build_generation_plan(quotas_path: Path = None) -> list[dict]:
     getters_setters_pdf = None
     for c in round1_concepts:
         pack_c = c
-        focus = ""
+        focus = DEFAULT_FOCUS_MAP.get(c, "")
         if c == "javabeans":
             pack_c = "getters-setters"
             focus = "JavaBeans convention: private fields, public no-arg constructor, getters/setters, Serializable, naming rules"
@@ -185,7 +191,7 @@ def build_generation_plan(quotas_path: Path = None) -> list[dict]:
             "concept": c,
             "batch_idx": b_idx,
             "pack_concept": c,
-            "focus": "",
+            "focus": DEFAULT_FOCUS_MAP.get(c, ""),
             "status": "pending",
         })
 

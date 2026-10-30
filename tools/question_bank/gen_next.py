@@ -1,6 +1,6 @@
 """
 =============================================================================
-EduGen - Question Bank Generation Brief Generator (Phase 2E-a)
+EduGen - Question Bank Generation Brief Generator (Phase 2E-b Hardened)
 =============================================================================
 Prints a self-contained generation brief for the next N pending plan entries
 from data/bank_work/gen_plan.json.
@@ -11,7 +11,7 @@ Brief contents per batch:
   - Complete list of catalog misconceptions for the concept
   - Focus guidance (if any)
   - Full source pack text with page numbers
-  - Generation RULES verbatim
+  - Verbatim generation RULES (Phase 2E-a rules + R1..R8)
 
 Usage:
     python tools/question_bank/gen_next.py [--n 1]
@@ -42,7 +42,17 @@ RULES_TEXT = """RULES that every generated question must follow:
 - Code: one self-contained snippet in ```java fences, compiles as a single file (class Main with main), deterministic (no input, threads, time, random, hash ordering). For code_output the explanation must state the exact output and trace it. bug_find: the explanation names the exact compile/runtime error.
 - 4 distinct options, exactly one correct. Every wrong option carries a misconception_id from THIS concept's catalog list shown in the brief, chosen so that the wrong belief would really produce that option; distinct ids across the three wrong options when possible; at most one null.
 - Explanation: why the correct option is right and why the main distractor is wrong. Balance correct_index over 0-3.
-- SELF-AUDIT before saving: for every question trace the code / re-derive the answer; fix any doubtful question instead of keeping it."""
+- SELF-AUDIT before saving: for every question trace the code / re-derive the answer; fix any doubtful question instead of keeping it.
+
+ADDITIONAL HARDENED RULES (Phase 2E-b):
+R1 Explanations never name an option by letter/number. Refer to the option's content ("the claim that static methods are overridden is wrong because ...").
+R2 Distractor design: BEFORE writing a question pick 2-3 catalog misconceptions; write each wrong option as the answer a student holding that wrong_belief would really pick for THIS question. Tag an option ONLY if its text directly expresses that wrong_belief. A plausible slip that matches no catalog item gets misconception_id null (max one per question). Never tag just to fill the field. Bad pilot examples: "compiles but throws UnsupportedOperationException" tagged static-methods-override; "Vehicle Car" tagged static-methods-override; "no visibility until implemented" tagged interface-fields-are-instance-variables.
+R3 All four options similar in length and detail. The correct option must not be systematically the longest.
+R4 qtype honesty: code_output = asks the output of the snippet. bug_find = the snippet has a compile/runtime error and the question asks to identify it. concept = no snippet needed. Never label bug_find a snippet that compiles and runs fine, or a question without a snippet.
+R5 Variety: cover >= 5 different facets of the concept per batch; at most 2 questions on the same fact.
+R6 Difficulty: Easy = single fact/recognition. Medium = apply one rule to a short snippet with one trap. Hard = two interacting rules or a subtle trap (hiding vs overriding, static vs runtime type, evaluation order, edge case); not solvable by one-line tracing.
+R7 source.page = the pack page that actually supports the question; do not give all 12 the same page.
+R8 No "all/none of the above", no "both A and B"."""
 
 
 def get_target_filename(pdf: str, concept: str, batch_idx: int) -> str:
