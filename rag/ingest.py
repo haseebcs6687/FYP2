@@ -18,10 +18,16 @@ Add a book:
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
+
+# Silence pypdf fontTools warning
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*fontTools.*")
 
 # Allow `python rag/ingest.py` as well as `python -m rag.ingest`
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

@@ -356,10 +356,17 @@ class ConceptClarifierAgent(object):
                 emb_sig = trace.get("embedder", "unknown")
                 concept = brief.get("concept", "")
                 mode = brief.get("mode", "lesson")
+                student_id = brief.get("student_id")
+                if not student_id:
+                    try:
+                        from core.auth import current_student_id
+                        student_id = current_student_id()
+                    except Exception:
+                        student_id = None
 
                 record_rag_retrieval(
                     run_id=None,
-                    student_id=None,
+                    student_id=student_id,
                     concept=concept,
                     mode=mode,
                     query=brief.get("query", ""),
@@ -371,8 +378,12 @@ class ConceptClarifierAgent(object):
                     f"RAG: {concept} {mode} -> top1 cosine {top1_cos:.2f}, {cand_count} candidates, embedder {emb_sig}",
                     "info",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                try:
+                    from core.agent_log import add_log
+                    add_log("Concept Clarifier", f"RAG log failed: {exc}", "warn")
+                except Exception:
+                    pass
         elif result.get("error"):
             self._emit("Knowledge base unavailable: {}".format(result["error"]), "warning")
         return result

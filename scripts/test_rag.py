@@ -190,5 +190,103 @@ class TestTwoStageRetrieval(unittest.TestCase):
                 self.assertIn(expected_key, top_item)
 
 
+class TestDeterministicChunking(unittest.TestCase):
+    def test_chunking_twice_yields_identical_chunks(self):
+        note_path = BASE_DIR / "rag" / "corpus" / "notes" / "class-definition.md"
+        c1 = chunk_document(note_path, collection="note")
+        c2 = chunk_document(note_path, collection="note")
+        self.assertEqual(len(c1), len(c2))
+        self.assertEqual([c["id"] for c in c1], [c["id"] for c in c2])
+        self.assertEqual([c["text"] for c in c1], [c["text"] for c in c2])
+        self.assertEqual([c["level"] for c in c1], [c["level"] for c in c2])
+        self.assertEqual([c["concept_tags"] for c in c1], [c["concept_tags"] for c in c2])
+
+
+class TestQueryCache(unittest.TestCase):
+    def test_repeated_query_does_not_call_embedder_twice(self):
+        retriever = Retriever(lazy=True)
+        retriever._loaded = True
+        call_count = 0
+
+        class MockEmbedder:
+            def signature(self):
+                return "mock:embedder:768"
+
+            def embed_one(self, text):
+                nonlocal call_count
+                call_count += 1
+                return [0.1, 0.2, 0.3]
+
+        retriever._embedder = MockEmbedder()
+        retriever.store = VectorStore()
+        retriever.store.chunks = [{"id": "c1", "source": "note.md", "text": "hello", "collection": "note", "concept_tags": ["class-definition"]}]
+        retriever.store.vectors = [[0.1, 0.2, 0.3]]
+
+        brief = {"concept": "class-definition", "difficulty": "Easy", "mode": "lesson", "query": "what is a class"}
+
+        # First call: cache miss
+        r1 = retriever.retrieve(brief)
+        self.assertEqual(call_count, 1)
+        self.assertFalse(r1["trace"]["query_cache_hit"])
+
+        # Second call: cache hit, embedder not called again
+        r2 = retriever.retrieve(brief)
+        self.assertEqual(call_count, 1)
+        self.assertTrue(r2["trace"]["query_cache_hit"])
+
+
+class TestRAGRetrievalLogging(unittest.TestCase):
+    def test_lesson_request_logs_student_id_and_no_chunk_text(self):
+        import json
+        import tempfile
+        import core.db as db
+        from app import create_app
+
+        temp_db = os.path.join(tempfile.mkdtemp(), "test_rag_log.db")
+        orig_db = db.DB_PATH
+        db.DB_PATH = temp_db
+        os.environ["EDUGEN_DB_PATH"] = temp_db
+        try:
+            app = create_app()
+            app.config["TESTING"] = True
+            client = app.test_client()
+
+            # Sign up student
+            resp = client.post("/api/auth/signup", json={
+                "name": "Audit Student", "email": "audit@example.com", "password": "password123"
+            })
+            self.assertEqual(resp.status_code, 201)
+            student_id = resp.get_json()["student_id"]
+
+            # Request a lesson
+            l_resp = client.get("/api/lesson/class-definition/Easy")
+            self.assertEqual(l_resp.status_code, 200)
+
+            # Verify rag_retrievals in DB
+            conn = db.get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT student_id, concept, mode, embedder, results_json FROM rag_retrievals")
+            rows = cur.fetchall()
+            self.assertGreaterEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["student_id"], student_id)
+            self.assertEqual(row["concept"], "class-definition")
+            self.assertEqual(row["mode"], "lesson")
+
+            results = json.loads(row["results_json"])
+            self.assertTrue(isinstance(results, list))
+            if results:
+                for r in results:
+                    self.assertIn("chunk_id", r)
+                    # Must NOT contain chunk text
+                    self.assertNotIn("text", r)
+                    self.assertNotIn("content", r)
+                    self.assertNotIn("body", r)
+            conn.close()
+        finally:
+            db.DB_PATH = orig_db
+            os.environ["EDUGEN_DB_PATH"] = orig_db
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,7 @@ generation - the system degrades, it does not break.
 =============================================================================
 """
 
+import collections
 import threading
 import time
 
@@ -43,6 +44,7 @@ class Retriever(object):
         self._backend = backend
         self._loaded = False
         self._load_error = None
+        self._query_cache = collections.OrderedDict()
         if not lazy:
             self.ensure_loaded()
 
@@ -167,7 +169,7 @@ class Retriever(object):
         query_text = brief.get("query", "")
 
         try:
-            query_vector = self._embedder.embed_one(query_text)
+            query_vector, query_cache_hit = self._embed_query(query_text)
             top_k_req = int(brief.get("top_k", 6))
             passages = self.store.search(
                 query_vector,
@@ -218,6 +220,7 @@ class Retriever(object):
             "embedder": self._embedder.signature() if self._embedder else "none",
             "candidates": candidates_count,
             "latency_ms": latency_ms,
+            "query_cache_hit": query_cache_hit,
             "top": top_trace,
         }
 
@@ -236,6 +239,24 @@ class Retriever(object):
         result["trace"] = trace
         return result
 
+    def _embed_query(self, query_text):
+        """
+        Embed a query string with an in-memory LRU cache (256 entries)
+        keyed by (embedder signature, query text).
+        Returns (query_vector, query_cache_hit).
+        """
+        sig = self._embedder.signature() if self._embedder else "none"
+        key = (sig, query_text)
+        if key in self._query_cache:
+            self._query_cache.move_to_end(key)
+            return self._query_cache[key], True
+
+        vec = self._embedder.embed_one(query_text)
+        self._query_cache[key] = vec
+        if len(self._query_cache) > 256:
+            self._query_cache.popitem(last=False)
+        return vec, False
+
     def retrieve_reference_questions(self, concept, difficulty, k=3, exclude_ids=()):
         """
         Stage 1: filter collection='question', concept=concept, strict difficulty, exclude_ids.
@@ -247,7 +268,7 @@ class Retriever(object):
 
         meta = CONCEPTS.get(concept)
         query_text = search_text_for(concept) if meta else (concept or "").replace("-", " ")
-        query_vector = self._embedder.embed_one(query_text)
+        query_vector, _ = self._embed_query(query_text)
 
         passages = self.store.search(
             query_vector,
@@ -275,7 +296,7 @@ class Retriever(object):
         """Plain search used by the Library page so students can explore the corpus."""
         if not self.is_ready():
             return {"ready": False, "results": [], "error": self._load_error}
-        vector = self._embedder.embed_one(query)
+        vector, _ = self._embed_query(query)
         results = _dedupe(self.store.search(
             vector, query_text=query, concept_tags=concept_tags, collections=["book", "note"], top_k=top_k * 2
         ))[:top_k]

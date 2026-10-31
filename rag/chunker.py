@@ -18,12 +18,19 @@ vector similarity alone - the single biggest quality win in this pipeline.
 =============================================================================
 """
 
+import json
+import logging
 import os
 import re
+import warnings
 from pathlib import Path
 
 from core.concepts import CONCEPTS
 from rag.levels import infer_level
+
+# Silence pypdf fontTools warning
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*fontTools.*")
 
 SUPPORTED_EXTENSIONS = {".md", ".txt", ".pdf"}
 
@@ -37,6 +44,8 @@ _WS_RE = re.compile(r"[ \t]+")
 _MULTINEWLINE_RE = re.compile(r"\n{3,}")
 PAGE_MARKER_RE = re.compile(r"===PAGE:(\d+)===")
 
+RAG_CACHE_DIR = Path(os.environ.get("EDUGEN_RAG_CACHE") or (Path(__file__).resolve().parent.parent / "data" / "rag_cache"))
+
 # Pre-compute keyword -> tag lookups once
 _KEYWORD_INDEX = []
 for _tag, _meta in CONCEPTS.items():
@@ -49,46 +58,112 @@ for _tag, _meta in CONCEPTS.items():
 # ─────────────────────────────────────────────────────────────
 # Loading
 # ─────────────────────────────────────────────────────────────
-def load_pdf(path):
-    """Extract text from a PDF with page markers. Tries pymupdf (fitz), then pypdf, then pdfplumber."""
-    text_parts = []
+def _parse_pdf_pages(path):
+    """Extract page dicts [{'page': n, 'text': ...}] with 100-page progress logging."""
+    pages = []
+    # 1. Try pymupdf (fitz)
     try:
-        import fitz  # pymupdf
+        import pymupdf as fitz
         doc = fitz.open(str(path))
         for page_idx, page in enumerate(doc, start=1):
+            if page_idx % 100 == 0:
+                print(f"  [{path.name}] parsed {page_idx} pages...")
             t = page.get_text() or ""
-            if t.strip():
-                text_parts.append(f"\n\n===PAGE:{page_idx}===\n\n" + t)
-        if text_parts:
-            return "\n\n".join(text_parts)
+            pages.append({"page": page_idx, "text": t})
+        if pages:
+            return pages
     except Exception:
         pass
 
+    # 2. Try pypdf
     try:
         from pypdf import PdfReader
         reader = PdfReader(str(path))
         for page_idx, page in enumerate(reader.pages, start=1):
+            if page_idx % 100 == 0:
+                print(f"  [{path.name}] parsed {page_idx} pages...")
             t = page.extract_text() or ""
-            if t.strip():
-                text_parts.append(f"\n\n===PAGE:{page_idx}===\n\n" + t)
-        if text_parts:
-            return "\n\n".join(text_parts)
+            pages.append({"page": page_idx, "text": t})
+        if pages:
+            return pages
     except Exception:
         pass
 
+    # 3. Try pdfplumber
     try:
         import pdfplumber
         with pdfplumber.open(str(path)) as pdf:
             for page_idx, page in enumerate(pdf.pages, start=1):
+                if page_idx % 100 == 0:
+                    print(f"  [{path.name}] parsed {page_idx} pages...")
                 t = page.extract_text() or ""
-                if t.strip():
-                    text_parts.append(f"\n\n===PAGE:{page_idx}===\n\n" + t)
-        if text_parts:
-            return "\n\n".join(text_parts)
+                pages.append({"page": page_idx, "text": t})
+        if pages:
+            return pages
     except Exception as exc:
         raise RuntimeError(
-            "Could not read {}. Install a PDF reader:  pip install pypdf  ({})".format(path.name, exc)
+            f"Could not read {path.name}. Install a PDF reader: pip install pymupdf pypdf ({exc})"
         )
+    return pages
+
+
+def load_pdf(path, cache_dir=None):
+    """
+    Extract text from a PDF with page markers.
+    Caches parsed pages to data/rag_cache/<pdf-stem>.jsonl keyed by file size + mtime.
+    Subsequent runs read from cache without re-parsing.
+    Emits progress line every 100 pages during parsing.
+    """
+    path = Path(path)
+    c_dir = Path(cache_dir or RAG_CACHE_DIR)
+    c_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = c_dir / f"{path.stem}.jsonl"
+
+    st = path.stat()
+    file_size = st.st_size
+    file_mtime = st.st_mtime
+
+    # Try reading from cache
+    if cache_file.exists():
+        try:
+            pages = []
+            valid_cache = False
+            with open(cache_file, "r", encoding="utf-8") as fh:
+                first_line = fh.readline()
+                if first_line:
+                    header = json.loads(first_line)
+                    if header.get("size") == file_size and header.get("mtime") == file_mtime:
+                        valid_cache = True
+                        for line in fh:
+                            line_str = line.strip()
+                            if line_str:
+                                rec = json.loads(line_str)
+                                pages.append(rec)
+            if valid_cache and pages:
+                text_parts = [
+                    f"\n\n===PAGE:{p['page']}===\n\n{p['text']}"
+                    for p in pages
+                    if p.get("text", "").strip()
+                ]
+                return "\n\n".join(text_parts)
+        except Exception:
+            pass  # Corrupted cache fallback
+
+    # Parse fresh and populate cache
+    pages = _parse_pdf_pages(path)
+    try:
+        with open(cache_file, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"size": file_size, "mtime": file_mtime}) + "\n")
+            for p in pages:
+                fh.write(json.dumps({"page": p["page"], "text": p["text"]}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+    text_parts = [
+        f"\n\n===PAGE:{p['page']}===\n\n{p['text']}"
+        for p in pages
+        if p.get("text", "").strip()
+    ]
     return "\n\n".join(text_parts)
 
 

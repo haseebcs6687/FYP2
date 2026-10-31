@@ -99,6 +99,14 @@ def main():
     quiz = r.get_json()
 
     if r.status_code == 503:
+        # In FYP-2, the static 120-question bank was retired on purpose (all quizzes
+        # are generated on demand by the Concept Clarifier via external LLM).
+        # In offline mode or when no GROQ_API_KEY is configured, /api/quiz/start
+        # legitimately returns 503 generation_unavailable; smoke_test injects a synthetic
+        # quiz session to exercise grading and downstream analysis.
+        # This replaces the 3 online quiz checks ('quiz generated', 'questions returned',
+        # 'answers hidden from client') with 1 offline check ('synthetic quiz injected'),
+        # resulting in 52 checks passing instead of 54.
         print("     -> quiz generation unavailable (no LLM key). Injecting a")
         print("        synthetic quiz session to exercise grading and analysis.")
         quiz = inject_quiz(concept, difficulty)
