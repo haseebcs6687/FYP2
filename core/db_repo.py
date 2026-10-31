@@ -50,14 +50,22 @@ def record_generated_questions(concept, difficulty, questions, model=None, sourc
                 continue
 
             thash = compute_question_hash(q_text)
-            qtype = classify_question_type(q_text)
-            options_json = json.dumps(q.get("options", []))
+            qtype = q.get("qtype") or classify_question_type(q_text)
+            options_raw = q.get("options", [])
+            options_clean = [opt["text"] if isinstance(opt, dict) else str(opt) for opt in options_raw]
+            options_json = json.dumps(options_clean)
             correct_idx = int(q.get("correct", 0))
             explanation = q.get("explanation", "")
-            tags_json = json.dumps(q.get("concept_tags", [concept]))
-
-            # Check if already exists
             facet = q.get("facet")
+
+            tags_data = {
+                "tags": q.get("concept_tags", [concept]),
+                "option_misconception_ids": q.get("option_misconception_ids", []),
+                "facet": facet,
+                "qtype": qtype,
+                "reference_ids": q.get("reference_ids", []),
+            }
+            tags_json = json.dumps(tags_data)
 
             row = cur.execute("SELECT id FROM questions WHERE text_hash = ?", (thash,)).fetchone()
             if row:
@@ -113,11 +121,16 @@ def record_submission_history(student_id, quiz_result_id, questions, answers, ti
             time_ms = int(timings.get(str(i), timings.get(i, 0)) or 0)
 
             misconception_id = None
-            options = q.get("options") or []
-            if isinstance(options, list) and 0 <= chosen < len(options):
-                opt_item = options[chosen]
-                if isinstance(opt_item, dict):
-                    misconception_id = opt_item.get("misconception_id")
+            if not was_correct and chosen != -1:
+                opt_mids = q.get("option_misconception_ids")
+                if opt_mids and 0 <= chosen < len(opt_mids):
+                    misconception_id = opt_mids[chosen]
+                else:
+                    options = q.get("options") or []
+                    if isinstance(options, list) and 0 <= chosen < len(options):
+                        opt_item = options[chosen]
+                        if isinstance(opt_item, dict):
+                            misconception_id = opt_item.get("misconception_id")
 
             if qid:
                 cur.execute(

@@ -25,6 +25,8 @@ generation - the system degrades, it does not break.
 """
 
 import collections
+import concurrent.futures
+import logging
 import threading
 import time
 
@@ -34,7 +36,24 @@ from rag.vector_store import VectorStore
 
 MAX_CONTEXT_CHARS = 6000
 
+logger = logging.getLogger("rag.retriever")
 _lock = threading.Lock()
+_warn_lock = threading.Lock()
+_last_warn_time = 0.0
+
+
+def _log_degraded_warning(msg):
+    global _last_warn_time
+    with _warn_lock:
+        now = time.time()
+        if now - _last_warn_time >= 60.0:
+            _last_warn_time = now
+            logger.warning("[RAG DEGRADED] %s", msg)
+            try:
+                from core.agent_log import add_log
+                add_log("Retriever", msg, "warning")
+            except Exception:
+                pass
 
 
 class Retriever(object):
@@ -181,7 +200,7 @@ class Retriever(object):
                 difficulty=brief.get("difficulty") if "question" in collections else None,
                 target_level=target_level,
                 exclude_ids=brief.get("exclude_ids"),
-                near_duplicate_threshold=0.90 if "question" in collections else None,
+                near_duplicate_threshold=0.90 if ("question" in collections and query_vector is not None) else None,
             )
             candidates_count = self.store.last_candidates_count
         except Exception as exc:                            # noqa: BLE001
@@ -223,6 +242,8 @@ class Retriever(object):
             "query_cache_hit": query_cache_hit,
             "top": top_trace,
         }
+        if query_vector is None:
+            trace["degraded"] = "lexical_only"
 
         result["ready"] = True
         result["passages"] = passages
@@ -244,18 +265,42 @@ class Retriever(object):
         Embed a query string with an in-memory LRU cache (256 entries)
         keyed by (embedder signature, query text).
         Returns (query_vector, query_cache_hit).
+        Falls back to None if embedder is unavailable, signature mismatches,
+        times out (>10s), or fails.
         """
-        sig = self._embedder.signature() if self._embedder else "none"
-        key = (sig, query_text)
+        if not self._embedder:
+            _log_degraded_warning("No embedder available. Falling back to lexical-only ranking.")
+            return None, False
+
+        index_sig = self.store.meta.get("embedder", "")
+        current_sig = self._embedder.signature()
+        if index_sig and current_sig and index_sig != current_sig:
+            _log_degraded_warning(
+                "Embedder signature mismatch ('{}' != '{}'). Never embedding query with mismatched signature; falling back to lexical-only.".format(
+                    current_sig, index_sig
+                )
+            )
+            return None, False
+
+        key = (current_sig, query_text)
         if key in self._query_cache:
             self._query_cache.move_to_end(key)
             return self._query_cache[key], True
 
-        vec = self._embedder.embed_one(query_text)
-        self._query_cache[key] = vec
-        if len(self._query_cache) > 256:
-            self._query_cache.popitem(last=False)
-        return vec, False
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self._embedder.embed_one, query_text)
+                vec = future.result(timeout=10.0)
+            self._query_cache[key] = vec
+            if len(self._query_cache) > 256:
+                self._query_cache.popitem(last=False)
+            return vec, False
+        except concurrent.futures.TimeoutError:
+            _log_degraded_warning("Query embedder timed out after 10 s. Falling back to lexical-only ranking.")
+            return None, False
+        except Exception as exc:
+            _log_degraded_warning("Query embedder failed ({}). Falling back to lexical-only ranking.".format(exc))
+            return None, False
 
     def retrieve_reference_questions(self, concept, difficulty, k=3, exclude_ids=()):
         """
@@ -279,7 +324,7 @@ class Retriever(object):
             types=["mcq"],
             difficulty=difficulty,
             exclude_ids=set(exclude_ids or []),
-            near_duplicate_threshold=0.90,
+            near_duplicate_threshold=0.90 if query_vector is not None else None,
         )
 
         records = []

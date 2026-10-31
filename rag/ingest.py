@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.concepts import CONCEPTS                       # noqa: E402
 from rag.chunker import chunk_document, chunk_question_record, iter_corpus_files  # noqa: E402
 from rag.embedder import get_embedder                    # noqa: E402
+from rag.embedding_cache import EmbeddingCache            # noqa: E402
 from rag.vector_store import VectorStore                 # noqa: E402
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -109,18 +110,42 @@ def build(corpus_dir=None, index_dir=None, backend=None, rebuild=False, dry_run=
 
     # ── 2. embed ────────────────────────────────────────────
     embedder = get_embedder(backend)
-    print("\n  Embedding {} chunks with {} ...".format(len(chunks), embedder.signature()))
+    sig = embedder.signature()
+    cache = EmbeddingCache()
 
-    t1 = time.time()
-    vectors = []
-    for start in range(0, len(chunks), batch):
-        window = chunks[start:start + batch]
-        vectors.extend(embedder.embed([c["text"] for c in window]))
-        done = min(start + batch, len(chunks))
-        pct = 100.0 * done / len(chunks)
-        sys.stdout.write("\r    {:>5}/{} ({:.0f}%)".format(done, len(chunks), pct))
-        sys.stdout.flush()
-    print("\n  Embedded in {:.1f}s".format(time.time() - t1))
+    # Seed cache from existing store if cache is fresh and store matches sig
+    if store.is_built() and store.meta.get("embedder") == sig:
+        cache.seed_from_store(store, sig)
+
+    chunk_hashes = [EmbeddingCache.hash_text(c.get("text", "")) for c in chunks]
+    cached_map = cache.get_many(sig, chunk_hashes)
+    missing_indices = [i for i, h in enumerate(chunk_hashes) if h not in cached_map]
+
+    reused_count = len(chunks) - len(missing_indices)
+    embedded_count = len(missing_indices)
+    print("\n  Embedding cache: reused {} / embedded {}".format(reused_count, embedded_count))
+
+    if missing_indices:
+        print("  Embedding {} new/changed chunks with {} ...".format(len(missing_indices), sig))
+        t1 = time.time()
+        new_items = []
+        for start in range(0, len(missing_indices), batch):
+            batch_indices = missing_indices[start:start + batch]
+            batch_texts = [chunks[i]["text"] for i in batch_indices]
+            batch_vecs = embedder.embed(batch_texts)
+            for idx, vec in zip(batch_indices, batch_vecs):
+                h = chunk_hashes[idx]
+                v_list = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+                cached_map[h] = v_list
+                new_items.append((h, v_list))
+            done = min(start + batch, len(missing_indices))
+            pct = 100.0 * done / len(missing_indices)
+            sys.stdout.write("\r    {:>5}/{} ({:.0f}%)".format(done, len(missing_indices), pct))
+            sys.stdout.flush()
+        cache.put_many(sig, new_items)
+        print("\n  Embedded in {:.1f}s".format(time.time() - t1))
+
+    vectors = [cached_map[h] for h in chunk_hashes]
 
     # ── 3. save ─────────────────────────────────────────────
     meta = store.save(chunks, vectors, embedder.signature(), extra={

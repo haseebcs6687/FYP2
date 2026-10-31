@@ -141,9 +141,9 @@ class CoordinatorAgent(object):
         handoff("Coordinator", "Concept Clarifier", "lesson brief for '{}'".format(concept), brief)
         return self.cc.generate_lesson(brief)
 
-    def request_quiz(self, concept, difficulty, num_questions=5, focus_notes=None):
+    def request_quiz(self, concept, difficulty, num_questions=5, focus_notes=None, student_id=None):
         add_log("Coordinator", "Quiz requested directly: '{}' ({})".format(concept, difficulty))
-        brief = self._brief(concept, difficulty, "quiz", focus_notes)
+        brief = self._brief(concept, difficulty, "quiz", focus_notes, student_id=student_id)
         handoff("Coordinator", "Concept Clarifier", "quiz brief for '{}'".format(concept), brief)
         return self.cc.generate_quiz(brief, num_questions=num_questions)
 
@@ -154,10 +154,11 @@ class CoordinatorAgent(object):
             return self.cc.generate_quiz(brief)
         return self.cc.generate_lesson(brief)
 
-    def _brief(self, concept, difficulty, mode, focus_notes=None):
+    def _brief(self, concept, difficulty, mode, focus_notes=None, student_id=None):
         from rag.retriever import Retriever
         brief = Retriever.build_brief(concept, difficulty, mode=mode)
         brief["focus_notes"] = focus_notes or []
+        brief["student_id"] = student_id
         brief["issued_by"] = "Coordinator Agent"
         brief["concept_title"] = concept_title(concept)
         return brief

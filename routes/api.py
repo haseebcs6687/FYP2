@@ -267,41 +267,51 @@ def _focus_notes_for(student_id, concept):
 def api_quiz_start():
     """
     Create a quiz and store it server-side.
-
-    The browser only ever receives the questions and the options. Correct
-    answers stay in quiz_sessions until the quiz is submitted - which is how
-    an LLM-generated quiz can be graded at all (FYP-1 could not do this).
+    Accepts optional kind ('practice' default|'diagnostic'|'reevaluation') and concepts.
+    Builds the blueprint, calls the Clarifier, stores the full question records in
+    quiz_sessions.payload_json, and returns questions (index, question, options).
     """
     student_id = current_student_id()
     data = request.get_json(silent=True) or {}
+    kind = data.get("kind", "practice")
     concept = data.get("concept")
-    difficulty = data.get("difficulty", "Easy")
-    count = max(3, min(int(data.get("count", 5)), 10))
+    concepts = data.get("concepts")
+    difficulty = data.get("difficulty")
+    count = max(1, min(int(data.get("count", 5)), 12))
 
-    if concept not in CONCEPTS:
-        return jsonify({"error": "Pick a concept from the list."}), 400
-    if difficulty not in DIFFICULTIES:
-        return jsonify({"error": "Pick Easy, Medium or Hard."}), 400
+    from core.quiz_engine import build_blueprint
+    slots = build_blueprint(
+        kind=kind,
+        student_id=student_id,
+        concepts=concepts or ([concept] if concept else None),
+        n=count,
+        difficulty=difficulty,
+    )
 
-    add_log("Coordinator", "Quiz requested: {} ({})".format(
-        concept_title(concept), difficulty))
+    main_concept = concept or (slots[0]["concept"] if slots else "class-definition")
+    main_diff = difficulty or (slots[0]["difficulty"] if slots else "Easy")
 
-    payload = agents()["coordinator"].request_quiz(
-        concept, difficulty, num_questions=count,
-        focus_notes=_focus_notes_for(student_id, concept))
+    add_log("Coordinator", "Quiz requested: kind='{}', concept='{}' ({})".format(
+        kind, main_concept, main_diff))
+
+    payload = agents()["cc"].generate_quiz_from_blueprint(
+        slots,
+        student_id=student_id,
+        focus_notes=_focus_notes_for(student_id, main_concept) if main_concept else [],
+    )
 
     questions = payload.get("questions") or []
     if not questions:
         return jsonify({
-            "error": payload.get("error") or "No questions could be generated for that concept.",
+            "error": payload.get("error") or "No questions could be generated for that quiz.",
             "code": "generation_unavailable",
         }), 503
 
     # Phase 1: Upsert generated questions into repository
     record_generated_questions(
-        concept, difficulty, questions,
+        main_concept, main_diff, questions,
         model=payload.get("model"),
-        source=payload.get("generated_by", "llm_rag")
+        source=payload.get("generated_by", "llm_rag"),
     )
 
     conn = get_db()
@@ -309,18 +319,18 @@ def api_quiz_start():
     cur.execute(
         """INSERT INTO quiz_sessions (student_id, concept, topic, difficulty, source, payload_json)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (student_id, concept, MODULE_TO_LEGACY_TOPIC.get(module_of(concept)),
-         difficulty, payload.get("generated_by", "llm"), json.dumps(payload)),
+        (student_id, main_concept, MODULE_TO_LEGACY_TOPIC.get(module_of(main_concept)),
+         main_diff, payload.get("generated_by", "llm"), json.dumps(payload)),
     )
     quiz_session_id = cur.lastrowid
     conn.commit()
     conn.close()
 
-    return jsonify({
+    resp = {
         "quiz_session_id": quiz_session_id,
-        "concept": concept,
-        "concept_title": concept_title(concept),
-        "difficulty": difficulty,
+        "concept": main_concept,
+        "concept_title": concept_title(main_concept) if main_concept else "",
+        "difficulty": main_diff,
         "generated_by": payload.get("generated_by"),
         "grounded": payload.get("grounded", False),
         "sources": payload.get("sources", []),
@@ -329,12 +339,25 @@ def api_quiz_start():
             {"index": i, "question": q["question"], "options": q["options"]}
             for i, q in enumerate(questions)
         ],
-    })
+        "kind": kind,
+    }
+    br = payload.get("build_report")
+    if br:
+        rej = sum(br.get("rejected_by_reason", {}).values()) if isinstance(br.get("rejected_by_reason"), dict) else 0
+        resp["build_report_summary"] = {
+            "requested": br.get("requested", len(questions)),
+            "accepted": br.get("accepted", len(questions)),
+            "rejected": rej,
+        }
+    return jsonify(resp)
 
 
 @bp.post("/quiz/submit")
 @api_login_required
 def api_quiz_submit():
+    import collections
+    from core.misconceptions import MISCONCEPTIONS
+
     student_id = current_student_id()
     data = request.get_json(silent=True) or {}
     quiz_session_id = data.get("quiz_session_id")
@@ -359,15 +382,31 @@ def api_quiz_submit():
 
     score = 0
     review = []
+    detected_mids = collections.defaultdict(int)
+
     for i, q in enumerate(questions):
         chosen = answers.get(str(i), answers.get(i, -1))
         try:
             chosen = int(chosen)
         except (TypeError, ValueError):
             chosen = -1
-        is_correct = chosen == q["correct"]
+        is_correct = (chosen == q["correct"] and chosen != -1)
         if is_correct:
             score += 1
+
+        misconception_id = None
+        if not is_correct and chosen != -1:
+            opt_mids = q.get("option_misconception_ids")
+            if opt_mids and 0 <= chosen < len(opt_mids):
+                misconception_id = opt_mids[chosen]
+            else:
+                q_opts = q.get("options") or []
+                if 0 <= chosen < len(q_opts) and isinstance(q_opts[chosen], dict):
+                    misconception_id = q_opts[chosen].get("misconception_id")
+
+            if misconception_id:
+                detected_mids[misconception_id] += 1
+
         review.append({
             "index": i,
             "question": q["question"],
@@ -378,6 +417,7 @@ def api_quiz_submit():
             "explanation": q.get("explanation", ""),
             "concept_tags": q.get("concept_tags", [concept]),
             "time_taken_ms": int(timings.get(str(i), 0) or 0),
+            "misconception_id": misconception_id,
         })
 
     attempt_no = cur.execute(
@@ -400,12 +440,6 @@ def api_quiz_submit():
         chosen_text = (item["options"][chosen_idx]
                        if 0 <= chosen_idx < len(item["options"]) else None)
 
-        misconception_id = None
-        if 0 <= q_idx < len(questions):
-            q_opts = questions[q_idx].get("options") or []
-            if 0 <= chosen_idx < len(q_opts) and isinstance(q_opts[chosen_idx], dict):
-                misconception_id = q_opts[chosen_idx].get("misconception_id")
-
         cur.execute(
             """INSERT INTO question_attempts
                (quiz_result_id, question_index, concept_tags, is_correct,
@@ -413,7 +447,7 @@ def api_quiz_submit():
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (quiz_result_id, q_idx, json.dumps(item["concept_tags"]),
              int(item["is_correct"]), chosen_idx, item["correct_answer"],
-             item["time_taken_ms"], item["question"][:500], chosen_text, misconception_id),
+             item["time_taken_ms"], item["question"][:500], chosen_text, item.get("misconception_id")),
         )
 
     cur.execute("UPDATE quiz_sessions SET consumed = 1 WHERE id = ?", (quiz_session_id,))
@@ -438,6 +472,17 @@ def api_quiz_submit():
             "New evidence recorded for '{}' - mastery will be recomputed".format(
                 concept_title(concept)))
 
+    misconceptions_detected = []
+    for mid, count in sorted(detected_mids.items(), key=lambda x: (-x[1], x[0])):
+        m_item = MISCONCEPTIONS.get(mid, {})
+        misconceptions_detected.append({
+            "id": mid,
+            "title": m_item.get("title", mid),
+            "wrong_belief": m_item.get("wrong_belief", ""),
+            "correct_idea": m_item.get("correct_idea", ""),
+            "count": count,
+        })
+
     return jsonify({
         "quiz_result_id": quiz_result_id,
         "score": score,
@@ -445,9 +490,10 @@ def api_quiz_submit():
         "percentage": pct,
         "attempt_number": attempt_no,
         "concept": concept,
-        "concept_title": concept_title(concept),
+        "concept_title": concept_title(concept) if concept else "",
         "difficulty": difficulty,
         "review": review,
+        "misconceptions_detected": misconceptions_detected,
     })
 
 

@@ -184,7 +184,9 @@ class VectorStore(object):
         exclude_set = set(exclude_ids or [])
         query_tokens = tokenize(query_text)
 
-        if HAS_NUMPY and self.vectors is not None and len(self.vectors):
+        if query_vector is None:
+            sims = [0.0] * len(self.chunks)
+        elif HAS_NUMPY and self.vectors is not None and len(self.vectors):
             qv = np.asarray(query_vector, dtype="float32")
             norm = float(np.linalg.norm(qv)) or 1.0
             sims = np.asarray(self.vectors) @ (qv / norm)
@@ -232,8 +234,11 @@ class VectorStore(object):
             cosine_score = max(0.0, min(1.0, (vector_score + 1.0) / 2.0 if vector_score < 0 else vector_score))
             lexical_score = self._lexical_score(query_tokens, idx)
 
-            # Stage 2 hybrid score: 0.7 * cosine + 0.3 * lexical
-            score = (ALPHA_VECTOR * cosine_score + BETA_LEXICAL * lexical_score)
+            # Stage 2 hybrid score: 0.7 * cosine + 0.3 * lexical (or purely lexical if query_vector is None)
+            if query_vector is None:
+                score = lexical_score
+            else:
+                score = (ALPHA_VECTOR * cosine_score + BETA_LEXICAL * lexical_score)
 
             # Soft level boost +0.08 for lesson retrieval
             if target_level and chunk.get("level") == target_level:

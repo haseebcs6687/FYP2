@@ -36,6 +36,7 @@ unavailable with the exact error, while lessons fall back to local notes.
 =============================================================================
 """
 
+import collections
 import json
 import os
 import re
@@ -44,6 +45,8 @@ from pathlib import Path
 
 from core.concepts import CANONICAL_CONCEPT_TAGS, CONCEPTS, concept_title, normalise_tags
 from core.db_repo import record_llm_call
+from core.misconceptions import MISCONCEPTIONS
+from core.quiz_engine import build_blueprint, group_slots, normalize_question
 
 NOTES_DIR = Path(__file__).resolve().parent.parent / "rag" / "corpus" / "notes"
 
@@ -62,6 +65,7 @@ class ConceptClarifierAgent(object):
         self.log = log
         self.client = None
         self.last_error = None
+        self.last_model_used = None
         self._init_client()
 
     def _emit(self, message, level="info", payload=None):
@@ -228,74 +232,262 @@ class ConceptClarifierAgent(object):
     # QUIZ
     # =========================================================
     def generate_quiz(self, brief, num_questions=5):
+        """
+        Thin 'practice' wrapper forwarding to generate_quiz_from_blueprint.
+        Keeps backward compatibility with the Coordinator and tests.
+        """
         brief = _coerce_brief(brief, mode="quiz")
-        concept = brief["concept"]
-        difficulty = brief["difficulty"]
-
-        retrieval = self._retrieve(brief)
-        grounded = bool(retrieval.get("passages"))
-
-        if self.llm_available:
-            questions = self._llm_quiz(brief, retrieval, num_questions)
-            if questions:
-                self._emit("Generated {} questions on '{}' ({})".format(
-                    len(questions), concept_title(concept), difficulty), "success")
-                return {
-                    "concept": concept,
-                    "concept_title": concept_title(concept),
-                    "difficulty": difficulty,
-                    "questions": questions,
-                    "total_generated": len(questions),
-                    "grounded": grounded,
-                    "sources": retrieval.get("citations", []),
-                    "retrieval_trace": retrieval.get("trace"),
-                    "generated_by": "llm+rag" if grounded else "llm",
-                    "model": self.model,
-                }
-            self._emit("LLM quiz generation failed", "warning")
-
-        return self._unavailable_quiz(concept, difficulty, retrieval)
-
-    def _llm_quiz(self, brief, retrieval, num_questions):
-        context = retrieval.get("context", "")
-        notes = brief.get("focus_notes", [])
-
-        system = (
-            "You are a Java examiner writing multiple-choice questions for a university "
-            "OOP course.\n"
-            "Rules:\n"
-            "1. Exactly one option is correct; the other three must be plausible mistakes "
-            "a real student makes, never filler.\n"
-            "2. Any Java code you include must be valid and self-contained.\n"
-            "3. Ground the questions in the SOURCE MATERIAL when it is provided.\n"
-            "4. Reply with a single valid JSON object and nothing else."
+        concept = brief.get("concept") or "class-definition"
+        difficulty = brief.get("difficulty") or "Easy"
+        student_id = brief.get("student_id")
+        slots = build_blueprint(
+            kind="practice",
+            student_id=student_id,
+            concepts=[concept],
+            n=num_questions,
+            difficulty=difficulty,
+        )
+        return self.generate_quiz_from_blueprint(
+            slots, student_id=student_id, focus_notes=brief.get("focus_notes")
         )
 
-        parts = [
-            "Write {} multiple-choice questions on '{}' ({}) at {} difficulty.".format(
-                num_questions, brief["concept"], concept_title(brief["concept"]), brief["difficulty"]),
-            "",
-            "Difficulty guidance:",
-            _difficulty_guidance(brief["difficulty"], quiz=True),
-        ]
-        if notes:
-            parts += ["", "Target these specific gaps:"] + ["- " + n for n in notes]
-        if context:
-            parts += ["", "SOURCE MATERIAL:", context]
-        parts += [
-            "",
-            'Return JSON: {"questions": [ ... ]} where each item has:',
-            '  "question"     : the question text (may contain a short Java snippet)',
-            '  "options"      : exactly 4 strings',
-            '  "correct"      : integer index 0-3 of the correct option',
-            '  "explanation"  : one or two sentences saying why it is correct',
-            '  "concept_tags" : 1-3 tags from: ' + ", ".join(CANONICAL_CONCEPT_TAGS),
-        ]
+    def generate_quiz_from_blueprint(self, slots, student_id=None, focus_notes=None):
+        """
+        Generate a multi-slot quiz from blueprint slots.
+        Groups by (concept, difficulty) to minimize LLM roundtrips.
+        Normalizes and validates every question. Returns build_report.
+        Enforces >= 60% acceptance threshold (with 1 retry of shortfall groups).
+        """
+        if not slots:
+            return self._unavailable_quiz("class-definition", "Easy", {})
 
-        data = self._call_llm(system, "\n".join(parts))
-        if not data:
-            return None
-        return _validate_questions(data.get("questions"), brief["concept"])
+        main_concept = slots[0]["concept"]
+        main_difficulty = slots[0]["difficulty"]
+
+        t0 = time.time()
+        groups = group_slots(slots)
+        requested_count = len(slots)
+        accepted_questions = []
+        rejected_by_reason = collections.defaultdict(int)
+        models_used = []
+        all_citations = []
+        first_trace = None
+
+        if not self.llm_available:
+            unavail = self._unavailable_quiz(main_concept, main_difficulty, {})
+            unavail["build_report"] = {
+                "requested": requested_count,
+                "accepted": 0,
+                "rejected_by_reason": {"llm_unavailable": requested_count},
+                "groups": len(groups),
+                "latency_ms": 0.0,
+                "models": [],
+            }
+            return unavail
+
+        def _generate_group(grp, count_override=None):
+            grp_concept = grp["concept"]
+            grp_diff = grp["difficulty"]
+            grp_count = count_override if count_override is not None else grp["count"]
+            grp_mids = grp["target_misconceptions"]
+            grp_qtypes = grp["qtypes"][:grp_count]
+            if len(grp_qtypes) < grp_count:
+                grp_qtypes = (grp_qtypes + ["concept"] * grp_count)[:grp_count]
+
+            # 1. Retrieve lesson passages (max 3)
+            lesson_brief = {
+                "concept": grp_concept,
+                "difficulty": grp_diff,
+                "mode": "lesson",
+                "top_k": 3,
+                "student_id": student_id,
+            }
+            lesson_ret = self._retrieve(lesson_brief) if self.retriever else {}
+            context = lesson_ret.get("context", "")
+            if lesson_ret.get("citations"):
+                all_citations.extend(lesson_ret["citations"])
+            nonlocal first_trace
+            if first_trace is None and lesson_ret.get("trace"):
+                first_trace = lesson_ret["trace"]
+
+            # 2. Retrieve reference questions (k=3)
+            ref_questions = (
+                self.retriever.retrieve_reference_questions(grp_concept, grp_diff, k=3)
+                if self.retriever else []
+            )
+            ref_ids = [
+                r.get("question_id") or r.get("chunk_id")
+                for r in ref_questions
+                if (r.get("question_id") or r.get("chunk_id"))
+            ]
+
+            # 3. Assemble prompt
+            meta = CONCEPTS.get(grp_concept, {})
+            title = meta.get("title", concept_title(grp_concept))
+            summary = meta.get("summary", "")
+
+            system_prompt = (
+                "You are an expert Java / OOP exam author and diagnostic assessment designer.\n"
+                "Your role is to write rigorous multiple-choice questions targeting specific student misconceptions.\n"
+                "Output strictly a single valid JSON object and nothing else."
+            )
+
+            user_parts = [
+                "Generate {} multiple-choice question(s) for Java / OOP concept '{}' ({}) at {} difficulty.".format(
+                    grp_count, grp_concept, title, grp_diff
+                ),
+                "",
+                "Concept Summary: {}".format(summary),
+            ]
+
+            if context:
+                user_parts += ["", "SOURCE MATERIAL (Knowledge Base):", context]
+
+            if ref_questions:
+                user_parts += [
+                    "",
+                    "REFERENCE QUESTIONS (STYLE AND DIFFICULTY EXAMPLES ONLY):",
+                    "Do NOT copy or adapt these questions. Use completely new scenarios, classes, and code.",
+                ]
+                for idx, rq in enumerate(ref_questions, 1):
+                    rq_text = rq.get("question") or rq.get("question_text", "")
+                    rq_opts = rq.get("options") or []
+                    user_parts.append("Example {}: {}".format(idx, rq_text))
+                    if rq_opts and isinstance(rq_opts, list):
+                        for oi, opt in enumerate(rq_opts):
+                            user_parts.append("  ({}) {}".format(oi, opt))
+
+            if grp_mids:
+                user_parts += ["", "TARGET MISCONCEPTIONS:"]
+                for mid in grp_mids:
+                    m_item = MISCONCEPTIONS.get(mid, {})
+                    wb = m_item.get("wrong_belief", "")
+                    ci = m_item.get("correct_idea", "")
+                    user_parts.append("- ID: {}".format(mid))
+                    if wb:
+                        user_parts.append("  Wrong Belief: {}".format(wb))
+                    if ci:
+                        user_parts.append("  Correct Idea: {}".format(ci))
+
+            user_parts += [
+                "",
+                "REQUESTED QUESTIONS PER TYPE:",
+                "Write {} question(s) with these respective question types (qtype): {}.".format(
+                    grp_count, ", ".join(grp_qtypes)
+                ),
+                "- 'concept': conceptual understanding question",
+                "- 'code_output': snippet provided, asks what the code prints or returns (must contain ```java fence)",
+                "- 'bug_find': snippet provided, asks what bug / compile error / exception occurs (must contain ```java fence)",
+                "",
+                "RULES:",
+                "1. Exactly one option is correct (correct: integer 0-3).",
+                "2. Each wrong option must be the plausible answer a student holding one target misconception would really pick.",
+                "3. For each wrong option, set 'misconception_id' to that misconception's exact ID from the TARGET MISCONCEPTIONS list.",
+                "4. Use ONLY the listed misconception IDs. At most one wrong option may have 'misconception_id': null.",
+                "5. The correct option's 'misconception_id' MUST be null.",
+                "6. Keep all 4 options similar in length and complexity.",
+                "7. The explanation refers strictly to option content and why the concept works, NEVER naming options by letter or number (do NOT say 'Option A', 'Choice 1', '(B)', etc.).",
+                "8. Java code MUST be enclosed in ```java ... ``` fences and must compile, unless qtype is 'bug_find'.",
+                "9. Spread the correct position (do not put all answers at index 0).",
+                "",
+                "OUTPUT FORMAT:",
+                'Return a JSON object with a "questions" array. Each item must have:',
+                '{',
+                '  "question": "question text (with ```java snippet if code_output or bug_find)",',
+                '  "qtype": "concept" | "code_output" | "bug_find",',
+                '  "options": [',
+                '    {"text": "option 0 text", "misconception_id": "... or null"},',
+                '    {"text": "option 1 text", "misconception_id": "... or null"},',
+                '    {"text": "option 2 text", "misconception_id": "... or null"},',
+                '    {"text": "option 3 text", "misconception_id": "... or null"}',
+                '  ],',
+                '  "correct": 0,',
+                '  "explanation": "...",',
+                '  "facet": "..."',
+                '}',
+            ]
+
+            data = self._call_llm(system_prompt, "\n".join(user_parts))
+            if getattr(self, "last_model_used", None):
+                models_used.append(self.last_model_used)
+
+            group_accepted = []
+            if data and isinstance(data.get("questions"), list):
+                for raw_q in data["questions"]:
+                    if not isinstance(raw_q, dict):
+                        rejected_by_reason["malformed_item"] += 1
+                        continue
+                    raw_q["reference_ids"] = ref_ids
+                    record, reject_reason = normalize_question(raw_q, grp_concept, grp_diff)
+                    if record:
+                        group_accepted.append(record)
+                    else:
+                        rejected_by_reason[reject_reason or "unknown"] += 1
+
+            return group_accepted
+
+        # First pass across all groups
+        group_results = {}
+        for g_idx, grp in enumerate(groups):
+            res = _generate_group(grp)
+            group_results[g_idx] = res
+            accepted_questions.extend(res)
+
+        # Retry shortfall groups once if accepted < 60% of requested
+        if len(accepted_questions) < 0.60 * requested_count:
+            self._emit("Accepted {}/{} questions (< 60%); retrying shortfall groups".format(
+                len(accepted_questions), requested_count), "warning")
+            for g_idx, grp in enumerate(groups):
+                shortfall = grp["count"] - len(group_results[g_idx])
+                if shortfall > 0:
+                    retry_res = _generate_group(grp, count_override=shortfall)
+                    group_results[g_idx].extend(retry_res)
+                    accepted_questions.extend(retry_res)
+
+        total_latency_ms = round((time.time() - t0) * 1000.0, 2)
+        build_report = {
+            "requested": requested_count,
+            "accepted": len(accepted_questions),
+            "rejected_by_reason": dict(rejected_by_reason),
+            "groups": len(groups),
+            "latency_ms": total_latency_ms,
+            "models": sorted(list(set(models_used))) if models_used else ([self.model] if self.llm_available else []),
+        }
+
+        # Final 60% threshold check
+        if len(accepted_questions) < 0.60 * requested_count:
+            err = (
+                "Generated quiz quality threshold not met: only {}/{} questions accepted ({:.1f}% < 60%).".format(
+                    len(accepted_questions), requested_count,
+                    (len(accepted_questions) / requested_count) * 100.0 if requested_count else 0.0,
+                )
+            )
+            self._emit(err, "error")
+            unavail = self._unavailable_quiz(main_concept, main_difficulty, {"citations": all_citations, "trace": first_trace})
+            unavail["error"] = err
+            unavail["build_report"] = build_report
+            return unavail
+
+        self._emit(
+            "Quiz generated: {}/{} questions accepted in {:.1f}s across {} group(s)".format(
+                len(accepted_questions), requested_count, total_latency_ms / 1000.0, len(groups)
+            ),
+            "success",
+        )
+
+        return {
+            "concept": main_concept,
+            "concept_title": concept_title(main_concept),
+            "difficulty": main_difficulty,
+            "questions": accepted_questions,
+            "total_generated": len(accepted_questions),
+            "grounded": bool(all_citations),
+            "sources": all_citations,
+            "retrieval_trace": first_trace,
+            "generated_by": "llm+rag" if all_citations else "llm",
+            "model": models_used[0] if models_used else self.model,
+            "build_report": build_report,
+        }
 
     def _unavailable_quiz(self, concept, difficulty, retrieval):
         """
@@ -464,6 +656,7 @@ class ConceptClarifierAgent(object):
             data = _parse_json(raw)
             if data:
                 self.last_error = None
+                self.last_model_used = model
                 if attempt > 0:
                     self._emit("Primary model failed; fallback model '{}' answered".format(model), "warning")
                 return data
