@@ -37,6 +37,7 @@ unavailable with the exact error, while lessons fall back to local notes.
 """
 
 import collections
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
@@ -45,8 +46,14 @@ from pathlib import Path
 
 from core.concepts import CANONICAL_CONCEPT_TAGS, CONCEPTS, concept_title, normalise_tags
 from core.db_repo import record_llm_call
-from core.misconceptions import MISCONCEPTIONS
-from core.quiz_engine import build_blueprint, group_slots, normalize_question
+from core.java_check import JavaChecker
+from core.misconceptions import MISCONCEPTIONS, misconceptions_for
+from core.quiz_engine import (
+    build_blueprint,
+    check_question_novelty,
+    group_slots,
+    normalize_question,
+)
 
 NOTES_DIR = Path(__file__).resolve().parent.parent / "rag" / "corpus" / "notes"
 
@@ -56,11 +63,15 @@ class ConceptClarifierAgent(object):
     GROQ_BASE_URL = "https://api.groq.com/openai/v1"
     DEFAULT_MODEL = os.environ.get("EDUGEN_LLM_MODEL", "openai/gpt-oss-120b")
     FALLBACK_MODEL = os.environ.get("EDUGEN_LLM_FALLBACK_MODEL", "openai/gpt-oss-20b")
+    DEFAULT_VERIFIER_MODEL = os.environ.get("EDUGEN_VERIFIER_MODEL", "qwen/qwen3.8-27b")
+    FALLBACK_VERIFIER_MODEL = os.environ.get("EDUGEN_VERIFIER_FALLBACK_MODEL", "openai/gpt-oss-20b")
 
     def __init__(self, api_key=None, model=None, retriever=None, log=None):
         self.api_key = api_key or os.environ.get("GROQ_API_KEY", "")
         self.model = model or os.environ.get("EDUGEN_LLM_MODEL") or self.DEFAULT_MODEL
         self.fallback_model = os.environ.get("EDUGEN_LLM_FALLBACK_MODEL") or self.FALLBACK_MODEL
+        self.verifier_model = os.environ.get("EDUGEN_VERIFIER_MODEL") or self.DEFAULT_VERIFIER_MODEL
+        self.verifier_fallback_model = os.environ.get("EDUGEN_VERIFIER_FALLBACK_MODEL") or self.FALLBACK_VERIFIER_MODEL
         self.retriever = retriever
         self.log = log
         self.client = None
@@ -251,12 +262,175 @@ class ConceptClarifierAgent(object):
             slots, student_id=student_id, focus_notes=brief.get("focus_notes")
         )
 
-    def generate_quiz_from_blueprint(self, slots, student_id=None, focus_notes=None):
+    def verify_group(self, group_questions, concept):
         """
-        Generate a multi-slot quiz from blueprint slots.
-        Groups by (concept, difficulty) to minimize LLM roundtrips.
-        Normalizes and validates every question. Returns build_report.
-        Enforces >= 60% acceptance threshold (with 1 retry of shortfall groups).
+        Independent verifier gate (Phase 4B).
+        Input per question: stem and four options WITHOUT answer key and WITHOUT tags,
+        plus concept misconception catalog (id + wrong_belief).
+        Verifier model = EDUGEN_VERIFIER_MODEL (default qwen/qwen3.8-27b, fallback openai/gpt-oss-20b).
+        Must differ from generator model.
+        Returns: (accepted, rejected_with_reasons, tags_removed_count, warning_str_or_None, verifier_model_used)
+        """
+        if not group_questions:
+            return [], [], 0, None, None
+
+        v_model = os.environ.get("EDUGEN_VERIFIER_MODEL") or self.verifier_model
+        v_fallback = os.environ.get("EDUGEN_VERIFIER_FALLBACK_MODEL") or self.verifier_fallback_model
+
+        if v_model == self.model:
+            v_model = v_fallback
+            if v_model == self.model:
+                v_model = "openai/gpt-oss-20b" if self.model != "openai/gpt-oss-20b" else "qwen/qwen3.8-27b"
+
+        if not self.llm_available:
+            for q in group_questions:
+                q["verified"] = 0
+                q["verifier_model"] = None
+            return group_questions, [], 0, "verifier_unavailable_no_llm", None
+
+        cat = misconceptions_for(concept) or []
+        cat_summary = [{"id": m["id"], "wrong_belief": m["wrong_belief"]} for m in cat]
+
+        system_prompt = (
+            "You are an independent Java / OOP exam verifier, quality assessor, and grader.\n"
+            "Evaluate each multiple-choice question independently without an answer key.\n"
+            "Determine the single correct option index (0, 1, 2, or 3).\n"
+            "If more than one option is arguably true, or none is true, or the question is unanswerable, set ambiguous: true.\n"
+            "For bug_find questions, state the first javac compile error in 'note'.\n"
+            "For each option (0-3), assign the matching misconception ID from the catalog if it represents that misconception; otherwise null.\n"
+            "Output strictly valid JSON and nothing else."
+        )
+
+        user_parts = [
+            f"Verify the following {len(group_questions)} question(s) for Java concept '{concept}'.",
+            "",
+            "MISCONCEPTION CATALOG FOR THIS CONCEPT:",
+        ]
+        if cat_summary:
+            for m in cat_summary:
+                user_parts.append(f"- ID: {m['id']}")
+                user_parts.append(f"  Wrong Belief: {m['wrong_belief']}")
+        else:
+            user_parts.append("(No misconceptions cataloged for this concept)")
+
+        user_parts.append("\nQUESTIONS TO VERIFY (Answer key is omitted):")
+        for idx, q in enumerate(group_questions):
+            user_parts.append(f"\n--- Question #{idx} (qtype: {q.get('qtype')}) ---")
+            user_parts.append(f"Stem: {q['question']}")
+            user_parts.append("Options:")
+            for oi, opt in enumerate(q["options"]):
+                opt_str = opt["text"] if isinstance(opt, dict) else str(opt)
+                user_parts.append(f"  [{oi}] {opt_str}")
+
+        user_parts.append(
+            "\nOUTPUT FORMAT:\n"
+            'Return a JSON object: {"verifications": [\n'
+            '  {"index": 0, "answer": 0, "ambiguous": false, "labels": [null, "catalog_id", null, null], "note": "..."},\n'
+            '  ...\n'
+            ']}'
+        )
+
+        try:
+            resp = self._call_llm(system_prompt, "\n".join(user_parts), model=v_model, fallback_model=v_fallback)
+        except Exception:
+            resp = None
+
+        if not resp:
+            warning = f"verifier_unavailable: model '{v_model}' call failed"
+            self._emit(warning, "warning")
+            for q in group_questions:
+                q["verified"] = 0
+                q["verifier_model"] = None
+            return group_questions, [], 0, warning, None
+
+        v_items = resp.get("verifications") or resp.get("questions") or resp.get("items") or []
+        if not isinstance(v_items, list):
+            warning = f"verifier_unavailable: invalid response format from '{v_model}'"
+            self._emit(warning, "warning")
+            for q in group_questions:
+                q["verified"] = 0
+                q["verifier_model"] = None
+            return group_questions, [], 0, warning, None
+
+        v_map = {}
+        for i, item in enumerate(v_items):
+            idx = item.get("index", i)
+            try:
+                v_map[int(idx)] = item
+            except (ValueError, TypeError):
+                v_map[i] = item
+
+        accepted = []
+        rejected = []
+        tags_removed = 0
+
+        for idx, q in enumerate(group_questions):
+            v = v_map.get(idx)
+            if not v and idx < len(v_items):
+                v = v_items[idx]
+            if not v:
+                rejected.append((q, "verifier_missing_result"))
+                continue
+
+            ans = v.get("answer")
+            amb = bool(v.get("ambiguous", False))
+            labels = v.get("labels") or []
+
+            try:
+                ans = int(ans)
+            except (TypeError, ValueError):
+                ans = None
+
+            if ans == q["correct"] and not amb:
+                q["verified"] = 1
+                q["verifier_model"] = v_model
+                orig_mids = list(q.get("option_misconception_ids") or [None] * 4)
+                while len(orig_mids) < 4:
+                    orig_mids.append(None)
+                while len(labels) < 4:
+                    labels.append(None)
+
+                aligned_mids = []
+                for oi in range(4):
+                    if oi == q["correct"]:
+                        aligned_mids.append(None)
+                    elif orig_mids[oi] is not None:
+                        if orig_mids[oi] == labels[oi]:
+                            aligned_mids.append(orig_mids[oi])
+                        else:
+                            tags_removed += 1
+                            aligned_mids.append(None)
+                    else:
+                        aligned_mids.append(None)
+
+                q["option_misconception_ids"] = aligned_mids
+                accepted.append(q)
+            else:
+                reason = (
+                    "verifier_ambiguous"
+                    if amb
+                    else ("verifier_wrong_answer" if ans != q["correct"] else "verifier_rejected")
+                )
+                rejected.append((q, reason))
+
+        return accepted, rejected, tags_removed, None, v_model
+
+    def generate_quiz_from_blueprint(
+        self,
+        slots,
+        student_id=None,
+        focus_notes=None,
+        prior_questions=None,
+        allow_partial=False,
+    ):
+        """
+        Generate a multi-slot quiz from blueprint slots through the full Phase 4B quality gates:
+          - Parallel group generation with ThreadPoolExecutor (max 4 workers).
+          - Prompt fixes targeting realistic misconceptions, strict compile counts, and length balance.
+          - Deterministic normalization gates (length ratio, null tags count <= 2).
+          - Java check (compilation, code_output matching, bug_find single compile error & keyword).
+          - Independent verifier (model != generator, ambiguous rejection, tag consensus).
+          - Novelty / dedupe against same quiz, student history, and bank reference.
         """
         if not slots:
             return self._unavailable_quiz("class-definition", "Easy", {})
@@ -272,6 +446,20 @@ class ConceptClarifierAgent(object):
         models_used = []
         all_citations = []
         first_trace = None
+        warnings = []
+        total_tags_removed = 0
+        dedupe_mode = "vector"
+
+        stage_timings = {
+            "retrieve": 0.0,
+            "generate": 0.0,
+            "verify": 0.0,
+            "java": 0.0,
+            "dedupe": 0.0,
+        }
+
+        java_checker = JavaChecker()
+        java_status = "available" if java_checker.available else "unavailable"
 
         if not self.llm_available:
             unavail = self._unavailable_quiz(main_concept, main_difficulty, {})
@@ -282,10 +470,15 @@ class ConceptClarifierAgent(object):
                 "groups": len(groups),
                 "latency_ms": 0.0,
                 "models": [],
+                "java_check": java_status,
+                "dedupe": dedupe_mode,
+                "verifier_tags_removed": 0,
+                "stage_timings_ms": stage_timings,
+                "warnings": ["llm_unavailable"],
             }
             return unavail
 
-        def _generate_group(grp, count_override=None):
+        def _execute_group(grp, count_override=None):
             grp_concept = grp["concept"]
             grp_diff = grp["difficulty"]
             grp_count = count_override if count_override is not None else grp["count"]
@@ -294,7 +487,8 @@ class ConceptClarifierAgent(object):
             if len(grp_qtypes) < grp_count:
                 grp_qtypes = (grp_qtypes + ["concept"] * grp_count)[:grp_count]
 
-            # 1. Retrieve lesson passages (max 3)
+            # 1. Retrieve
+            t_r0 = time.time()
             lesson_brief = {
                 "concept": grp_concept,
                 "difficulty": grp_diff,
@@ -304,13 +498,9 @@ class ConceptClarifierAgent(object):
             }
             lesson_ret = self._retrieve(lesson_brief) if self.retriever else {}
             context = lesson_ret.get("context", "")
-            if lesson_ret.get("citations"):
-                all_citations.extend(lesson_ret["citations"])
-            nonlocal first_trace
-            if first_trace is None and lesson_ret.get("trace"):
-                first_trace = lesson_ret["trace"]
+            citations = lesson_ret.get("citations", [])
+            trace = lesson_ret.get("trace")
 
-            # 2. Retrieve reference questions (k=3)
             ref_questions = (
                 self.retriever.retrieve_reference_questions(grp_concept, grp_diff, k=3)
                 if self.retriever else []
@@ -320,8 +510,10 @@ class ConceptClarifierAgent(object):
                 for r in ref_questions
                 if (r.get("question_id") or r.get("chunk_id"))
             ]
+            t_retrieve = (time.time() - t_r0) * 1000.0
 
-            # 3. Assemble prompt
+            # 2. Assemble prompt & Generate
+            t_g0 = time.time()
             meta = CONCEPTS.get(grp_concept, {})
             title = meta.get("title", concept_title(grp_concept))
             summary = meta.get("summary", "")
@@ -333,11 +525,9 @@ class ConceptClarifierAgent(object):
             )
 
             user_parts = [
-                "Generate {} multiple-choice question(s) for Java / OOP concept '{}' ({}) at {} difficulty.".format(
-                    grp_count, grp_concept, title, grp_diff
-                ),
+                f"Generate {grp_count} multiple-choice question(s) for Java / OOP concept '{grp_concept}' ({title}) at {grp_diff} difficulty.",
                 "",
-                "Concept Summary: {}".format(summary),
+                f"Concept Summary: {summary}",
             ]
 
             if context:
@@ -352,10 +542,10 @@ class ConceptClarifierAgent(object):
                 for idx, rq in enumerate(ref_questions, 1):
                     rq_text = rq.get("question") or rq.get("question_text", "")
                     rq_opts = rq.get("options") or []
-                    user_parts.append("Example {}: {}".format(idx, rq_text))
+                    user_parts.append(f"Example {idx}: {rq_text}")
                     if rq_opts and isinstance(rq_opts, list):
                         for oi, opt in enumerate(rq_opts):
-                            user_parts.append("  ({}) {}".format(oi, opt))
+                            user_parts.append(f"  ({oi}) {opt}")
 
             if grp_mids:
                 user_parts += ["", "TARGET MISCONCEPTIONS:"]
@@ -363,29 +553,47 @@ class ConceptClarifierAgent(object):
                     m_item = MISCONCEPTIONS.get(mid, {})
                     wb = m_item.get("wrong_belief", "")
                     ci = m_item.get("correct_idea", "")
-                    user_parts.append("- ID: {}".format(mid))
+                    user_parts.append(f"- ID: {mid}")
                     if wb:
-                        user_parts.append("  Wrong Belief: {}".format(wb))
+                        user_parts.append(f"  Wrong Belief: {wb}")
                     if ci:
-                        user_parts.append("  Correct Idea: {}".format(ci))
+                        user_parts.append(f"  Correct Idea: {ci}")
+
+            prior_stems = [
+                q.get("question")
+                for q in (prior_questions or [])
+                if q.get("concept") == grp_concept and q.get("question")
+            ]
+            if prior_stems:
+                user_parts += [
+                    "",
+                    "DO NOT REPEAT OR DUPLICATE THESE PREVIOUS QUESTIONS (test a completely different facet or scenario):",
+                ]
+                for ps in prior_stems[:3]:
+                    user_parts.append(f"- {ps.strip()[:140]}")
 
             user_parts += [
                 "",
                 "REQUESTED QUESTIONS PER TYPE:",
-                "Write {} question(s) with these respective question types (qtype): {}.".format(
-                    grp_count, ", ".join(grp_qtypes)
-                ),
+                f"Write {grp_count} question(s) with these respective question types (qtype): {', '.join(grp_qtypes)}.",
                 "- 'concept': conceptual understanding question",
                 "- 'code_output': snippet provided, asks what the code prints or returns (must contain ```java fence)",
                 "- 'bug_find': snippet provided, asks what bug / compile error / exception occurs (must contain ```java fence)",
+            ]
+            if grp_count > 1:
+                user_parts.append(
+                    f"Ensure each of the {grp_count} questions tests a completely distinct scenario or facet with no code or text overlap."
+                )
+
+            user_parts += [
                 "",
                 "RULES:",
-                "1. Exactly one option is correct (correct: integer 0-3).",
-                "2. Each wrong option must be the plausible answer a student holding one target misconception would really pick.",
-                "3. For each wrong option, set 'misconception_id' to that misconception's exact ID from the TARGET MISCONCEPTIONS list.",
-                "4. Use ONLY the listed misconception IDs. At most one wrong option may have 'misconception_id': null.",
-                "5. The correct option's 'misconception_id' MUST be null.",
-                "6. Keep all 4 options similar in length and complexity.",
+                "1. Exactly ONE option may be true. No option may be a true statement about the code. For bug_find the snippet must contain exactly ONE compile error.",
+                "2. Design each question so a target misconception can appear as a REALISTIC wrong answer to THIS question. If a target cannot be expressed naturally here, do NOT force it: give that option misconception_id null and make it a different plausible slip. Never write a distractor that contradicts the code shown (e.g. mentions final, static or a visibility change the code does not contain).",
+                "3. Difficulty Guidelines: Easy = recognise one fact, short stem, snippet of at most 8 lines that compiles. Medium = one rule applied to a short snippet with one trap. Hard = two interacting rules or a subtle trap.",
+                "4. All four options similar in length and detail; the correct one must not be the longest.",
+                "5. For each wrong option, set 'misconception_id' to that misconception's exact ID from the TARGET MISCONCEPTIONS list if applicable, else null. At most two wrong options may have 'misconception_id': null.",
+                "6. The correct option's 'misconception_id' MUST be null.",
                 "7. The explanation refers strictly to option content and why the concept works, NEVER naming options by letter or number (do NOT say 'Option A', 'Choice 1', '(B)', etc.).",
                 "8. Java code MUST be enclosed in ```java ... ``` fences and must compile, unless qtype is 'bug_find'.",
                 "9. Spread the correct position (do not put all answers at index 0).",
@@ -408,41 +616,157 @@ class ConceptClarifierAgent(object):
             ]
 
             data = self._call_llm(system_prompt, "\n".join(user_parts))
-            if getattr(self, "last_model_used", None):
-                models_used.append(self.last_model_used)
+            m_used = self.last_model_used or self.model
+            t_generate = (time.time() - t_g0) * 1000.0
 
-            group_accepted = []
+            # 3. Deterministic Normalization Gate
+            norm_accepted = []
+            local_rejections = collections.defaultdict(int)
             if data and isinstance(data.get("questions"), list):
                 for raw_q in data["questions"]:
                     if not isinstance(raw_q, dict):
-                        rejected_by_reason["malformed_item"] += 1
+                        local_rejections["malformed_item"] += 1
                         continue
                     raw_q["reference_ids"] = ref_ids
                     record, reject_reason = normalize_question(raw_q, grp_concept, grp_diff)
                     if record:
-                        group_accepted.append(record)
+                        norm_accepted.append(record)
                     else:
-                        rejected_by_reason[reject_reason or "unknown"] += 1
+                        local_rejections[reject_reason or "unknown"] += 1
 
-            return group_accepted
+            # 4. Java Check Gate
+            t_j0 = time.time()
+            java_passed = []
+            if java_checker.available:
+                for q in norm_accepted:
+                    j_ok, j_reason = java_checker.check_question(q)
+                    if j_ok:
+                        java_passed.append(q)
+                    else:
+                        local_rejections[j_reason or "java_rejected"] += 1
+            else:
+                for q in norm_accepted:
+                    local_rejections["java_unverified"] += 1
+                    java_passed.append(q)
+            t_java = (time.time() - t_j0) * 1000.0
 
-        # First pass across all groups
-        group_results = {}
+            # 5. Independent Verifier Gate
+            t_v0 = time.time()
+            v_accepted, v_rejected, v_tags_rem, v_warning, v_model = self.verify_group(java_passed, grp_concept)
+            for _, v_reason in v_rejected:
+                local_rejections[v_reason or "verifier_rejected"] += 1
+            t_verify = (time.time() - t_v0) * 1000.0
+
+            return {
+                "candidates": v_accepted,
+                "rejections": local_rejections,
+                "model_used": m_used,
+                "citations": citations,
+                "trace": trace,
+                "ref_questions": ref_questions,
+                "tags_removed": v_tags_rem,
+                "warning": v_warning,
+                "timings": {
+                    "retrieve": t_retrieve,
+                    "generate": t_generate,
+                    "java": t_java,
+                    "verify": t_verify,
+                },
+            }
+
+        # First pass: execute groups in parallel
+        max_workers = min(4, max(1, len(groups)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            group_futures = [executor.submit(_execute_group, grp) for grp in groups]
+            group_outputs = [f.result() for f in group_futures]
+
+        group_accepted_counts = collections.defaultdict(int)
+
+        for g_idx, res in enumerate(group_outputs):
+            if res.get("model_used"):
+                models_used.append(res["model_used"])
+            if res.get("citations"):
+                all_citations.extend(res["citations"])
+            if first_trace is None and res.get("trace"):
+                first_trace = res["trace"]
+            if res.get("warning"):
+                warnings.append(res["warning"])
+            total_tags_removed += res.get("tags_removed", 0)
+
+            for reason, count in res["rejections"].items():
+                rejected_by_reason[reason] += count
+
+            for k, dur in res["timings"].items():
+                stage_timings[k] += dur
+
+            # Stage 6: Dedupe
+            for q in res["candidates"]:
+                t_d0 = time.time()
+                d_ok, d_reason, d_mode = check_question_novelty(
+                    q,
+                    accepted_questions,
+                    student_id=student_id,
+                    ref_questions=res["ref_questions"],
+                    prior_questions=prior_questions,
+                )
+                stage_timings["dedupe"] += (time.time() - t_d0) * 1000.0
+                if d_mode == "lexical":
+                    dedupe_mode = "lexical"
+
+                if d_ok:
+                    accepted_questions.append(q)
+                    group_accepted_counts[g_idx] += 1
+                else:
+                    rejected_by_reason[d_reason or "dedupe_rejected"] += 1
+
+        # Check for shortfall groups and retry failed groups once
+        shortfall_groups = []
         for g_idx, grp in enumerate(groups):
-            res = _generate_group(grp)
-            group_results[g_idx] = res
-            accepted_questions.extend(res)
+            needed = grp["count"] - group_accepted_counts[g_idx]
+            if needed > 0:
+                shortfall_groups.append((g_idx, grp, needed))
 
-        # Retry shortfall groups once if accepted < 60% of requested
-        if len(accepted_questions) < 0.60 * requested_count:
-            self._emit("Accepted {}/{} questions (< 60%); retrying shortfall groups".format(
-                len(accepted_questions), requested_count), "warning")
-            for g_idx, grp in enumerate(groups):
-                shortfall = grp["count"] - len(group_results[g_idx])
-                if shortfall > 0:
-                    retry_res = _generate_group(grp, count_override=shortfall)
-                    group_results[g_idx].extend(retry_res)
-                    accepted_questions.extend(retry_res)
+        if shortfall_groups:
+            self._emit(
+                f"Shortfall across {len(shortfall_groups)} group(s) - retrying failed groups once",
+                "info",
+            )
+            with ThreadPoolExecutor(max_workers=min(4, len(shortfall_groups))) as retry_executor:
+                retry_futures = [
+                    (g_idx, retry_executor.submit(_execute_group, grp, count_override=needed))
+                    for g_idx, grp, needed in shortfall_groups
+                ]
+                for g_idx, f in retry_futures:
+                    res = f.result()
+                    if res.get("model_used"):
+                        models_used.append(res["model_used"])
+                    if res.get("warning"):
+                        warnings.append(res["warning"])
+                    total_tags_removed += res.get("tags_removed", 0)
+
+                    for reason, count in res["rejections"].items():
+                        rejected_by_reason[reason] += count
+
+                    for k, dur in res["timings"].items():
+                        stage_timings[k] += dur
+
+                    for q in res["candidates"]:
+                        t_d0 = time.time()
+                        d_ok, d_reason, d_mode = check_question_novelty(
+                            q,
+                            accepted_questions,
+                            student_id=student_id,
+                            ref_questions=res["ref_questions"],
+                            prior_questions=prior_questions,
+                        )
+                        stage_timings["dedupe"] += (time.time() - t_d0) * 1000.0
+                        if d_mode == "lexical":
+                            dedupe_mode = "lexical"
+
+                        if d_ok:
+                            accepted_questions.append(q)
+                        else:
+                            rejected_by_reason[d_reason or "dedupe_rejected"] += 1
 
         total_latency_ms = round((time.time() - t0) * 1000.0, 2)
         build_report = {
@@ -452,13 +776,19 @@ class ConceptClarifierAgent(object):
             "groups": len(groups),
             "latency_ms": total_latency_ms,
             "models": sorted(list(set(models_used))) if models_used else ([self.model] if self.llm_available else []),
+            "java_check": java_status,
+            "dedupe": dedupe_mode,
+            "verifier_tags_removed": total_tags_removed,
+            "stage_timings_ms": {k: round(v, 2) for k, v in stage_timings.items()},
+            "warnings": warnings,
         }
 
         # Final 60% threshold check
-        if len(accepted_questions) < 0.60 * requested_count:
+        if len(accepted_questions) < 0.60 * requested_count and not allow_partial:
             err = (
                 "Generated quiz quality threshold not met: only {}/{} questions accepted ({:.1f}% < 60%).".format(
-                    len(accepted_questions), requested_count,
+                    len(accepted_questions),
+                    requested_count,
                     (len(accepted_questions) / requested_count) * 100.0 if requested_count else 0.0,
                 )
             )
@@ -580,35 +910,81 @@ class ConceptClarifierAgent(object):
             self._emit("Knowledge base unavailable: {}".format(result["error"]), "warning")
         return result
 
-    def _call_llm(self, system_prompt, user_prompt):
-        """Try primary model, then fallback model. Returns a parsed dict or None."""
-        models_to_try = [self.model, self.fallback_model]
-        if len(models_to_try) > 1 and models_to_try[0] == models_to_try[1]:
-            models_to_try = [models_to_try[0]]
-
-        for attempt, model in enumerate(models_to_try):
-            temperature = 0.6 if attempt == 0 else 0.4
-            raw = None
+    def _create_completion(self, model, messages, temperature, max_tokens, json_mode=True):
+        """Call Groq/OpenAI with HTTP 429 rate limit retry (honouring Retry-After, capped at 20s, max 2 retries)."""
+        max_429_retries = 2
+        for retry_idx in range(max_429_retries + 1):
             t0 = time.time()
             try:
-                response = self.client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=temperature,
-                    max_tokens=4000,
-                )
+                kwargs = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                if json_mode:
+                    kwargs["response_format"] = {"type": "json_object"}
+                response = self.client.chat.completions.create(**kwargs)
                 raw = response.choices[0].message.content or ""
                 lat_ms = int((time.time() - t0) * 1000)
                 ptoks = getattr(response.usage, "prompt_tokens", None) if getattr(response, "usage", None) else None
                 ctoks = getattr(response.usage, "completion_tokens", None) if getattr(response, "usage", None) else None
                 record_llm_call(None, "concept_clarifier", "generate", model, lat_ms, True, None, ptoks, ctoks)
-            except Exception as exc:                               # noqa: BLE001
+                return raw, None
+            except Exception as exc:
                 lat_ms = int((time.time() - t0) * 1000)
                 record_llm_call(None, "concept_clarifier", "generate", model, lat_ms, False, str(exc))
+                status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+                err_text = str(exc).lower()
+                is_429 = (
+                    status_code == 429
+                    or "429" in str(exc)
+                    or "rate_limit" in err_text
+                    or "rate limit" in err_text
+                    or "too many requests" in err_text
+                )
+                if is_429 and retry_idx < max_429_retries:
+                    retry_after = None
+                    resp_obj = getattr(exc, "response", None)
+                    if resp_obj and hasattr(resp_obj, "headers"):
+                        retry_after = resp_obj.headers.get("retry-after")
+                    if not retry_after:
+                        m_wait = re.search(r"try again in (\d+(?:\.\d+)?)s", err_text)
+                        if m_wait:
+                            retry_after = float(m_wait.group(1))
+                    try:
+                        sleep_sec = min(20.0, max(1.0, float(retry_after) if retry_after else 2.0))
+                    except (ValueError, TypeError):
+                        sleep_sec = 2.0
+                    self._emit(
+                        f"HTTP 429 rate limit on '{model}': sleeping {sleep_sec:.1f}s (retry {retry_idx + 1}/{max_429_retries})",
+                        "warning",
+                    )
+                    time.sleep(sleep_sec)
+                    continue
+                return None, exc
+
+    def _call_llm(self, system_prompt, user_prompt, model=None, fallback_model=None):
+        """Try primary model, then fallback model. Returns a parsed dict or None."""
+        if model:
+            models_to_try = [model]
+            if fallback_model and fallback_model != model:
+                models_to_try.append(fallback_model)
+        else:
+            models_to_try = [self.model, self.fallback_model]
+            if len(models_to_try) > 1 and models_to_try[0] == models_to_try[1]:
+                models_to_try = [models_to_try[0]]
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        for attempt, target_model in enumerate(models_to_try):
+            temperature = 0.6 if attempt == 0 else 0.4
+            raw, exc = self._create_completion(target_model, messages, temperature, 4000, json_mode=True)
+
+            if exc:
                 status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
                 if status_code == 401 or "401" in str(exc):
                     self.last_error = "Invalid API key (HTTP 401): {}".format(exc)
@@ -618,50 +994,33 @@ class ConceptClarifierAgent(object):
                 err_text = str(exc).lower()
                 if "response_format" in err_text or "json_object" in err_text or "json mode" in err_text:
                     self._emit(
-                        "Model '{}' rejected json_object response_format; retrying without it".format(model),
+                        "Model '{}' rejected json_object response_format; retrying without it".format(target_model),
                         "info",
                     )
-                    t_retry = time.time()
-                    try:
-                        response = self.client.chat.completions.create(
-                            model=model,
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": user_prompt},
-                            ],
-                            temperature=temperature,
-                            max_tokens=4000,
-                        )
-                        raw = response.choices[0].message.content or ""
-                        lat_retry = int((time.time() - t_retry) * 1000)
-                        ptoks = getattr(response.usage, "prompt_tokens", None) if getattr(response, "usage", None) else None
-                        ctoks = getattr(response.usage, "completion_tokens", None) if getattr(response, "usage", None) else None
-                        record_llm_call(None, "concept_clarifier", "generate_retry", model, lat_retry, True, None, ptoks, ctoks)
-                    except Exception as retry_exc:                 # noqa: BLE001
-                        lat_retry = int((time.time() - t_retry) * 1000)
-                        record_llm_call(None, "concept_clarifier", "generate_retry", model, lat_retry, False, str(retry_exc))
+                    raw, retry_exc = self._create_completion(target_model, messages, temperature, 4000, json_mode=False)
+                    if retry_exc:
                         retry_status = getattr(retry_exc, "status_code", None) or getattr(retry_exc, "code", None)
                         if retry_status == 401 or "401" in str(retry_exc):
                             self.last_error = "Invalid API key (HTTP 401): {}".format(retry_exc)
                             self._emit(self.last_error, "error")
                             return None
-                        self.last_error = "Model '{}' failed retry without response_format: {}".format(model, retry_exc)
+                        self.last_error = "Model '{}' failed retry without response_format: {}".format(target_model, retry_exc)
                         self._emit(self.last_error, "warning")
                         continue
                 else:
-                    self.last_error = "LLM call failed on '{}': {}".format(model, exc)
+                    self.last_error = "LLM call failed on '{}': {}".format(target_model, exc)
                     self._emit(self.last_error, "warning")
                     continue
 
             data = _parse_json(raw)
             if data:
                 self.last_error = None
-                self.last_model_used = model
+                self.last_model_used = target_model
                 if attempt > 0:
-                    self._emit("Primary model failed; fallback model '{}' answered".format(model), "warning")
+                    self._emit("Primary model failed; fallback model '{}' answered".format(target_model), "warning")
                 return data
             else:
-                self.last_error = "Model '{}' returned invalid JSON".format(model)
+                self.last_error = "Model '{}' returned invalid JSON".format(target_model)
                 self._emit(self.last_error, "warning")
 
         return None

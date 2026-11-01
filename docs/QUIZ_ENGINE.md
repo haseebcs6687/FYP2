@@ -131,3 +131,58 @@ Raw questions from the model are normalized to a canonical schema:
    - Guard against embedder signature mismatch: never embed queries if the active model differs from the index model.
    - Automatic fallback to pure lexical scoring (`trace["degraded"] = "lexical_only"`).
    - Warning rate-limited to at most once per minute.
+
+---
+
+## 7. Quality Gates & Verification Architecture (Phase 4B)
+
+To ensure academic rigor and prevent observed defects (compile errors in stems, conflicting distractors, unbalanced option lengths), Phase 4B introduces a multi-stage quality pipeline:
+
+### 1. Generation Prompt Constraints
+- Distractors must express realistic wrong answers matching target misconceptions.
+- Stems for `bug_find` must contain exactly one compilation error.
+- Options must be similar in length and complexity; the correct option must not be the longest.
+- Difficulty levels strictly enforced (Easy: single fact, <=8 line snippet; Medium: one rule + one trap; Hard: interacting rules).
+
+### 2. Deterministic Gates (`normalize_question`)
+- **Length-Ratio Gate**: Reject if `len(correct option) > 1.5 * len(longest wrong option)`.
+- **Null-Tag Gate**: Reject if wrong options with null misconception ID exceed 2.
+
+### 3. Java Verification Gate (`core/java_check.py`)
+- Automatically enabled when `javac` is detected on `PATH` or `JAVA_HOME`.
+- Strips `public` from auxiliary classes in multi-class snippets to allow single-file compilation.
+- `code_output`: Executes with a 10s timeout and validates stdout against normalized correct option text.
+- `bug_find`: Validates that `javac` fails with exactly ONE error, and requires an error keyword to appear in the explanation.
+- `concept`: Validates that code snippets compile without errors.
+- Graceful degradation: Without a JDK, counts `java_unverified` without failing quizzes.
+
+### 4. Independent Verifier (`verify_group`)
+- Model differs from generator model (defaults to `qwen/qwen3.8-27b`, fallback `openai/gpt-oss-20b`).
+- Evaluates stem and options without answer key or tags, alongside concept misconception catalog.
+- Accepts question only if `answer == key` and `not ambiguous`.
+- Misconception tag alignment: Retains a distractor tag only when the verifier's assigned misconception matches the generator's tag.
+- If verifier service is unreachable, flags `verified=0` with a warning in `build_report` without blocking quiz delivery.
+
+### 5. Novelty & Deduplication
+- Embeds stem + correct option with active embedder and SQLite cache.
+- Rejects near-duplicates with cosine >= 0.88 against current quiz session or student attempt history.
+- Rejects copycat questions with cosine >= 0.93 against bank reference questions.
+- Degrades to exact hash and token-Jaccard >= 0.80 if embedding backends are offline.
+
+### 6. Parallel Execution & Telemetry
+- Group generation utilizes `ThreadPoolExecutor` (max 4 workers).
+- LLM calls honour HTTP 429 rate limits with `Retry-After` sleep (capped at 20s) and up to 2 retries.
+- `build_report` exposes granular `stage_timings_ms` across retrieval, generation, verification, java compilation, and deduplication.
+
+---
+
+## 8. Prebuilt Diagnostic Sets (`rag/corpus/diagnostic/`)
+
+Diagnostic sets are pregenerated via `scripts/build_diagnostic_sets.py --sets 3` and stored as `set_A.json`, `set_B.json`, and `set_C.json`.
+
+### Why the First-Visit Quiz is Prebuilt:
+1. **Standardized Pedagogical Baseline**: Every new learner encounters a benchmarked diagnostic covering 1-2 foundational concepts across all 8 OOP modules (6 Easy + 6 Medium). This guarantees fair and comparable initial mastery estimates across students.
+2. **Instant Onboarding**: Eliminates external LLM generation latency on a student's very first interaction, providing an immediate response.
+3. **Curriculum Reviewability**: Statically persisted diagnostic sets allow instructors and examiners to audit questions, verified error messages, and misconception alignments in advance.
+4. **Seamless System Integration**: Prebuilt questions are ingested into `questions` through `record_generated_questions` upon serving, preserving standard server-side grading, adaptivity updates, and misconception tracking.
+

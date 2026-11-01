@@ -14,8 +14,10 @@ import collections
 from datetime import datetime, timedelta
 import hashlib
 import json
+import math
 import random
 import re
+import struct
 
 from core.concepts import (
     CONCEPTS,
@@ -123,6 +125,13 @@ def normalize_question(raw, concept, difficulty):
     if correct < 0 or correct > 3:
         return None, "correct_out_of_range"
 
+    # Gate: Reject if len(correct option) > 1.5 x len(longest wrong option)
+    len_correct = len(cleaned_options[correct])
+    wrong_lens = [len(cleaned_options[i]) for i in range(4) if i != correct]
+    max_wrong = max(wrong_lens) if wrong_lens else 0
+    if max_wrong > 0 and len_correct > 1.5 * max_wrong:
+        return None, "correct_option_too_long"
+
     # Misconception IDs validation
     # Must exist in core.misconceptions for THIS concept, otherwise set to None
     invalid_mids_count = 0
@@ -137,6 +146,11 @@ def normalize_question(raw, concept, difficulty):
             if mid:
                 invalid_mids_count += 1
             validated_mids.append(None)
+
+    # Gate: Reject if wrong options with null id are more than 2
+    null_wrong_count = sum(1 for i, mid in enumerate(validated_mids) if i != correct and mid is None)
+    if null_wrong_count > 2:
+        return None, "too_many_null_misconceptions"
 
     # Deterministic option shuffling seeded by sha1 of question text
     seed_val = int(hashlib.sha1(question_text.encode("utf-8")).hexdigest(), 16)
@@ -562,3 +576,273 @@ def group_slots(slots):
                 grouped[key]["target_misconceptions"].append(m)
 
     return list(grouped.values())
+
+
+# ─────────────────────────────────────────────────────────────
+# 1.5 Novelty & Deduplication (Phase 4B)
+# ─────────────────────────────────────────────────────────────
+_DEDUPE_TOKEN_RE = re.compile(r"[a-z0-9_]+")
+
+
+def tokenize_for_dedupe(text):
+    return [t for t in _DEDUPE_TOKEN_RE.findall((text or "").lower()) if len(t) > 1]
+
+
+def token_jaccard(text1, text2):
+    s1 = set(tokenize_for_dedupe(text1))
+    s2 = set(tokenize_for_dedupe(text2))
+    if not s1 or not s2:
+        return 0.0
+    return len(s1 & s2) / len(s1 | s2)
+
+
+def serialize_embedding(vec):
+    """Serialize float list into float32 binary buffer."""
+    if not vec:
+        return None
+    try:
+        return struct.pack(f"{len(vec)}f", *[float(x) for x in vec])
+    except Exception:
+        return None
+
+
+def deserialize_embedding(blob):
+    """Deserialize float32 binary buffer (or json string) into float list."""
+    if not blob:
+        return None
+    if isinstance(blob, (list, tuple)):
+        return [float(x) for x in blob]
+    if isinstance(blob, str):
+        try:
+            return [float(x) for x in json.loads(blob)]
+        except Exception:
+            return None
+    try:
+        n = len(blob) // 4
+        return list(struct.unpack(f"{n}f", blob))
+    except Exception:
+        try:
+            return [float(x) for x in json.loads(blob.decode("utf-8"))]
+        except Exception:
+            return None
+
+
+def cosine_similarity(v1, v2):
+    """Compute cosine similarity between two float vectors."""
+    if not v1 or not v2 or len(v1) != len(v2):
+        return 0.0
+    dot = 0.0
+    n1 = 0.0
+    n2 = 0.0
+    for a, b in zip(v1, v2):
+        dot += a * b
+        n1 += a * a
+        n2 += b * b
+    if n1 <= 0.0 or n2 <= 0.0:
+        return 0.0
+    return dot / (math.sqrt(n1) * math.sqrt(n2))
+
+
+def get_student_seen_questions(student_id):
+    """Retrieve stem, correct option, and embedding for questions this student has seen."""
+    if not student_id:
+        return []
+    try:
+        conn = get_db()
+        rows = conn.execute(
+            """SELECT q.id, q.question_text, q.options_json, q.correct_index, q.embedding
+               FROM questions q
+               JOIN student_question_history sqh ON q.id = sqh.question_id
+               WHERE sqh.student_id = ?""",
+            (student_id,),
+        ).fetchall()
+        conn.close()
+        seen = []
+        for r in rows:
+            q_text = str(r["question_text"] or "").strip()
+            opts = []
+            try:
+                opts = json.loads(r["options_json"] or "[]")
+            except Exception:
+                pass
+            c_idx = int(r["correct_index"] or 0)
+            c_text = str(opts[c_idx] if (0 <= c_idx < len(opts)) else "").strip()
+            emb = deserialize_embedding(r["embedding"])
+            seen.append({
+                "id": r["id"],
+                "text": f"{q_text}\n{c_text}".strip(),
+                "embedding": emb,
+            })
+        return seen
+    except Exception:
+        return []
+
+
+def check_question_novelty(
+    question_record,
+    accepted_in_quiz,
+    student_id=None,
+    ref_questions=None,
+    embedder=None,
+    cache=None,
+    prior_questions=None,
+):
+    """
+    Quality gate 5: Novelty & Deduplication.
+    - Embeds stem + correct option with active embedder (and cache).
+    - Stores vector in question_record['embedding'].
+    - Rejects if cosine >= 0.88 against same quiz (and prior_questions).
+    - Rejects if cosine >= 0.88 against student history.
+    - Rejects if cosine >= 0.93 against bank reference questions.
+    - Lexical fallback if embedder unavailable (hash match or Jaccard >= 0.80).
+    Returns (ok: bool, reason: str or None, dedupe_mode: 'vector' | 'lexical').
+    """
+    stem = str(question_record.get("question") or "").strip()
+    options = question_record.get("options") or []
+    c_idx = int(question_record.get("correct", 0))
+    c_opt = options[c_idx] if (isinstance(options, list) and 0 <= c_idx < len(options)) else ""
+    if isinstance(c_opt, dict):
+        c_opt = c_opt.get("text", "")
+    c_text = str(c_opt).strip()
+    stem_and_answer = f"{stem}\n{c_text}".strip()
+
+    # Determine embedder availability
+    active_embedder = embedder
+    if active_embedder is None:
+        try:
+            from rag.embedder import get_embedder
+            active_embedder = get_embedder(quiet=True)
+        except Exception:
+            active_embedder = None
+    elif active_embedder is False:
+        active_embedder = None
+
+    active_cache = cache
+    if active_cache is None and active_embedder is not None:
+        try:
+            from rag.embedding_cache import EmbeddingCache
+            active_cache = EmbeddingCache()
+        except Exception:
+            active_cache = None
+
+    if active_embedder is not None:
+        try:
+            vector = question_record.get("embedding")
+            if not vector:
+                sig = active_embedder.signature()
+                sha1 = hashlib.sha1(stem_and_answer.encode("utf-8")).hexdigest()
+                hit = active_cache.get_many(sig, [sha1]) if active_cache else {}
+                if sha1 in hit:
+                    vector = hit[sha1]
+                else:
+                    vector = active_embedder.embed_one(stem_and_answer)
+                    if active_cache:
+                        active_cache.put_many(sig, [(sha1, vector)])
+                question_record["embedding"] = vector
+
+            # (a) Check against same quiz and prior questions
+            pool = list(accepted_in_quiz or []) + list(prior_questions or [])
+            for other_q in pool:
+                other_vec = other_q.get("embedding")
+                if other_vec:
+                    cos = cosine_similarity(vector, other_vec)
+                    if cos >= 0.88:
+                        return False, "duplicate_in_quiz", "vector"
+
+            # (b) Check against student history
+            seen_list = get_student_seen_questions(student_id)
+            for seen in seen_list:
+                seen_vec = seen.get("embedding")
+                if not seen_vec and seen.get("text"):
+                    s_sha1 = hashlib.sha1(seen["text"].encode("utf-8")).hexdigest()
+                    s_hit = active_cache.get_many(sig, [s_sha1]) if active_cache else {}
+                    if s_sha1 in s_hit:
+                        seen_vec = s_hit[s_sha1]
+                    else:
+                        try:
+                            seen_vec = active_embedder.embed_one(seen["text"])
+                            if active_cache:
+                                active_cache.put_many(sig, [(s_sha1, seen_vec)])
+                        except Exception:
+                            seen_vec = None
+                if seen_vec:
+                    cos = cosine_similarity(vector, seen_vec)
+                    if cos >= 0.88:
+                        return False, "already_seen_by_student", "vector"
+
+            # (c) Check against bank reference questions
+            for rq in (ref_questions or []):
+                rq_text = rq.get("question") or rq.get("question_text", "")
+                rq_opts = rq.get("options") or []
+                rq_c = rq.get("correct") or rq.get("correct_index", 0)
+                rq_c_opt = rq_opts[rq_c] if (isinstance(rq_opts, list) and 0 <= rq_c < len(rq_opts)) else ""
+                if isinstance(rq_c_opt, dict):
+                    rq_c_opt = rq_c_opt.get("text", "")
+                rq_stem_ans = f"{rq_text}\n{rq_c_opt}".strip()
+                r_sha1 = hashlib.sha1(rq_stem_ans.encode("utf-8")).hexdigest()
+                r_hit = active_cache.get_many(sig, [r_sha1]) if active_cache else {}
+                if r_sha1 in r_hit:
+                    rq_vec = r_hit[r_sha1]
+                else:
+                    try:
+                        rq_vec = active_embedder.embed_one(rq_stem_ans)
+                        if active_cache:
+                            active_cache.put_many(sig, [(r_sha1, rq_vec)])
+                    except Exception:
+                        rq_vec = None
+                if rq_vec:
+                    cos = cosine_similarity(vector, rq_vec)
+                    if cos >= 0.93:
+                        return False, "bank_reference_copy", "vector"
+
+            return True, None, "vector"
+        except Exception:
+            # If embedding fails mid-process, fall through to lexical
+            pass
+
+    # ── Lexical Fallback ──
+    norm_hash = hashlib.sha256(" ".join(stem_and_answer.lower().split()).encode("utf-8")).hexdigest()
+
+    # Compare against same quiz
+    pool = list(accepted_in_quiz or []) + list(prior_questions or [])
+    for other_q in pool:
+        o_stem = other_q.get("question", "")
+        o_opts = other_q.get("options", [])
+        o_c = other_q.get("correct", 0)
+        o_c_text = o_opts[o_c] if (isinstance(o_opts, list) and 0 <= o_c < len(o_opts)) else ""
+        if isinstance(o_c_text, dict):
+            o_c_text = o_c_text.get("text", "")
+        o_text = f"{o_stem}\n{o_c_text}".strip()
+        o_hash = hashlib.sha256(" ".join(o_text.lower().split()).encode("utf-8")).hexdigest()
+        if norm_hash == o_hash:
+            return False, "duplicate_in_quiz", "lexical"
+        if token_jaccard(stem_and_answer, o_text) >= 0.80:
+            return False, "duplicate_in_quiz", "lexical"
+
+    # Compare against student history
+    seen_list = get_student_seen_questions(student_id)
+    for seen in seen_list:
+        s_text = seen.get("text", "")
+        s_hash = hashlib.sha256(" ".join(s_text.lower().split()).encode("utf-8")).hexdigest()
+        if norm_hash == s_hash:
+            return False, "already_seen_by_student", "lexical"
+        if token_jaccard(stem_and_answer, s_text) >= 0.80:
+            return False, "already_seen_by_student", "lexical"
+
+    # Compare against bank reference questions
+    for rq in (ref_questions or []):
+        rq_text = rq.get("question") or rq.get("question_text", "")
+        rq_opts = rq.get("options") or []
+        rq_c = rq.get("correct") or rq.get("correct_index", 0)
+        rq_c_opt = rq_opts[rq_c] if (isinstance(rq_opts, list) and 0 <= rq_c < len(rq_opts)) else ""
+        if isinstance(rq_c_opt, dict):
+            rq_c_opt = rq_c_opt.get("text", "")
+        r_text = f"{rq_text}\n{rq_c_opt}".strip()
+        r_hash = hashlib.sha256(" ".join(r_text.lower().split()).encode("utf-8")).hexdigest()
+        if norm_hash == r_hash:
+            return False, "bank_reference_copy", "lexical"
+        if token_jaccard(stem_and_answer, r_text) >= 0.80:
+            return False, "bank_reference_copy", "lexical"
+
+    return True, None, "lexical"
+

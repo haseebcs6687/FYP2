@@ -57,6 +57,8 @@ def record_generated_questions(concept, difficulty, questions, model=None, sourc
             correct_idx = int(q.get("correct", 0))
             explanation = q.get("explanation", "")
             facet = q.get("facet")
+            verified = 1 if q.get("verified") else 0
+            verifier_model = q.get("verifier_model")
 
             tags_data = {
                 "tags": q.get("concept_tags", [concept]),
@@ -64,21 +66,35 @@ def record_generated_questions(concept, difficulty, questions, model=None, sourc
                 "facet": facet,
                 "qtype": qtype,
                 "reference_ids": q.get("reference_ids", []),
+                "verified": verified,
+                "verifier_model": verifier_model,
             }
             tags_json = json.dumps(tags_data)
+
+            raw_emb = q.get("embedding")
+            emb_blob = None
+            if raw_emb:
+                from core.quiz_engine import serialize_embedding
+                emb_blob = serialize_embedding(raw_emb)
 
             row = cur.execute("SELECT id FROM questions WHERE text_hash = ?", (thash,)).fetchone()
             if row:
                 qid = row["id"]
+                cur.execute(
+                    """UPDATE questions
+                       SET verified = ?, tags_json = ?, embedding = COALESCE(embedding, ?)
+                       WHERE id = ?""",
+                    (verified, tags_json, emb_blob, qid),
+                )
             else:
                 cur.execute(
                     """INSERT INTO questions
                        (concept, facet, difficulty, qtype, question_text, options_json,
                         correct_index, explanation, tags_json, source, model,
-                        verified, text_hash, times_served, times_correct)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0)""",
+                        verified, text_hash, embedding, times_served, times_correct)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)""",
                     (concept, facet, difficulty, qtype, q_text, options_json,
-                     correct_idx, explanation, tags_json, source, model, thash),
+                     correct_idx, explanation, tags_json, source, model, verified, thash, emb_blob),
                 )
                 qid = cur.lastrowid
 

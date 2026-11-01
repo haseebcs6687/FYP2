@@ -270,7 +270,11 @@ def api_quiz_start():
     Accepts optional kind ('practice' default|'diagnostic'|'reevaluation') and concepts.
     Builds the blueprint, calls the Clarifier, stores the full question records in
     quiz_sessions.payload_json, and returns questions (index, question, options).
+    If kind == 'diagnostic', serves a prebuilt diagnostic set unseen by the student if available.
     """
+    from pathlib import Path
+    from core.db_repo import compute_question_hash
+
     student_id = current_student_id()
     data = request.get_json(silent=True) or {}
     kind = data.get("kind", "practice")
@@ -279,26 +283,79 @@ def api_quiz_start():
     difficulty = data.get("difficulty")
     count = max(1, min(int(data.get("count", 5)), 12))
 
-    from core.quiz_engine import build_blueprint
-    slots = build_blueprint(
-        kind=kind,
-        student_id=student_id,
-        concepts=concepts or ([concept] if concept else None),
-        n=count,
-        difficulty=difficulty,
-    )
+    payload = None
+    main_concept = concept
+    main_diff = difficulty
 
-    main_concept = concept or (slots[0]["concept"] if slots else "class-definition")
-    main_diff = difficulty or (slots[0]["difficulty"] if slots else "Easy")
+    # Prebuilt diagnostic set check (Phase 4B)
+    if kind == "diagnostic":
+        diag_dir = Path(__file__).resolve().parent.parent / "rag" / "corpus" / "diagnostic"
+        set_files = sorted(list(diag_dir.glob("set_*.json")))
+        if set_files:
+            conn = get_db()
+            seen_hashes = {
+                r["text_hash"]
+                for r in conn.execute(
+                    """SELECT q.text_hash FROM questions q
+                       JOIN student_question_history sqh ON q.id = sqh.question_id
+                       WHERE sqh.student_id = ?""",
+                    (student_id,),
+                ).fetchall()
+            }
+            conn.close()
 
-    add_log("Coordinator", "Quiz requested: kind='{}', concept='{}' ({})".format(
-        kind, main_concept, main_diff))
+            chosen_payload = None
+            best_overlap = float("inf")
+            for sf in set_files:
+                try:
+                    with open(sf, "r", encoding="utf-8") as f:
+                        s_data = json.load(f)
+                    s_questions = s_data.get("questions") or []
+                    if not s_questions:
+                        continue
+                    overlap = sum(
+                        1
+                        for q in s_questions
+                        if compute_question_hash(q.get("question", "")) in seen_hashes
+                    )
+                    if overlap == 0:
+                        chosen_payload = s_data
+                        break
+                    elif overlap < best_overlap:
+                        best_overlap = overlap
+                        chosen_payload = s_data
+                except Exception:
+                    continue
 
-    payload = agents()["cc"].generate_quiz_from_blueprint(
-        slots,
-        student_id=student_id,
-        focus_notes=_focus_notes_for(student_id, main_concept) if main_concept else [],
-    )
+            if chosen_payload and chosen_payload.get("questions"):
+                payload = dict(chosen_payload)
+                payload["generated_by"] = "prebuilt_diagnostic"
+                main_concept = payload.get("concept") or "class-definition"
+                main_diff = payload.get("difficulty") or "Medium"
+                add_log("Coordinator", f"Serving prebuilt diagnostic quiz ({payload.get('set_name', 'diagnostic')})")
+
+    # Fallback to live generation if no prebuilt set matched
+    if payload is None:
+        from core.quiz_engine import build_blueprint
+        slots = build_blueprint(
+            kind=kind,
+            student_id=student_id,
+            concepts=concepts or ([concept] if concept else None),
+            n=count,
+            difficulty=difficulty,
+        )
+
+        main_concept = concept or (slots[0]["concept"] if slots else "class-definition")
+        main_diff = difficulty or (slots[0]["difficulty"] if slots else "Easy")
+
+        add_log("Coordinator", "Quiz requested: kind='{}', concept='{}' ({})".format(
+            kind, main_concept, main_diff))
+
+        payload = agents()["cc"].generate_quiz_from_blueprint(
+            slots,
+            student_id=student_id,
+            focus_notes=_focus_notes_for(student_id, main_concept) if main_concept else [],
+        )
 
     questions = payload.get("questions") or []
     if not questions:
@@ -307,7 +364,7 @@ def api_quiz_start():
             "code": "generation_unavailable",
         }), 503
 
-    # Phase 1: Upsert generated questions into repository
+    # Phase 1 & 4B: Upsert generated questions into repository
     record_generated_questions(
         main_concept, main_diff, questions,
         model=payload.get("model"),
