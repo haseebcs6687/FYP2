@@ -77,6 +77,7 @@ def record_generated_questions(concept, difficulty, questions, model=None, sourc
                 "reference_ids": q.get("reference_ids", []),
                 "verified": verified,
                 "verifier_model": verifier_model,
+                "reject_reason": q.get("reject_reason"),
             }
             tags_json = json.dumps(tags_data)
 

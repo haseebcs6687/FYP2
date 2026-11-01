@@ -471,7 +471,7 @@ class ConceptClarifierAgent(object):
 
         return accepted, rejected, tags_removed, None, v_model
 
-    def verify_bank_batch(self, batch_questions, concept):
+    def verify_bank_batch(self, batch_questions, concept, max_tokens=1500):
         """
         Verify a batch of bank questions (12 questions from a raw bank file)
         using the independent verifier (Phase 4D).
@@ -524,8 +524,9 @@ class ConceptClarifierAgent(object):
 
         user_parts.append("\nQUESTIONS TO VERIFY (Answer key is omitted):")
         for idx, q in enumerate(batch_questions):
+            q_idx = q.get("orig_idx") if q.get("orig_idx") is not None else idx
             q_stem = q.get("question") or q.get("stem") or ""
-            user_parts.append(f"\n--- Question #{idx} (qtype: {q.get('qtype', 'concept')}) ---")
+            user_parts.append(f"\n--- Question #{q_idx} (qtype: {q.get('qtype', 'concept')}) ---")
             user_parts.append(f"Stem: {q_stem}")
             user_parts.append("Options:")
             for oi, opt in enumerate(q.get("options", [])):
@@ -546,7 +547,7 @@ class ConceptClarifierAgent(object):
                 "\n".join(user_parts),
                 model=v_model,
                 fallback_model=v_fallback,
-                max_tokens=1500,
+                max_tokens=max_tokens,
                 purpose="verify",
                 reasoning_effort="low",
             )
@@ -565,8 +566,13 @@ class ConceptClarifierAgent(object):
             try:
                 k = int(idx)
             except (ValueError, TypeError):
-                k = i
+                if i < len(batch_questions) and batch_questions[i].get("orig_idx") is not None:
+                    k = batch_questions[i]["orig_idx"]
+                else:
+                    k = i
             v_map[k] = item
+
+        return v_map, v_model, None
 
         return v_map, v_model, None
 

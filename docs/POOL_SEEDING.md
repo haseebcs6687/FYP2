@@ -56,9 +56,16 @@ Each bank question must satisfy four quality gates:
    - The verifier checks whether multiple options could arguably be correct or if the stem is unanswerable.
    - Requirement: `ambiguous == False`.
 
-3. **Difficulty Estimate Calibration**:
+3. **Difficulty Calibration & Relabeling (Phase 4E)**:
    - The verifier provides `"difficulty_estimate": "Easy" | "Medium" | "Hard"`.
-   - Requirement: `abs(verifier_level - bank_level) <= 1`. A discrepancy of 2 levels (e.g. Easy vs Hard) rejects the question with `verifier_difficulty_mismatch`.
+   - **Diff <= 1 level**: Keeps the bank difficulty label and stores the verified difficulty level in `difficulty_verified`.
+   - **Diff >= 2 levels (Relabel Policy)**: If `answer == key` and `ambiguous == False`, the question is **not rejected**. Instead:
+     - The question is accepted into the pool.
+     - Stored with `difficulty = verifier_estimate`.
+     - `difficulty_verified = verifier_level`.
+     - `verifier_labels_json` records `{"difficulty_original": <bank_label>, "note": "relabeled", "labels": [...]}`.
+     - Counted as `relabeled` in metrics.
+
 
 4. **Deterministic Java Execution (`core/java_check.py`)**:
    - When `javac` is detected on the system:
@@ -113,11 +120,28 @@ Distractor tags must be trustworthy. Tag voting requires agreement between up to
 
 ---
 
+4. **Missing Verifier Result Retry Ladder (Phase 4E)**:
+   - When a verifier batch response is missing results or cut off due to token limits:
+     - **Stage 1 (Chunk Retry)**: Unprocessed items are re-verified in batches of up to 6 questions (`max_tokens: 1500`).
+     - **Stage 2 (Single-Item Fallback)**: Any remaining missing items are verified individually with dedicated prompt budget (`max_tokens: 800`).
+     - Only questions failing both retry stages are rejected as `verifier_missing_result`.
+
+5. **Reprocessing Previous Rejects (`--reprocess-rejected`)**:
+   - Scans the `questions` table for bank rows previously rejected:
+     - `verifier_difficulty_mismatch`: Automatically relabeled to verifier estimate, updated to `pool_status='active'`, `verified=1`.
+     - `verifier_missing_result`: Re-verified via single-item calls with the verifier agent.
+     - Deterministic errors (`bug_find_compiles`, `code_output_mismatch`, `verifier_wrong_answer`) are preserved as rejected.
+
+---
+
 ## 6. CLI Usage & Flags
 
 ```bash
 # Standard run (default: resumes from progress file)
 python scripts/seed_pool_from_bank.py
+
+# Reprocess previous difficulty mismatches and retried missing results
+python scripts/seed_pool_from_bank.py --resume --reprocess-rejected
 
 # Process at most 20 batch files
 python scripts/seed_pool_from_bank.py --max-batches 20
@@ -131,4 +155,37 @@ python scripts/seed_pool_from_bank.py --only "*abstract*"
 # Ignore progress file and start fresh
 python scripts/seed_pool_from_bank.py --no-resume
 ```
+
+---
+
+## 7. Seeding Results & Cumulative Metrics
+
+```
+========================================================================================
+BANK POOL SEEDING SUMMARY
+========================================================================================
+Metric                                 | Cumulative
+----------------------------------------------------------------------------------------
+Batches processed                      | 50 / 50
+Questions processed                    | 600
+Questions accepted                     | 403
+  - Relabeled (2-level diff)           | 51
+Questions rejected                     | 41
+  - bug_find_compiles                  | 9
+  - bug_find_error_count_2             | 2
+  - bug_find_error_count_4             | 1
+  - bug_find_explanation_mismatch      | 6
+  - code_output_mismatch               | 4
+  - verifier_difficulty_mismatch       | 0 (all 2-level diffs relabeled)
+  - verifier_missing_result            | 14
+  - verifier_wrong_answer              | 6
+Tags kept (3-of-3 agreement)           | 170
+Tags kept (2-of-3 agreement)           | 290
+Tags nulled                            | 872
+Java unverified (no javac)             | 0 (100% JDK verified)
+Verifier retries                       | 2
+Total Active Verified Pool Size        | 431 questions
+========================================================================================
+```
+
 

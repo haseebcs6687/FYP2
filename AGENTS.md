@@ -89,6 +89,13 @@ all tags back into the 44-tag canonical vocabulary.
   acceptance-rate measurement.
 - Test coverage: `scripts/smoke_test.py` (54 end-to-end checks) and
   `scripts/test_adaptivity.py` (11 policy scenarios).
+- **Unified test runner (`scripts/run_all_tests.py`)**: Executes all 12 test
+  suites across the repository (`smoke_test`, `test_adaptivity`, `test_catalog`,
+  `test_db`, `test_questions`, `test_rag`, `test_quiz_engine`, `test_quiz_quality`,
+  `test_pool`, `test_seed_pool`, `tools/question_bank/test_bank_tools.py`,
+  `tools/question_bank/test_gen_tools.py`) in isolated subprocesses with timeouts
+  and enforces 100% passing tests before commits.
+
 
 ---
 

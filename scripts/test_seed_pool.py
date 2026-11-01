@@ -47,6 +47,7 @@ from scripts.seed_pool_from_bank import (
     load_progress,
     order_bank_files,
     process_bank_file,
+    reprocess_previous_rejects,
     save_progress,
     vote_tag,
 )
@@ -227,8 +228,8 @@ class TestDecisionGates(unittest.TestCase):
         self.assertEqual(stats["rejected"], 1)
         self.assertEqual(stats["rejection_reasons"].get("verifier_ambiguous"), 1)
 
-    def test_difficulty_diff_two_rejected(self):
-        """Difficulty estimate differs by 2 levels (Easy vs Hard) -> rejected with verifier_difficulty_mismatch."""
+    def test_difficulty_diff_two_relabeled(self):
+        """Phase 4E: Difficulty diff >= 2 is RELABELED to verifier estimate instead of rejected."""
         clarifier = ConceptClarifierAgent.__new__(ConceptClarifierAgent)
         clarifier.client = MagicMock()
         clarifier.api_key = "mock"
@@ -247,9 +248,140 @@ class TestDecisionGates(unittest.TestCase):
             pool_dedupe_list=[],
             dry_run=False,
         )
-        self.assertEqual(stats["accepted"], 0)
-        self.assertEqual(stats["rejected"], 1)
-        self.assertEqual(stats["rejection_reasons"].get("verifier_difficulty_mismatch"), 1)
+        self.assertEqual(stats["accepted"], 1)
+        self.assertEqual(stats["rejected"], 0)
+        self.assertEqual(stats["relabeled"], 1)
+
+        # Inspect persisted question in DB
+        conn = get_db(self.db_path)
+        row = conn.execute("SELECT difficulty, pool_status, verified, difficulty_verified, verifier_labels_json FROM questions").fetchone()
+        conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["difficulty"], "Hard")
+        self.assertEqual(row["pool_status"], "active")
+        self.assertEqual(row["verified"], 1)
+        self.assertEqual(row["difficulty_verified"], 2)
+        v_labels = json.loads(row["verifier_labels_json"])
+        self.assertEqual(v_labels.get("difficulty_original"), "Easy")
+        self.assertEqual(v_labels.get("note"), "relabeled")
+
+    def test_retry_missing_verifier_results(self):
+        """Phase 4E: Missing verifier results trigger follow-up retries before evaluating."""
+        clarifier = ConceptClarifierAgent.__new__(ConceptClarifierAgent)
+        clarifier.client = MagicMock()
+        clarifier.api_key = "mock"
+
+        # First call: returns empty map (missing index 0)
+        # Second call (retry): returns index 0
+        clarifier.verify_bank_batch = MagicMock(side_effect=[
+            ({}, "mock-verifier", None),
+            ({0: {"answer": 1, "ambiguous": False, "difficulty_estimate": "Easy", "labels": [None, None, None, None]}}, "mock-verifier", None),
+        ])
+
+        stats, should_stop, err = process_bank_file(
+            self.bank_file,
+            clarifier,
+            java_checker=None,
+            embedder=None,
+            cache=None,
+            pool_dedupe_list=[],
+            dry_run=False,
+        )
+        self.assertEqual(stats["accepted"], 1)
+        self.assertEqual(stats["rejected"], 0)
+        self.assertGreaterEqual(stats["verifier_retries"], 1)
+        self.assertEqual(clarifier.verify_bank_batch.call_count, 2)
+
+    def test_reprocess_previous_rejects(self):
+        """Phase 4E: --reprocess-rejected reactivates difficulty mismatches and retries missing results."""
+        conn = get_db(self.db_path)
+
+        # 1. Question rejected due to difficulty mismatch (Easy -> Hard, verified=2)
+        conn.execute(
+            """INSERT INTO questions (
+                concept, difficulty, qtype, question_text, options_json, correct_index,
+                explanation, tags_json, source, model, verified, origin, pool_status,
+                difficulty_verified, verifier_labels_json, text_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "class-definition", "Easy", "concept", "Q1: What is a class?", json.dumps(["A", "B", "C", "D"]),
+                1, "Exp 1", json.dumps({"reject_reason": "verifier_difficulty_mismatch"}),
+                "bank", "mock", 0, "bank", "rejected", 2, json.dumps([None, None, None, None]), "hash1",
+            ),
+        )
+
+        # 2. Question rejected due to missing result
+        conn.execute(
+            """INSERT INTO questions (
+                concept, difficulty, qtype, question_text, options_json, correct_index,
+                explanation, tags_json, source, model, verified, origin, pool_status,
+                difficulty_verified, verifier_labels_json, text_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "class-definition", "Easy", "concept", "Q2: What is an instance?", json.dumps(["A", "B", "C", "D"]),
+                1, "Exp 2", json.dumps({"reject_reason": "verifier_missing_result"}),
+                "bank", "mock", 0, "bank", "rejected", None, None, "hash2",
+            ),
+        )
+
+        # 3. Question rejected due to compile error (should remain rejected!)
+        conn.execute(
+            """INSERT INTO questions (
+                concept, difficulty, qtype, question_text, options_json, correct_index,
+                explanation, tags_json, source, model, verified, origin, pool_status,
+                difficulty_verified, verifier_labels_json, text_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "class-definition", "Medium", "bug_find", "Q3: Bug in class", json.dumps(["A", "B", "C", "D"]),
+                0, "Exp 3", json.dumps({"reject_reason": "bug_find_compiles"}),
+                "bank", "mock", 0, "bank", "rejected", None, None, "hash3",
+            ),
+        )
+        conn.commit()
+
+        clarifier = ConceptClarifierAgent.__new__(ConceptClarifierAgent)
+        clarifier.client = MagicMock()
+        clarifier.api_key = "mock"
+        clarifier.verify_bank_batch = MagicMock(return_value=(
+            {0: {"answer": 1, "ambiguous": False, "difficulty_estimate": "Easy", "labels": [None, None, None, None]}},
+            "mock-verifier",
+            None,
+        ))
+
+        stats = reprocess_previous_rejects(
+            conn,
+            clarifier,
+            java_checker=None,
+            embedder=None,
+            cache=None,
+            pool_dedupe_list=[],
+            dry_run=False,
+        )
+
+        self.assertEqual(stats["reprocessed"], 2)
+        self.assertEqual(stats["accepted"], 2)
+        self.assertEqual(stats["relabeled"], 1)
+        self.assertEqual(stats["still_rejected"], 1)
+
+        # Check Q1 in DB
+        q1 = conn.execute("SELECT * FROM questions WHERE question_text LIKE 'Q1%'").fetchone()
+        self.assertEqual(q1["pool_status"], "active")
+        self.assertEqual(q1["verified"], 1)
+        self.assertEqual(q1["difficulty"], "Hard")
+        v1 = json.loads(q1["verifier_labels_json"])
+        self.assertEqual(v1.get("note"), "relabeled")
+
+        # Check Q2 in DB
+        q2 = conn.execute("SELECT * FROM questions WHERE question_text LIKE 'Q2%'").fetchone()
+        self.assertEqual(q2["pool_status"], "active")
+        self.assertEqual(q2["verified"], 1)
+
+        # Check Q3 in DB (must remain rejected!)
+        q3 = conn.execute("SELECT * FROM questions WHERE question_text LIKE 'Q3%'").fetchone()
+        self.assertEqual(q3["pool_status"], "rejected")
+        self.assertEqual(q3["verified"], 0)
+
+        conn.close()
 
 
 class TestDeduplication(unittest.TestCase):

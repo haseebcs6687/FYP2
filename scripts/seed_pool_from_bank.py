@@ -1,6 +1,6 @@
 """
 =============================================================================
-EduGen - Phase 4D Question Pool Seeding from Bank
+EduGen - Phase 4D/4E Question Pool Seeding from Bank
 =============================================================================
 Seeds the verified question pool from the 600-question raw bank:
   - Batching: 1 file (12 questions) = 1 verifier LLM call
@@ -8,9 +8,14 @@ Seeds the verified question pool from the 600-question raw bank:
   - Decision per question:
       * verifier answer == bank correct_index
       * not ambiguous
-      * difficulty_estimate within 1 level of label
+      * difficulty_estimate within 1 level: keeps original label
+      * difficulty_estimate differs by 2 levels: relabels to verifier estimate
       * java_check passes if javac available (else counts java_unverified)
       * dedupe against pool (cosine >= 0.88 or exact hash) and batch
+  - Retries:
+      * missing results retried in chunks of max 6, then individually (max_tokens 800)
+  - Reprocessing:
+      * --reprocess-rejected re-evaluates previous difficulty_mismatch and missing_result
   - 3-Way Tag Voting per wrong option (2-of-3 consensus):
       * Labeler 1: snapshot (data/bank_work/raw_before_2Ec/)
       * Labeler 2: current raw (rag/corpus/questions/raw/)
@@ -62,6 +67,7 @@ SNAPSHOT_DIR = BASE_DIR / "data" / "bank_work" / "raw_before_2Ec"
 PROGRESS_FILE = BASE_DIR / "data" / "bank_work" / "pool_seed_progress.json"
 
 DIFF_LEVELS = {"Easy": 0, "Medium": 1, "Hard": 2}
+DIFF_NAMES = {0: "Easy", 1: "Medium", 2: "Hard"}
 
 
 def vote_tag(l1_present, l1, l2, l3, concept):
@@ -188,41 +194,34 @@ def order_bank_files(files, cell_counts):
 def load_progress(progress_path=None):
     """Load seeding progress from JSON file."""
     path = progress_path or PROGRESS_FILE
+    default_stats = {
+        "done_batches": [],
+        "batch_stats": {},
+        "cumulative_stats": {
+            "batches_processed": 0,
+            "questions_processed": 0,
+            "accepted": 0,
+            "relabeled": 0,
+            "rejected": 0,
+            "rejection_reasons": {},
+            "tags_kept_3_of_3": 0,
+            "tags_kept_2_of_3": 0,
+            "tags_nulled": 0,
+            "java_unverified": 0,
+            "verifier_retries": 0,
+        },
+    }
     if not path.exists():
-        return {
-            "done_batches": [],
-            "batch_stats": {},
-            "cumulative_stats": {
-                "batches_processed": 0,
-                "questions_processed": 0,
-                "accepted": 0,
-                "rejected": 0,
-                "rejection_reasons": {},
-                "tags_kept_3_of_3": 0,
-                "tags_kept_2_of_3": 0,
-                "tags_nulled": 0,
-                "java_unverified": 0,
-            },
-        }
+        return default_stats
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            c_stats = data.get("cumulative_stats", {})
+            c_stats.setdefault("relabeled", 0)
+            c_stats.setdefault("verifier_retries", 0)
+            return data
     except Exception:
-        return {
-            "done_batches": [],
-            "batch_stats": {},
-            "cumulative_stats": {
-                "batches_processed": 0,
-                "questions_processed": 0,
-                "accepted": 0,
-                "rejected": 0,
-                "rejection_reasons": {},
-                "tags_kept_3_of_3": 0,
-                "tags_kept_2_of_3": 0,
-                "tags_nulled": 0,
-                "java_unverified": 0,
-            },
-        }
+        return default_stats
 
 
 def save_progress(data, progress_path=None):
@@ -248,23 +247,27 @@ def process_bank_file(
       1. Load questions from raw bank file.
       2. Load snapshot from raw_before_2Ec for Labeler 1.
       3. Call clarifier.verify_bank_batch for verification and Labeler 3.
-      4. For each question:
-           - verify correctness, ambiguity, and difficulty
+      4. Retry missing results in chunks of max 6, then individually (max_tokens 800).
+      5. Evaluate each question:
+           - verify correctness, ambiguity
+           - relabel if difficulty differs by 2 levels (instead of rejecting)
            - verify Java code snippet (if javac available)
            - dedupe against pool and current batch
            - vote on misconception tags (3-way)
-      5. Insert accepted and rejected questions to questions table.
+      6. Insert accepted and rejected questions to questions table.
     Returns: (batch_stats, should_stop, stop_reason)
     """
     stats = {
         "processed": 0,
         "accepted": 0,
+        "relabeled": 0,
         "rejected": 0,
         "rejection_reasons": {},
         "tags_kept_3_of_3": 0,
         "tags_kept_2_of_3": 0,
         "tags_nulled": 0,
         "java_unverified": 0,
+        "verifier_retries": 0,
     }
 
     questions = []
@@ -294,13 +297,42 @@ def process_bank_file(
     if dry_run:
         return stats, False, None
 
-    # 2. Call Verifier Agent
-    v_map, v_model, v_err = clarifier.verify_bank_batch(questions, concept)
+    # 2. Call Verifier Agent (initial batch call)
+    v_map, v_model, v_err = clarifier.verify_bank_batch(questions, concept, max_tokens=1500)
     if v_err:
         is_budget = "budget_exhausted" in str(v_err).lower() or "daily llm budget reached" in str(v_err).lower()
         return stats, is_budget, v_err
 
-    # 3. Evaluate each question
+    v_map = v_map or {}
+
+    # 3. Retry missing verifier results (Phase 4E)
+    missing_indices = [i for i in range(len(questions)) if i not in v_map]
+    if missing_indices:
+        # Step A: Follow-up call for missing questions in chunks of max 6
+        for start in range(0, len(missing_indices), 6):
+            chunk = missing_indices[start : start + 6]
+            chunk_qs = [{"orig_idx": i, **questions[i]} for i in chunk]
+            stats["verifier_retries"] += 1
+            try:
+                chunk_map, _, _ = clarifier.verify_bank_batch(chunk_qs, concept, max_tokens=1500)
+                if chunk_map:
+                    v_map.update(chunk_map)
+            except Exception:
+                pass
+
+    still_missing = [i for i in range(len(questions)) if i not in v_map]
+    if still_missing:
+        # Step B: Single-item verification fallback (max_tokens 800)
+        for i in still_missing:
+            stats["verifier_retries"] += 1
+            try:
+                single_map, _, _ = clarifier.verify_bank_batch([{"orig_idx": i, **questions[i]}], concept, max_tokens=800)
+                if single_map:
+                    v_map.update(single_map)
+            except Exception:
+                pass
+
+    # 4. Evaluate each question
     accepted_in_batch = []
     batch_records_to_insert = []
 
@@ -324,6 +356,9 @@ def process_bank_file(
         # Verifier decision check
         v_data = (v_map or {}).get(idx)
         reject_reason = None
+        is_relabeled = False
+        effective_diff = bank_diff
+        effective_diff_lvl = bank_diff_lvl
 
         if not v_data:
             reject_reason = "verifier_missing_result"
@@ -343,8 +378,19 @@ def process_bank_file(
             else:
                 v_diff_str = str(v_data.get("difficulty_estimate") or "").strip().capitalize()
                 v_diff_lvl = DIFF_LEVELS.get(v_diff_str)
-                if v_diff_lvl is not None and abs(v_diff_lvl - bank_diff_lvl) >= 2:
-                    reject_reason = "verifier_difficulty_mismatch"
+                if v_diff_lvl is not None:
+                    diff_gap = abs(v_diff_lvl - bank_diff_lvl)
+                    if diff_gap >= 2:
+                        # Relabel instead of reject (Phase 4E)
+                        is_relabeled = True
+                        effective_diff = DIFF_NAMES.get(v_diff_lvl, bank_diff)
+                        effective_diff_lvl = v_diff_lvl
+                    else:
+                        effective_diff = bank_diff
+                        effective_diff_lvl = v_diff_lvl
+                else:
+                    effective_diff = bank_diff
+                    effective_diff_lvl = bank_diff_lvl
 
         # Java check
         if not reject_reason:
@@ -438,11 +484,20 @@ def process_bank_file(
             else:
                 stats["tags_nulled"] += 1
 
-        v_diff_str = str(v_data.get("difficulty_estimate") or "").strip().capitalize() if v_data else None
-        v_diff_lvl = DIFF_LEVELS.get(v_diff_str) if v_diff_str else bank_diff_lvl
+        if is_relabeled:
+            verifier_labels_payload = {
+                "labels": v_labels,
+                "difficulty_original": bank_diff,
+                "note": "relabeled",
+            }
+        else:
+            verifier_labels_payload = v_labels
 
         if not reject_reason:
             stats["accepted"] += 1
+            if is_relabeled:
+                stats["relabeled"] += 1
+
             accepted_in_batch.append((norm_hash, stem_and_answer, current_emb))
             pool_dedupe_list.append((norm_hash, stem_and_answer, current_emb))
 
@@ -453,15 +508,15 @@ def process_bank_file(
                 "explanation": q.get("explanation", ""),
                 "concept": concept,
                 "concept_tags": [concept],
-                "difficulty": bank_diff,
+                "difficulty": effective_diff,
                 "qtype": qtype,
                 "option_misconception_ids": final_mids,
                 "facet": q.get("facet"),
                 "verified": 1,
                 "origin": "bank",
                 "pool_status": "active",
-                "difficulty_verified": v_diff_lvl,
-                "verifier_labels": v_labels,
+                "difficulty_verified": effective_diff_lvl,
+                "verifier_labels": verifier_labels_payload,
                 "embedding": current_emb,
             }
             batch_records_to_insert.append(rec)
@@ -483,9 +538,10 @@ def process_bank_file(
                 "verified": 0,
                 "origin": "bank",
                 "pool_status": "rejected",
-                "difficulty_verified": v_diff_lvl,
-                "verifier_labels": v_labels,
+                "difficulty_verified": effective_diff_lvl,
+                "verifier_labels": verifier_labels_payload,
                 "embedding": current_emb,
+                "reject_reason": reject_reason,
             }
             batch_records_to_insert.append(rec)
 
@@ -505,11 +561,188 @@ def process_bank_file(
     return stats, False, None
 
 
+def reprocess_previous_rejects(
+    conn,
+    clarifier,
+    java_checker,
+    embedder,
+    cache,
+    pool_dedupe_list,
+    dry_run=False,
+):
+    """
+    Phase 4E: Re-evaluate previously rejected bank questions:
+      - verifier_difficulty_mismatch: relabel to verifier estimate, activate into pool
+      - verifier_missing_result: re-verify with follow-up / single-item calls
+      - Other reasons (bug_find_compiles, wrong_answer, etc.) left untouched
+    Returns: stats dict with counts.
+    """
+    stats = {
+        "reprocessed": 0,
+        "accepted": 0,
+        "relabeled": 0,
+        "still_rejected": 0,
+    }
+
+    try:
+        rows = conn.execute(
+            """SELECT id, concept, difficulty, qtype, question_text, options_json,
+                      correct_index, explanation, tags_json, source, model, verified,
+                      text_hash, embedding, origin, pool_status, difficulty_verified,
+                      verifier_labels_json
+               FROM questions
+               WHERE pool_status = 'rejected' AND origin = 'bank'"""
+        ).fetchall()
+    except Exception as exc:
+        print(f"[Reprocess] Query failed: {exc}")
+        return stats
+
+    if not rows:
+        print("[Reprocess] No previously rejected bank questions found.")
+        return stats
+
+    print(f"\n[Reprocess] Evaluating {len(rows)} previously rejected bank questions...")
+
+    for r in rows:
+        qid = r["id"]
+        concept = r["concept"]
+        bank_diff = r["difficulty"]
+        bank_diff_lvl = DIFF_LEVELS.get(bank_diff, 0)
+        diff_ver = r["difficulty_verified"]
+        tags_raw = r["tags_json"] or "{}"
+        try:
+            tags_data = json.loads(tags_raw)
+        except Exception:
+            tags_data = {}
+        reject_reason = tags_data.get("reject_reason")
+
+        # Detect verifier_difficulty_mismatch: diff_ver is set and differs by >= 2
+        is_diff_mismatch = (
+            reject_reason == "verifier_difficulty_mismatch"
+            or (diff_ver is not None and abs(int(diff_ver) - bank_diff_lvl) >= 2)
+        )
+
+        # Detect verifier_missing_result
+        is_missing_result = (
+            reject_reason == "verifier_missing_result"
+            or (diff_ver is None and not r["verifier_labels_json"])
+        )
+
+        if is_diff_mismatch and diff_ver is not None:
+            # Case 1: Relabel to verifier estimate!
+            new_diff = DIFF_NAMES.get(int(diff_ver), bank_diff)
+            v_labels_raw = []
+            try:
+                v_labels_raw = json.loads(r["verifier_labels_json"] or "[]")
+            except Exception:
+                pass
+            if isinstance(v_labels_raw, dict):
+                v_labels_list = v_labels_raw.get("labels", [])
+            else:
+                v_labels_list = v_labels_raw
+
+            v_payload = {
+                "labels": v_labels_list,
+                "difficulty_original": bank_diff,
+                "note": "relabeled",
+            }
+
+            if not dry_run:
+                conn.execute(
+                    """UPDATE questions
+                       SET difficulty = ?,
+                           pool_status = 'active',
+                           verified = 1,
+                           verifier_labels_json = ?
+                       WHERE id = ?""",
+                    (new_diff, json.dumps(v_payload), qid),
+                )
+                conn.commit()
+
+            stats["reprocessed"] += 1
+            stats["accepted"] += 1
+            stats["relabeled"] += 1
+
+        elif is_missing_result:
+            # Case 2: Re-verify missing result with single-item call
+            q_options = []
+            try:
+                q_options = json.loads(r["options_json"] or "[]")
+            except Exception:
+                pass
+
+            q_obj = {
+                "question": r["question_text"],
+                "options": q_options,
+                "qtype": r["qtype"] or "concept",
+                "orig_idx": 0,
+            }
+
+            if not dry_run and clarifier:
+                try:
+                    retry_map, v_model, err = clarifier.verify_bank_batch([q_obj], concept, max_tokens=800)
+                except Exception:
+                    retry_map = None
+
+                if retry_map and 0 in retry_map:
+                    v_item = retry_map[0]
+                    v_ans = v_item.get("answer") if v_item.get("answer") is not None else v_item.get("correct")
+                    amb = bool(v_item.get("ambiguous", False))
+                    bank_c = int(r["correct_index"] or 0)
+
+                    if v_ans == bank_c and not amb:
+                        v_diff_str = str(v_item.get("difficulty_estimate") or "").strip().capitalize()
+                        v_diff_lvl = DIFF_LEVELS.get(v_diff_str)
+                        is_relab = False
+                        eff_diff = bank_diff
+                        if v_diff_lvl is not None and abs(v_diff_lvl - bank_diff_lvl) >= 2:
+                            is_relab = True
+                            eff_diff = DIFF_NAMES.get(v_diff_lvl, bank_diff)
+                            stats["relabeled"] += 1
+
+                        v_labels = v_item.get("labels") or [None] * 4
+                        if is_relab:
+                            v_payload = {"labels": v_labels, "difficulty_original": bank_diff, "note": "relabeled"}
+                        else:
+                            v_payload = v_labels
+
+                        conn.execute(
+                            """UPDATE questions
+                               SET difficulty = ?,
+                                   difficulty_verified = ?,
+                                   pool_status = 'active',
+                                   verified = 1,
+                                   verifier_labels_json = ?
+                               WHERE id = ?""",
+                            (eff_diff, v_diff_lvl, json.dumps(v_payload), qid),
+                        )
+                        conn.commit()
+                        stats["reprocessed"] += 1
+                        stats["accepted"] += 1
+                    else:
+                        stats["still_rejected"] += 1
+                else:
+                    stats["still_rejected"] += 1
+            else:
+                stats["reprocessed"] += 1
+        else:
+            # Other reject reasons (compilation, output mismatch, wrong answer) are preserved
+            stats["still_rejected"] += 1
+
+    print(
+        f"[Reprocess] Complete: {stats['reprocessed']} re-evaluated -> "
+        f"{stats['accepted']} accepted ({stats['relabeled']} relabeled), "
+        f"{stats['still_rejected']} kept rejected."
+    )
+    return stats
+
+
 def main():
-    parser = argparse.ArgumentParser(description="EduGen Phase 4D - Seed Question Pool from Bank")
+    parser = argparse.ArgumentParser(description="EduGen Phase 4D/4E - Seed Question Pool from Bank")
     parser.add_argument("--max-batches", type=int, default=None, help="Maximum number of batch files to process")
     parser.add_argument("--resume", action="store_true", default=True, help="Resume from progress file (default: True)")
     parser.add_argument("--no-resume", action="store_false", dest="resume", help="Ignore progress file and start over")
+    parser.add_argument("--reprocess-rejected", action="store_true", default=False, help="Reprocess previous difficulty mismatch & missing results")
     parser.add_argument("--dry-run", action="store_true", help="Print plan without calling LLM or writing DB")
     parser.add_argument("--only", type=str, default=None, help="Glob pattern to filter files (e.g. '*abstract*')")
     parser.add_argument("--db-path", type=str, default=None, help="Custom database path")
@@ -538,10 +771,8 @@ def main():
         active_embedder = None
         active_cache = None
 
-    # Load all raw bank files
-    raw_files = sorted(list(RAW_BANK_DIR.glob("*.jsonl")))
-    if args.only:
-        raw_files = [f for f in raw_files if fnmatch.fnmatch(f.name, args.only)]
+    # Load existing pool questions for deduplication
+    pool_dedupe_list = load_pool_questions_for_dedupe(conn)
 
     # Load progress
     progress = load_progress() if args.resume else {
@@ -551,14 +782,45 @@ def main():
             "batches_processed": 0,
             "questions_processed": 0,
             "accepted": 0,
+            "relabeled": 0,
             "rejected": 0,
             "rejection_reasons": {},
             "tags_kept_3_of_3": 0,
             "tags_kept_2_of_3": 0,
             "tags_nulled": 0,
             "java_unverified": 0,
+            "verifier_retries": 0,
         },
     }
+
+    # Handle --reprocess-rejected
+    reprocess_stats = {"reprocessed": 0, "accepted": 0, "relabeled": 0, "still_rejected": 0}
+    if args.reprocess_rejected:
+        reprocess_stats = reprocess_previous_rejects(
+            conn,
+            clarifier,
+            java_checker,
+            active_embedder,
+            active_cache,
+            pool_dedupe_list,
+            dry_run=args.dry_run,
+        )
+        # Adjust cumulative stats in progress
+        c_stats = progress["cumulative_stats"]
+        c_stats["accepted"] += reprocess_stats["accepted"]
+        c_stats["rejected"] = max(0, c_stats["rejected"] - reprocess_stats["accepted"])
+        c_stats["relabeled"] = c_stats.get("relabeled", 0) + reprocess_stats["relabeled"]
+        # Reduce verifier_difficulty_mismatch in rejection_reasons
+        if "verifier_difficulty_mismatch" in c_stats.get("rejection_reasons", {}):
+            c_stats["rejection_reasons"]["verifier_difficulty_mismatch"] = max(
+                0, c_stats["rejection_reasons"]["verifier_difficulty_mismatch"] - reprocess_stats["relabeled"]
+            )
+        save_progress(progress)
+
+    # Load all raw bank files
+    raw_files = sorted(list(RAW_BANK_DIR.glob("*.jsonl")))
+    if args.only:
+        raw_files = [f for f in raw_files if fnmatch.fnmatch(f.name, args.only)]
 
     done_batches = set(progress.get("done_batches", []))
     remaining_files = [f for f in raw_files if f.name not in done_batches]
@@ -566,9 +828,10 @@ def main():
     # Order files by emptiest pool cells first
     cell_counts = get_cell_counts(conn)
     ordered_files = order_bank_files(remaining_files, cell_counts)
+    conn.close()
 
     print("========================================================================================")
-    print("EDUGEN PHASE 4D: SEED QUESTION POOL FROM 600-QUESTION BANK")
+    print("EDUGEN PHASE 4D/4E: SEED QUESTION POOL FROM 600-QUESTION BANK")
     print("========================================================================================")
     print(f"Total raw bank files     : {len(raw_files)}")
     print(f"Batches already completed: {len(done_batches)}")
@@ -578,6 +841,7 @@ def main():
     print(f"Verifier model           : {clarifier.verifier_model}")
     print(f"Java checker available   : {java_checker.available}")
     print(f"Embedder available       : {active_embedder is not None}")
+    print(f"Reprocess rejected       : {args.reprocess_rejected}")
     print(f"Dry run                  : {args.dry_run}")
     print("========================================================================================")
 
@@ -587,20 +851,18 @@ def main():
             print(f"  {i + 1:2d}. {f.name}")
         return
 
-    # Load existing pool questions for deduplication
-    pool_dedupe_list = load_pool_questions_for_dedupe(conn)
-    conn.close()
-
     run_stats = {
         "batches_processed": 0,
         "questions_processed": 0,
-        "accepted": 0,
+        "accepted": reprocess_stats["accepted"],
+        "relabeled": reprocess_stats["relabeled"],
         "rejected": 0,
         "rejection_reasons": {},
         "tags_kept_3_of_3": 0,
         "tags_kept_2_of_3": 0,
         "tags_nulled": 0,
         "java_unverified": 0,
+        "verifier_retries": 0,
     }
 
     v_model = clarifier.verifier_model
@@ -641,6 +903,7 @@ def main():
         run_stats["batches_processed"] += 1
         run_stats["questions_processed"] += b_stats["processed"]
         run_stats["accepted"] += b_stats["accepted"]
+        run_stats["relabeled"] += b_stats.get("relabeled", 0)
         run_stats["rejected"] += b_stats["rejected"]
         for r, cnt in b_stats["rejection_reasons"].items():
             run_stats["rejection_reasons"][r] = run_stats["rejection_reasons"].get(r, 0) + cnt
@@ -648,10 +911,11 @@ def main():
         run_stats["tags_kept_2_of_3"] += b_stats["tags_kept_2_of_3"]
         run_stats["tags_nulled"] += b_stats["tags_nulled"]
         run_stats["java_unverified"] += b_stats["java_unverified"]
+        run_stats["verifier_retries"] += b_stats.get("verifier_retries", 0)
 
         print(
-            f"  Result: {b_stats['accepted']}/{b_stats['processed']} accepted, "
-            f"{b_stats['rejected']} rejected, "
+            f"  Result: {b_stats['accepted']}/{b_stats['processed']} accepted "
+            f"({b_stats.get('relabeled', 0)} relabeled), {b_stats['rejected']} rejected, "
             f"tags kept: {b_stats['tags_kept_3_of_3']} (3/3), {b_stats['tags_kept_2_of_3']} (2/3)"
         )
 
@@ -662,6 +926,7 @@ def main():
         c_stats["batches_processed"] += 1
         c_stats["questions_processed"] += b_stats["processed"]
         c_stats["accepted"] += b_stats["accepted"]
+        c_stats["relabeled"] = c_stats.get("relabeled", 0) + b_stats.get("relabeled", 0)
         c_stats["rejected"] += b_stats["rejected"]
         for r, cnt in b_stats["rejection_reasons"].items():
             c_stats["rejection_reasons"][r] = c_stats["rejection_reasons"].get(r, 0) + cnt
@@ -669,6 +934,7 @@ def main():
         c_stats["tags_kept_2_of_3"] += b_stats["tags_kept_2_of_3"]
         c_stats["tags_nulled"] += b_stats["tags_nulled"]
         c_stats["java_unverified"] += b_stats["java_unverified"]
+        c_stats["verifier_retries"] = c_stats.get("verifier_retries", 0) + b_stats.get("verifier_retries", 0)
 
         save_progress(progress)
 
@@ -684,6 +950,7 @@ def main():
     print(f"{'Batches processed':<38} | {run_stats['batches_processed']:<20} | {cum['batches_processed']:<20}")
     print(f"{'Questions processed':<38} | {run_stats['questions_processed']:<20} | {cum['questions_processed']:<20}")
     print(f"{'Questions accepted':<38} | {run_stats['accepted']:<20} | {cum['accepted']:<20}")
+    print(f"{'  - Relabeled (2-level diff)':<38} | {run_stats['relabeled']:<20} | {cum.get('relabeled', 0):<20}")
     print(f"{'Questions rejected':<38} | {run_stats['rejected']:<20} | {cum['rejected']:<20}")
 
     all_reasons = set(run_stats["rejection_reasons"].keys()) | set(cum.get("rejection_reasons", {}).keys())
@@ -696,12 +963,13 @@ def main():
     print(f"{'Tags kept (2-of-3 agreement)':<38} | {run_stats['tags_kept_2_of_3']:<20} | {cum['tags_kept_2_of_3']:<20}")
     print(f"{'Tags nulled':<38} | {run_stats['tags_nulled']:<20} | {cum['tags_nulled']:<20}")
     print(f"{'Java unverified (no javac)':<38} | {run_stats['java_unverified']:<20} | {cum['java_unverified']:<20}")
+    print(f"{'Verifier retries':<38} | {run_stats['verifier_retries']:<20} | {cum.get('verifier_retries', 0):<20}")
     print(f"{'Tokens consumed today (' + v_model + ')':<38} | {v_today_tokens:<20} | {v_today_tokens:<20}")
     print("=" * 88)
 
     if stopped_cleanly:
         print("\nStopping cleanly due to token budget:")
-        print("  Resume tomorrow with: python scripts/seed_pool_from_bank.py")
+        print("  Resume tomorrow with: python scripts/seed_pool_from_bank.py --resume")
         print(f"  Tokens used so far today: {v_today_tokens}")
 
     # Re-run scripts/pool_status.py
