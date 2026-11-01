@@ -33,8 +33,12 @@ RESULTS = []
 def reset():
     conn = db.get_db()
     for table in ("question_attempts", "quiz_results", "quiz_sessions",
-                  "recommendations", "students", "users"):
-        conn.execute("DELETE FROM " + table)
+                  "recommendations", "student_misconceptions", "concept_mastery",
+                  "mastery_history", "students", "users"):
+        try:
+            conn.execute("DELETE FROM " + table)
+        except Exception:
+            pass
     conn.execute("INSERT INTO students (id, name) VALUES (1, 'Scenario')")
     conn.commit()
     conn.close()

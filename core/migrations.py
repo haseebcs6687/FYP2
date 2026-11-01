@@ -440,11 +440,52 @@ def migration_4_verified_pool(conn):
     """)
 
 
+def migration_5_bkt_and_misconceptions(conn):
+    """
+    Migration 5 (Phase 5): Performance Analysis Agent
+    Additive only:
+      - question_attempts.offered_misconceptions TEXT
+      - question_attempts.qtype TEXT
+      - question_attempts.facet TEXT
+      - question_attempts.difficulty TEXT
+      - student_misconceptions table (student_id, misconception_id, concept, facet,
+        chosen, offered, avoided_streak, status, first_seen, last_seen, updated_at)
+      - index on (student_id, status)
+    """
+    cur = conn.cursor()
+    _add_column(cur, "question_attempts", "offered_misconceptions", "TEXT")
+    _add_column(cur, "question_attempts", "qtype", "TEXT")
+    _add_column(cur, "question_attempts", "facet", "TEXT")
+    _add_column(cur, "question_attempts", "difficulty", "TEXT")
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS student_misconceptions (
+            student_id       INTEGER NOT NULL,
+            misconception_id TEXT NOT NULL,
+            concept          TEXT NOT NULL,
+            facet            TEXT,
+            chosen           INTEGER DEFAULT 0,
+            offered          INTEGER DEFAULT 0,
+            avoided_streak   INTEGER DEFAULT 0,
+            status           TEXT NOT NULL,
+            first_seen       TEXT,
+            last_seen        TEXT,
+            updated_at       TEXT,
+            PRIMARY KEY (student_id, misconception_id)
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_student_misconceptions_status
+        ON student_misconceptions(student_id, status)
+    """)
+
+
 MIGRATIONS = [
     (1, "initial_schema", migration_1_initial),
     (2, "analytics_and_evidence", migration_2_new_tables),
     (3, "misconceptions_and_facets", migration_3_misconceptions_and_facets),
     (4, "verified_pool", migration_4_verified_pool),
+    (5, "bkt_and_misconceptions", migration_5_bkt_and_misconceptions),
 ]
 
 

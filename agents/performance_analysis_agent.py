@@ -51,14 +51,28 @@ from core.concepts import (
     prerequisites_of,
 )
 from core.db import DB_PATH
+from core.pa_model import (
+    BKT_GUESS,
+    BKT_GUESS_BY_DIFF,
+    BKT_P_INIT,
+    BKT_P_LEARN,
+    BKT_SLIP_BY_DIFF,
+    EWMA_ALPHA,
+    MIN_ATTEMPTS,
+    STRONG_THRESHOLD,
+    WEAK_THRESHOLD,
+    compute_concept_bkt,
+    compute_facet_map,
+    compute_misconception_stats,
+    compute_skill_profile,
+    compute_untagged_errors,
+    get_confidence,
+)
 
 # ── classification thresholds (all configurable in one place) ──
-WEAK_THRESHOLD = 50.0        # mastery below this  -> weak
-STRONG_THRESHOLD = 80.0      # mastery at or above -> strong
-MIN_ATTEMPTS = 2             # below this          -> insufficient evidence
-EWMA_ALPHA = 0.45            # recency weight; higher = trusts recent answers more
 SLOW_ANSWER_MS = 45000       # a "correct but slow" answer
 REVIEW_AFTER_DAYS = 7        # mastered concepts go stale after a week
+
 
 
 class PerformanceAnalysisAgent(object):
@@ -80,6 +94,7 @@ class PerformanceAnalysisAgent(object):
         Build the full weakness report for one student.
         `quiz_data` is accepted and ignored: kept so FYP-1 call sites still work.
         """
+        t_start = datetime.now()
         db_path = db_path or DB_PATH
         attempts = _load_attempts(student_id, db_path)
         quiz_count = _count_quizzes(student_id, db_path)
@@ -91,7 +106,18 @@ class PerformanceAnalysisAgent(object):
         self._emit("Loaded {} question attempts across {} quizzes".format(
             len(attempts), quiz_count))
 
-        stats = self._aggregate(attempts)
+        # Pure model calculations (Phase 5)
+        misconceptions_data = compute_misconception_stats(attempts, total_quizzes=quiz_count)
+        facet_map = compute_facet_map(attempts)
+        skill_profile = compute_skill_profile(attempts)
+        untagged_map = compute_untagged_errors(attempts)
+
+        stats = self._aggregate(
+            attempts,
+            facet_map=facet_map,
+            untagged_map=untagged_map,
+            active_misconceptions=misconceptions_data.get("active", []),
+        )
         buckets = self._classify(stats)
         root_causes = self._find_root_causes(buckets["weak"], stats)
         due = self._due_for_review(stats)
@@ -110,6 +136,22 @@ class PerformanceAnalysisAgent(object):
         elif buckets["moderate"]:
             primary = buckets["moderate"][0]["concept_tag"]
 
+        # Extract weak facets across concepts
+        weak_facets = []
+        for c_tag, f_dict in facet_map.items():
+            for f_name, f_stat in f_dict.items():
+                if f_stat.get("weak"):
+                    weak_facets.append({
+                        "concept": c_tag,
+                        "facet": f_name,
+                        "offered": f_stat.get("offered", 0),
+                        "chosen": f_stat.get("chosen", 0),
+                        "error_rate": f_stat.get("error_rate", 0.0),
+                    })
+
+        active_mids = [m["misconception_id"] for m in misconceptions_data.get("active", [])[:5]]
+        skill_gaps = skill_profile.get("skill_gaps", [])
+
         self._emit(
             "Classified {} concepts: {} weak, {} moderate, {} strong, {} unproven".format(
                 len(stats), len(buckets["weak"]), len(buckets["moderate"]),
@@ -119,6 +161,29 @@ class PerformanceAnalysisAgent(object):
         if primary:
             self._emit("Primary weak area: '{}'".format(concept_title(primary)), "warning",
                        {"concept": primary})
+
+        # Structured logging for active misconceptions and skill gaps
+        for m in misconceptions_data.get("active", []):
+            self._emit("Active misconception: [{}] {}".format(m["misconception_id"], m.get("evidence", "")), "warning")
+
+        for gap in skill_gaps:
+            self._emit("Skill gap: {}".format(gap), "warning")
+
+        elapsed_ms = int((datetime.now() - t_start).total_seconds() * 1000)
+        self._emit("Performance analysis completed in {} ms".format(elapsed_ms), "info")
+
+        # Persist idempotently
+        try:
+            from core.db_repo import record_concept_mastery, upsert_student_misconceptions
+            record_concept_mastery(student_id, stats)
+            all_tracked = (
+                misconceptions_data.get("active", []) +
+                misconceptions_data.get("suspected", []) +
+                misconceptions_data.get("resolved", [])
+            )
+            upsert_student_misconceptions(student_id, all_tracked)
+        except Exception as exc:
+            self._emit("Failed to persist performance analysis records: {}".format(exc), "warning")
 
         report = {
             "student_id": student_id,
@@ -140,6 +205,11 @@ class PerformanceAnalysisAgent(object):
             "module_breakdown": self._module_breakdown(stats),
             "concept_stats": stats,
 
+            # Phase 5 additions
+            "misconceptions": misconceptions_data,
+            "facet_map": facet_map,
+            "skill_profile": skill_profile,
+
             "recommendation_input": {
                 "primary_weak_topic": primary,
                 "weak_topic_count": len(buckets["weak"]),
@@ -148,6 +218,9 @@ class PerformanceAnalysisAgent(object):
                 "due_for_review": [d["concept_tag"] for d in due],
                 "trend_summary": self._trend_summary(stats),
                 "concepts_seen": len(stats),
+                "active_misconceptions": active_mids,
+                "weak_facets": weak_facets,
+                "skill_gaps": skill_gaps,
             },
         }
         return report
@@ -155,7 +228,11 @@ class PerformanceAnalysisAgent(object):
     # ─────────────────────────────────────────────────────────
     # Step 1 - aggregate raw attempts into per-concept evidence
     # ─────────────────────────────────────────────────────────
-    def _aggregate(self, attempts):
+    def _aggregate(self, attempts, facet_map=None, untagged_map=None, active_misconceptions=None):
+        facet_map = facet_map or {}
+        untagged_map = untagged_map or {}
+        active_misconceptions = active_misconceptions or []
+
         buckets = {}
         for att in attempts:
             for tag in att["concept_tags"]:
@@ -170,12 +247,10 @@ class PerformanceAnalysisAgent(object):
             correct = sum(1 for e in events if e["is_correct"])
             accuracy = round(100.0 * correct / total, 1)
 
-            # EWMA over the chronological sequence, newest weighted highest
-            mastery = None
-            for e in events:
-                value = 100.0 if e["is_correct"] else 0.0
-                mastery = value if mastery is None else (EWMA_ALPHA * value + (1 - EWMA_ALPHA) * mastery)
-            mastery = round(mastery or 0.0, 1)
+            # BKT mastery over chronological sequence (Phase 5)
+            p_known, ewma_accuracy = compute_concept_bkt(events)
+            mastery = round(100.0 * p_known, 1)
+            confidence = get_confidence(total)
 
             trend = _trend(events)
 
@@ -186,6 +261,8 @@ class PerformanceAnalysisAgent(object):
             fragile = bool(times) and accuracy >= STRONG_THRESHOLD and slow_correct >= max(1, total // 3)
 
             last_seen = events[-1]["timestamp"]
+            tag_active_m = [m for m in active_misconceptions if m.get("concept") == tag]
+
             stats[tag] = {
                 "concept_tag": tag,
                 "topic": tag,                      # FYP-1 compatibility
@@ -195,13 +272,19 @@ class PerformanceAnalysisAgent(object):
                 "attempts": total,
                 "correct": correct,
                 "accuracy": accuracy,
-                "mastery": mastery,
+                "mastery": mastery,                # BKT mastery (0-100)
+                "p_known": round(p_known, 4),      # Phase 5
+                "ewma_accuracy": ewma_accuracy,    # Phase 5
+                "confidence": confidence,          # Phase 5
                 "trend": trend,
                 "avg_time_ms": avg_ms,
                 "fragile": fragile,
                 "last_seen": last_seen,
                 "days_since": _days_since(last_seen),
                 "misconceptions": _top_misconceptions(events),
+                "facets": facet_map.get(tag, {}),  # Phase 5
+                "untagged_errors": untagged_map.get(tag, 0),  # Phase 5
+                "active_misconceptions": tag_active_m,        # Phase 5
             }
         return stats
 
@@ -340,12 +423,21 @@ class PerformanceAnalysisAgent(object):
 
     def get_model_info(self):
         return {
-            "model_type": "Concept-Graph Evidence Classifier",
+            "model_type": "Bayesian Knowledge Tracing (BKT) & Prerequisite Evidence Engine",
             "classifier_description": (
-                "Aggregates per-question concept tags into recency-weighted mastery "
-                "(EWMA), computes trend and response-time signals, then resolves weak "
-                "concepts against the prerequisite graph to report a root cause."
+                "Estimates concept mastery using Bayesian Knowledge Tracing "
+                "parameterized by item difficulty (Corbett & Anderson 1995; Pardos & Heffernan 2011). "
+                "Tracks misconception persistence across attempts with exponential decay, "
+                "maps error rates by facet, profiles skills by question type, and resolves "
+                "prerequisite root causes across the concept graph."
             ),
+            "parameters": {
+                "p_init": BKT_P_INIT,
+                "p_learn": BKT_P_LEARN,
+                "guess": BKT_GUESS,
+                "slip_by_difficulty": BKT_SLIP_BY_DIFF,
+                "guess_by_difficulty": BKT_GUESS_BY_DIFF,
+            },
             "thresholds": {
                 "weak": "mastery < {}%".format(WEAK_THRESHOLD),
                 "moderate": "{}% <= mastery < {}%".format(WEAK_THRESHOLD, STRONG_THRESHOLD),
@@ -356,13 +448,16 @@ class PerformanceAnalysisAgent(object):
             },
             "signals_used": [
                 "per-concept accuracy",
+                "Bayesian Knowledge Tracing P(known)",
                 "recency-weighted mastery (EWMA)",
                 "trend across attempt history",
                 "response time per question",
                 "prerequisite graph position",
-                "time since last correct answer",
+                "misconception tracking (active / suspected / resolved)",
+                "facet error rate mapping",
+                "question type skill profiling",
             ],
-            "is_trained": True,
+            "is_trained": False,
         }
 
 
@@ -374,15 +469,34 @@ def _load_attempts(student_id, db_path):
         return []
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    col_rows = cur.execute("PRAGMA table_info(question_attempts)").fetchall()
+    col_names = {r["name"] for r in col_rows}
+
+    has_offered = "offered_misconceptions" in col_names
+    has_qtype = "qtype" in col_names
+    has_facet = "facet" in col_names
+    has_diff = "difficulty" in col_names
+
+    sel_offered = "qa.offered_misconceptions," if has_offered else "NULL AS offered_misconceptions,"
+    sel_qtype = "qa.qtype," if has_qtype else "NULL AS qtype,"
+    sel_facet = "qa.facet," if has_facet else "NULL AS facet,"
+    sel_diff = "qa.difficulty," if has_diff else "NULL AS difficulty,"
+
     rows = conn.execute(
-        """SELECT qa.concept_tags, qa.is_correct, qa.student_answer, qa.correct_answer,
-                  qa.chosen_option_text,
+        f"""SELECT qa.id, qa.concept_tags, qa.is_correct, qa.student_answer, qa.correct_answer,
+                  qa.chosen_option_text, qa.misconception_id,
+                  {sel_offered}
+                  {sel_qtype}
+                  {sel_facet}
+                  {sel_diff}
                   COALESCE(qa.time_taken_ms, 0) AS time_taken_ms,
-                  qr.timestamp, qr.difficulty, qr.topic
+                  qr.id AS quiz_result_id, qr.timestamp, qr.difficulty AS quiz_difficulty, qr.topic
            FROM question_attempts qa
            JOIN quiz_results qr ON qa.quiz_result_id = qr.id
            WHERE qr.student_id = ?
-           ORDER BY qr.timestamp ASC, qa.question_index ASC""",
+           ORDER BY qr.timestamp ASC, qa.question_index ASC, qa.id ASC""",
         (student_id,),
     ).fetchall()
     conn.close()
@@ -393,15 +507,22 @@ def _load_attempts(student_id, db_path):
             tags = json.loads(row["concept_tags"]) or []
         except (ValueError, TypeError):
             tags = []
+        eff_diff = row["difficulty"] or row["quiz_difficulty"] or "Medium"
         attempts.append({
             "concept_tags": tags,
+            "concept": tags[0] if tags else None,
             "is_correct": bool(row["is_correct"]),
             "student_answer": row["student_answer"],
             "correct_answer": row["correct_answer"],
             "chosen_option_text": row["chosen_option_text"],
+            "misconception_id": row["misconception_id"],
+            "offered_misconceptions": row["offered_misconceptions"],
+            "qtype": row["qtype"] or "concept",
+            "facet": row["facet"],
+            "difficulty": eff_diff,
             "time_taken_ms": row["time_taken_ms"] or 0,
+            "quiz_result_id": row["quiz_result_id"],
             "timestamp": row["timestamp"],
-            "difficulty": row["difficulty"],
             "topic": row["topic"],
         })
     return attempts
@@ -480,6 +601,17 @@ def _empty_report(student_id):
         "due_for_review": [],
         "module_breakdown": [],
         "concept_stats": {},
+        "misconceptions": {
+            "active": [],
+            "suspected": [],
+            "resolved": [],
+        },
+        "facet_map": {},
+        "skill_profile": {
+            "overall": {},
+            "by_module": {},
+            "skill_gaps": [],
+        },
         "recommendation_input": {
             "primary_weak_topic": None,
             "weak_topic_count": 0,
@@ -488,6 +620,9 @@ def _empty_report(student_id):
             "due_for_review": [],
             "trend_summary": {},
             "concepts_seen": 0,
+            "active_misconceptions": [],
+            "weak_facets": [],
+            "skill_gaps": [],
         },
     }
 

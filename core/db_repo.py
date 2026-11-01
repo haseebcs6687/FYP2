@@ -235,6 +235,56 @@ def record_concept_mastery(student_id, concept_stats, quiz_result_id=None):
         add_log("Database", f"record_concept_mastery failed: {exc}", "warning")
 
 
+def upsert_student_misconceptions(student_id, misconceptions):
+    """
+    Idempotently upsert tracked student misconceptions into student_misconceptions table.
+    Accepts list of misconception dictionaries.
+    """
+    if not student_id or not misconceptions:
+        return
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        now_iso = datetime.now().isoformat()
+
+        for m in misconceptions:
+            mid = m.get("misconception_id")
+            if not mid:
+                continue
+            concept = m.get("concept") or ""
+            facet = m.get("facet")
+            chosen = int(m.get("chosen", 0) or 0)
+            offered = int(m.get("offered", 0) or 0)
+            avoided = int(m.get("avoided_streak", 0) or 0)
+            status = str(m.get("status", "suspected") or "suspected")
+            first_seen = m.get("first_seen")
+            last_seen = m.get("last_seen")
+
+            cur.execute(
+                """INSERT INTO student_misconceptions
+                   (student_id, misconception_id, concept, facet, chosen, offered,
+                    avoided_streak, status, first_seen, last_seen, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(student_id, misconception_id) DO UPDATE SET
+                     concept = excluded.concept,
+                     facet = excluded.facet,
+                     chosen = excluded.chosen,
+                     offered = excluded.offered,
+                     avoided_streak = excluded.avoided_streak,
+                     status = excluded.status,
+                     first_seen = COALESCE(student_misconceptions.first_seen, excluded.first_seen),
+                     last_seen = excluded.last_seen,
+                     updated_at = excluded.updated_at""",
+                (student_id, mid, concept, facet, chosen, offered, avoided, status, first_seen, last_seen, now_iso),
+            )
+
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        add_log("Database", f"upsert_student_misconceptions failed: {exc}", "warning")
+
+
 def record_llm_call(student_id, agent, purpose, model, latency_ms, ok, error=None, prompt_tokens=None, completion_tokens=None, total_tokens=None):
     """
     Log external model execution telemetry to llm_calls table.

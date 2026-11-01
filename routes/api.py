@@ -546,6 +546,23 @@ def api_quiz_submit():
             if misconception_id:
                 detected_mids[misconception_id] += 1
 
+        # Phase 5: Collect non-null offered misconceptions, qtype, facet, difficulty
+        offered = []
+        if q.get("option_misconception_ids"):
+            for mid in q.get("option_misconception_ids"):
+                if mid and mid not in offered:
+                    offered.append(mid)
+        elif q.get("options"):
+            for opt in q.get("options"):
+                if isinstance(opt, dict) and opt.get("misconception_id"):
+                    mid = opt.get("misconception_id")
+                    if mid and mid not in offered:
+                        offered.append(mid)
+        offered_json = json.dumps(offered) if offered else json.dumps([])
+        q_qtype = q.get("qtype")
+        q_facet = q.get("facet")
+        q_diff = q.get("difficulty") or difficulty
+
         review.append({
             "index": i,
             "question": q["question"],
@@ -557,6 +574,10 @@ def api_quiz_submit():
             "concept_tags": q.get("concept_tags", [concept]),
             "time_taken_ms": int(timings.get(str(i), 0) or 0),
             "misconception_id": misconception_id,
+            "offered_misconceptions": offered_json,
+            "qtype": q_qtype,
+            "facet": q_facet,
+            "difficulty": q_diff,
         })
 
     attempt_no = cur.execute(
@@ -582,11 +603,13 @@ def api_quiz_submit():
         cur.execute(
             """INSERT INTO question_attempts
                (quiz_result_id, question_index, concept_tags, is_correct,
-                student_answer, correct_answer, time_taken_ms, question_text, chosen_option_text, misconception_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                student_answer, correct_answer, time_taken_ms, question_text, chosen_option_text, misconception_id,
+                offered_misconceptions, qtype, facet, difficulty)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (quiz_result_id, q_idx, json.dumps(item["concept_tags"]),
              int(item["is_correct"]), chosen_idx, item["correct_answer"],
-             item["time_taken_ms"], item["question"][:500], chosen_text, item.get("misconception_id")),
+             item["time_taken_ms"], item["question"][:500], chosen_text, item.get("misconception_id"),
+             item.get("offered_misconceptions"), item.get("qtype"), item.get("facet"), item.get("difficulty")),
         )
 
     cur.execute("UPDATE quiz_sessions SET consumed = 1 WHERE id = ?", (quiz_session_id,))
