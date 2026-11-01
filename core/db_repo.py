@@ -32,10 +32,12 @@ def classify_question_type(question_text):
     return "concept"
 
 
-def record_generated_questions(concept, difficulty, questions, model=None, source="llm_rag"):
+def record_generated_questions(concept, difficulty, questions, model=None, source="llm_rag", origin="generated", pool_status="active"):
     """
     Upsert questions into the questions table (deduping by text_hash).
     Attaches 'question_id' to each question dictionary in-place.
+    Stores verified status, origin ('generated'|'diagnostic'|'bank'), pool_status,
+    difficulty_verified, and verifier labels for verified question pool serving.
     """
     if not questions:
         return []
@@ -50,6 +52,8 @@ def record_generated_questions(concept, difficulty, questions, model=None, sourc
                 continue
 
             thash = compute_question_hash(q_text)
+            q_concept = q.get("concept") or concept
+            q_diff = q.get("difficulty") or difficulty
             qtype = q.get("qtype") or classify_question_type(q_text)
             options_raw = q.get("options", [])
             options_clean = [opt["text"] if isinstance(opt, dict) else str(opt) for opt in options_raw]
@@ -59,9 +63,14 @@ def record_generated_questions(concept, difficulty, questions, model=None, sourc
             facet = q.get("facet")
             verified = 1 if q.get("verified") else 0
             verifier_model = q.get("verifier_model")
+            q_origin = q.get("origin") or origin or "generated"
+            q_pool_status = q.get("pool_status") or pool_status or "active"
+            diff_ver = q.get("difficulty_verified")
+            v_labels = q.get("verifier_labels")
+            v_labels_json = json.dumps(v_labels) if v_labels is not None else None
 
             tags_data = {
-                "tags": q.get("concept_tags", [concept]),
+                "tags": q.get("concept_tags", [q_concept]),
                 "option_misconception_ids": q.get("option_misconception_ids", []),
                 "facet": facet,
                 "qtype": qtype,
@@ -82,19 +91,27 @@ def record_generated_questions(concept, difficulty, questions, model=None, sourc
                 qid = row["id"]
                 cur.execute(
                     """UPDATE questions
-                       SET verified = ?, tags_json = ?, embedding = COALESCE(embedding, ?)
+                       SET verified = ?,
+                           tags_json = ?,
+                           embedding = COALESCE(embedding, ?),
+                           origin = COALESCE(origin, ?),
+                           pool_status = COALESCE(pool_status, ?),
+                           difficulty_verified = COALESCE(?, difficulty_verified),
+                           verifier_labels_json = COALESCE(?, verifier_labels_json)
                        WHERE id = ?""",
-                    (verified, tags_json, emb_blob, qid),
+                    (verified, tags_json, emb_blob, q_origin, q_pool_status, diff_ver, v_labels_json, qid),
                 )
             else:
                 cur.execute(
                     """INSERT INTO questions
                        (concept, facet, difficulty, qtype, question_text, options_json,
                         correct_index, explanation, tags_json, source, model,
-                        verified, text_hash, embedding, times_served, times_correct)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)""",
-                    (concept, facet, difficulty, qtype, q_text, options_json,
-                     correct_idx, explanation, tags_json, source, model, verified, thash, emb_blob),
+                        verified, text_hash, embedding, origin, pool_status,
+                        difficulty_verified, verifier_labels_json, times_served, times_correct)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)""",
+                    (q_concept, facet, q_diff, qtype, q_text, options_json,
+                     correct_idx, explanation, tags_json, source, model, verified, thash, emb_blob,
+                     q_origin, q_pool_status, diff_ver, v_labels_json),
                 )
                 qid = cur.lastrowid
 
@@ -217,24 +234,82 @@ def record_concept_mastery(student_id, concept_stats, quiz_result_id=None):
         add_log("Database", f"record_concept_mastery failed: {exc}", "warning")
 
 
-def record_llm_call(student_id, agent, purpose, model, latency_ms, ok, error=None, prompt_tokens=None, completion_tokens=None):
+def record_llm_call(student_id, agent, purpose, model, latency_ms, ok, error=None, prompt_tokens=None, completion_tokens=None, total_tokens=None):
     """
     Log external model execution telemetry to llm_calls table.
+    Populates prompt, completion, and total tokens.
     """
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+        try:
+            total_tokens = int(prompt_tokens) + int(completion_tokens)
+        except (ValueError, TypeError):
+            total_tokens = None
+
     try:
         conn = get_db()
-        conn.execute(
-            """INSERT INTO llm_calls
-               (student_id, agent, purpose, model, latency_ms, prompt_tokens,
-                completion_tokens, ok, error)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (student_id, agent, purpose, model, int(latency_ms or 0),
-             prompt_tokens, completion_tokens, 1 if ok else 0, error),
-        )
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(llm_calls)").fetchall()}
+        if "total_tokens" in cols:
+            conn.execute(
+                """INSERT INTO llm_calls
+                   (student_id, agent, purpose, model, latency_ms, prompt_tokens,
+                    completion_tokens, total_tokens, ok, error)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (student_id, agent, purpose, model, int(latency_ms or 0),
+                 prompt_tokens, completion_tokens, total_tokens, 1 if ok else 0, error),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO llm_calls
+                   (student_id, agent, purpose, model, latency_ms, prompt_tokens,
+                    completion_tokens, ok, error)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (student_id, agent, purpose, model, int(latency_ms or 0),
+                 prompt_tokens, completion_tokens, 1 if ok else 0, error),
+            )
         conn.commit()
         conn.close()
     except Exception as exc:
         add_log("Database", f"record_llm_call failed: {exc}", "warning")
+
+
+def load_diagnostic_pool(diag_dir=None):
+    """
+    One-time idempotent loader that reads all question records from
+    rag/corpus/diagnostic/*.json and stores them into the questions table
+    with verified=1, origin='diagnostic', pool_status='active'.
+    Returns number of questions loaded.
+    """
+    from pathlib import Path
+    if diag_dir is None:
+        diag_dir = Path(__file__).resolve().parent.parent / "rag" / "corpus" / "diagnostic"
+    else:
+        diag_dir = Path(diag_dir)
+
+    if not diag_dir.exists():
+        return 0
+
+    total_loaded = 0
+    set_files = sorted(list(diag_dir.glob("set_*.json")))
+    for sf in set_files:
+        try:
+            with open(sf, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            qs = data.get("questions") or []
+            if qs:
+                saved = record_generated_questions(
+                    "diagnostic",
+                    "diagnostic",
+                    qs,
+                    model=data.get("model"),
+                    source=data.get("generated_by", "diagnostic_prebuilt"),
+                    origin="diagnostic",
+                    pool_status="active",
+                )
+                total_loaded += len(saved)
+        except Exception as exc:
+            add_log("Database", f"load_diagnostic_pool error on {sf.name}: {exc}", "warning")
+
+    return total_loaded
 
 
 def record_user_login(user_id):

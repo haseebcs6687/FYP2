@@ -32,11 +32,16 @@ from core.misconceptions import (
     misconceptions_for,
 )
 
-# Regex to detect explanation referring directly to option letters/numbers
+# Regex to detect explanation referring directly to option letters/numbers or positional wording (Phase 4C)
 _OPTION_LABEL_RE = re.compile(
     r"\b(?:option|choice)\s*(?:#?\s*[1-4]|[A-Da-d])\b|"
     r"\([A-Da-d1-4]\)|"
-    r"\b[A-Da-d]\s+is\s+(?:the\s+)?(?:correct|right|wrong|incorrect|best|answer)\b",
+    r"\b[A-Da-d]\s+is\s+(?:the\s+)?(?:correct|right|wrong|incorrect|best|answer)\b|"
+    r"\b(?:the\s+)?(?:first|second|third|fourth|last)\s+(?:option|choice)\b|"
+    r"\boption\s*\([A-Da-d1-4]\)\b|"
+    r"\bthe\s+former\b|"
+    r"\bthe\s+latter\b|"
+    r"\bthe\s+one\s+(?:above|below)\b",
     re.IGNORECASE,
 )
 
@@ -845,4 +850,167 @@ def check_question_novelty(
             return False, "bank_reference_copy", "lexical"
 
     return True, None, "lexical"
+
+
+# ─────────────────────────────────────────────────────────────
+# 1.6 Verified Pool Selection (Phase 4C)
+# ─────────────────────────────────────────────────────────────
+def select_from_pool(slots, student_id=None, seed=None):
+    """
+    Select questions from the verified active question pool to fulfill blueprint slots.
+    Criteria:
+      - pool_status == 'active' and verified == 1
+      - Exact concept and difficulty match
+      - Not yet seen by the student (student_question_history)
+      - Prefers slot's qtype, else any qtype
+      - Prefers higher target misconception coverage
+      - Tie-breaks by lowest times_served then seeded random
+      - Discards candidates with within-quiz cosine similarity >= 0.88 (or Jaccard >= 0.80)
+    Returns:
+      (served_questions: list, unfilled_slots: list)
+    """
+    if not slots:
+        return [], []
+
+    try:
+        conn = get_db()
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(questions)").fetchall()}
+        if "pool_status" not in cols or "verified" not in cols:
+            conn.close()
+            return [], list(slots)
+
+        seen_qids = set()
+        if student_id:
+            s_rows = conn.execute(
+                "SELECT DISTINCT question_id FROM student_question_history WHERE student_id = ?",
+                (student_id,),
+            ).fetchall()
+            seen_qids = {r["question_id"] for r in s_rows if r["question_id"]}
+
+        query = """
+            SELECT id, concept, facet, difficulty, qtype, question_text, options_json,
+                   correct_index, explanation, tags_json, source, model, verified,
+                   text_hash, embedding, origin, pool_status, difficulty_verified,
+                   times_served, times_correct
+            FROM questions
+            WHERE pool_status = 'active' AND verified = 1
+        """
+        rows = conn.execute(query).fetchall()
+        conn.close()
+    except Exception:
+        return [], list(slots)
+
+    if not rows:
+        return [], list(slots)
+
+    records = []
+    for r in rows:
+        opts = []
+        try:
+            opts = json.loads(r["options_json"] or "[]")
+        except Exception:
+            pass
+
+        t_data = {}
+        try:
+            t_data = json.loads(r["tags_json"] or "{}")
+        except Exception:
+            pass
+
+        emb = deserialize_embedding(r["embedding"])
+        r_keys = r.keys()
+        rec = {
+            "question_id": r["id"],
+            "id": r["id"],
+            "question": r["question_text"],
+            "options": opts,
+            "correct": int(r["correct_index"] or 0),
+            "explanation": r["explanation"] or "",
+            "concept": r["concept"],
+            "concept_tags": t_data.get("tags", [r["concept"]]),
+            "difficulty": r["difficulty"],
+            "qtype": r["qtype"] or "concept",
+            "option_misconception_ids": t_data.get("option_misconception_ids", [None] * 4),
+            "facet": r["facet"],
+            "embedding": emb,
+            "verified": r["verified"],
+            "origin": r["origin"] if "origin" in r_keys else "generated",
+            "pool_status": r["pool_status"] if "pool_status" in r_keys else "active",
+            "difficulty_verified": r["difficulty_verified"] if "difficulty_verified" in r_keys else None,
+            "times_served": int(r["times_served"] or 0),
+            "served_from": "pool",
+        }
+        records.append(rec)
+
+    served = []
+    unfilled = []
+    used_qids = set()
+    rng = random.Random(seed)
+
+    for slot in slots:
+        s_concept = slot.get("concept")
+        s_diff = slot.get("difficulty")
+        s_qtype = slot.get("qtype")
+        s_targets = set(slot.get("target_misconceptions") or [])
+
+        # Candidates matching concept and difficulty
+        candidates = [
+            c for c in records
+            if c["concept"] == s_concept
+            and c["difficulty"] == s_diff
+            and c["id"] not in seen_qids
+            and c["id"] not in used_qids
+        ]
+
+        if not candidates:
+            unfilled.append(slot)
+            continue
+
+        scored_candidates = []
+        for c in candidates:
+            # Check near-duplicates against already served
+            is_dup = False
+            c_stem = c["question"]
+            c_opts = c["options"]
+            c_corr = c["correct"]
+            c_ans = c_opts[c_corr] if (0 <= c_corr < len(c_opts)) else ""
+            c_full_text = f"{c_stem}\n{c_ans}".strip()
+
+            for s_q in served:
+                if c.get("embedding") and s_q.get("embedding"):
+                    if cosine_similarity(c["embedding"], s_q["embedding"]) >= 0.88:
+                        is_dup = True
+                        break
+                else:
+                    s_stem = s_q["question"]
+                    s_opts = s_q["options"]
+                    s_corr = s_q["correct"]
+                    s_ans = s_opts[s_corr] if (0 <= s_corr < len(s_opts)) else ""
+                    s_full_text = f"{s_stem}\n{s_ans}".strip()
+                    if token_jaccard(c_full_text, s_full_text) >= 0.80:
+                        is_dup = True
+                        break
+
+            if is_dup:
+                continue
+
+            qtype_score = 1 if (s_qtype and c["qtype"] == s_qtype) else 0
+            c_mids = set(c.get("option_misconception_ids") or [])
+            c_mids.discard(None)
+            coverage = len(s_targets & c_mids)
+            rand_tie = rng.random()
+
+            sort_key = (-qtype_score, -coverage, c["times_served"], rand_tie)
+            scored_candidates.append((sort_key, c))
+
+        if not scored_candidates:
+            unfilled.append(slot)
+            continue
+
+        scored_candidates.sort(key=lambda item: item[0])
+        chosen = scored_candidates[0][1]
+        served.append(chosen)
+        used_qids.add(chosen["id"])
+
+    return served, unfilled
 

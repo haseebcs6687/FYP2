@@ -38,6 +38,7 @@ unavailable with the exact error, while lessons fall back to local notes.
 
 import collections
 from concurrent.futures import ThreadPoolExecutor
+import inspect
 import json
 import os
 import re
@@ -107,6 +108,18 @@ class ConceptClarifierAgent(object):
     @property
     def llm_available(self):
         return self.client is not None
+
+    def _invoke_llm(self, system_prompt, user_prompt, **kwargs):
+        """Invoke self._call_llm filtering kwargs if _call_llm was mocked/overridden with fewer parameters."""
+        try:
+            sig = inspect.signature(self._call_llm)
+            accepted = sig.parameters
+            has_var = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in accepted.values())
+            if not has_var:
+                kwargs = {k: v for k, v in kwargs.items() if k in accepted}
+        except Exception:
+            pass
+        return self._call_llm(system_prompt, user_prompt, **kwargs)
 
     # =========================================================
     # LESSON
@@ -179,7 +192,13 @@ class ConceptClarifierAgent(object):
             '  "concept_tags"  : 1-3 tags from this list: ' + ", ".join(CANONICAL_CONCEPT_TAGS),
         ]
 
-        data = self._call_llm(system, "\n".join(parts))
+        data = self._invoke_llm(
+            system,
+            "\n".join(parts),
+            max_tokens=3000,
+            purpose="lesson",
+            reasoning_effort="medium",
+        )
         if not data:
             return None
 
@@ -325,13 +344,21 @@ class ConceptClarifierAgent(object):
         user_parts.append(
             "\nOUTPUT FORMAT:\n"
             'Return a JSON object: {"verifications": [\n'
-            '  {"index": 0, "answer": 0, "ambiguous": false, "labels": [null, "catalog_id", null, null], "note": "..."},\n'
+            '  {"index": 0, "answer": 0, "ambiguous": false, "labels": [null, "catalog_id", null, null], "difficulty_estimate": "Easy|Medium|Hard", "note": "..."},\n'
             '  ...\n'
             ']}'
         )
 
         try:
-            resp = self._call_llm(system_prompt, "\n".join(user_parts), model=v_model, fallback_model=v_fallback)
+            resp = self._invoke_llm(
+                system_prompt,
+                "\n".join(user_parts),
+                model=v_model,
+                fallback_model=v_fallback,
+                max_tokens=1500,
+                purpose="verify",
+                reasoning_effort="low",
+            )
         except Exception:
             resp = None
 
@@ -364,6 +391,8 @@ class ConceptClarifierAgent(object):
         rejected = []
         tags_removed = 0
 
+        DIFF_LEVELS = {"Easy": 0, "Medium": 1, "Hard": 2}
+
         for idx, q in enumerate(group_questions):
             v = v_map.get(idx)
             if not v and idx < len(v_items):
@@ -373,17 +402,44 @@ class ConceptClarifierAgent(object):
                 continue
 
             ans = v.get("answer")
+            if ans is None and "correct" in v:
+                ans = v.get("correct")
             amb = bool(v.get("ambiguous", False))
-            labels = v.get("labels") or []
+            labels = v.get("labels")
+            if labels is None and "options" in v:
+                labels = [
+                    opt.get("misconception_id") if isinstance(opt, dict) else None
+                    for opt in v.get("options", [])
+                ]
+            if labels is None:
+                labels = []
 
             try:
                 ans = int(ans)
             except (TypeError, ValueError):
                 ans = None
 
+            # Difficulty estimate check (Phase 4C)
+            diff_est_raw = v.get("difficulty_estimate")
+            diff_est_str = str(diff_est_raw or "").strip().capitalize()
+            v_level = DIFF_LEVELS.get(diff_est_str)
+            q_diff = str(q.get("difficulty") or "Easy").strip().capitalize()
+            lbl_level = DIFF_LEVELS.get(q_diff, 0)
+
+            diff_mismatch = False
+            if v_level is not None:
+                if abs(v_level - lbl_level) >= 2:
+                    diff_mismatch = True
+
+            if diff_mismatch:
+                rejected.append((q, "verifier_difficulty_mismatch"))
+                continue
+
             if ans == q["correct"] and not amb:
                 q["verified"] = 1
                 q["verifier_model"] = v_model
+                q["difficulty_verified"] = v_level if v_level is not None else lbl_level
+                q["verifier_labels"] = labels
                 orig_mids = list(q.get("option_misconception_ids") or [None] * 4)
                 while len(orig_mids) < 4:
                     orig_mids.append(None)
@@ -487,24 +543,32 @@ class ConceptClarifierAgent(object):
             if len(grp_qtypes) < grp_count:
                 grp_qtypes = (grp_qtypes + ["concept"] * grp_count)[:grp_count]
 
-            # 1. Retrieve
+            # 1. Retrieve (Shrunk: at most 2 passages <= 1200 chars, at most 2 ref questions)
             t_r0 = time.time()
             lesson_brief = {
                 "concept": grp_concept,
                 "difficulty": grp_diff,
                 "mode": "lesson",
-                "top_k": 3,
+                "top_k": 2,
                 "student_id": student_id,
             }
             lesson_ret = self._retrieve(lesson_brief) if self.retriever else {}
-            context = lesson_ret.get("context", "")
-            citations = lesson_ret.get("citations", [])
+            raw_passages = lesson_ret.get("passages") or []
+            truncated_passages = []
+            for p in raw_passages[:2]:
+                ptxt = str(p.get("text") or "").strip()
+                if len(ptxt) > 1200:
+                    ptxt = ptxt[:1197] + "..."
+                if ptxt:
+                    truncated_passages.append(ptxt)
+            context = "\n\n".join(truncated_passages) if truncated_passages else (lesson_ret.get("context", "")[:2400])
+            citations = lesson_ret.get("citations", [])[:2]
             trace = lesson_ret.get("trace")
 
             ref_questions = (
-                self.retriever.retrieve_reference_questions(grp_concept, grp_diff, k=3)
+                self.retriever.retrieve_reference_questions(grp_concept, grp_diff, k=2)
                 if self.retriever else []
-            )
+            )[:2]
             ref_ids = [
                 r.get("question_id") or r.get("chunk_id")
                 for r in ref_questions
@@ -552,12 +616,9 @@ class ConceptClarifierAgent(object):
                 for mid in grp_mids:
                     m_item = MISCONCEPTIONS.get(mid, {})
                     wb = m_item.get("wrong_belief", "")
-                    ci = m_item.get("correct_idea", "")
                     user_parts.append(f"- ID: {mid}")
                     if wb:
                         user_parts.append(f"  Wrong Belief: {wb}")
-                    if ci:
-                        user_parts.append(f"  Correct Idea: {ci}")
 
             prior_stems = [
                 q.get("question")
@@ -615,7 +676,13 @@ class ConceptClarifierAgent(object):
                 '}',
             ]
 
-            data = self._call_llm(system_prompt, "\n".join(user_parts))
+            data = self._invoke_llm(
+                system_prompt,
+                "\n".join(user_parts),
+                max_tokens=3000,
+                purpose="generate",
+                reasoning_effort="low",
+            )
             m_used = self.last_model_used or self.model
             t_generate = (time.time() - t_g0) * 1000.0
 
@@ -910,32 +977,72 @@ class ConceptClarifierAgent(object):
             self._emit("Knowledge base unavailable: {}".format(result["error"]), "warning")
         return result
 
-    def _create_completion(self, model, messages, temperature, max_tokens, json_mode=True):
-        """Call Groq/OpenAI with HTTP 429 rate limit retry (honouring Retry-After, capped at 20s, max 2 retries)."""
+    def _create_completion(
+        self,
+        model,
+        messages,
+        temperature,
+        max_tokens,
+        json_mode=True,
+        purpose="generate",
+        reasoning_effort=None,
+    ):
+        """Call Groq/OpenAI with HTTP 429 rate limit retry, token tracking, and reasoning_effort support."""
+        from core.token_budget import check_429_exhaustion, is_reasoning_supported, mark_reasoning_unsupported
+
         max_429_retries = 2
         for retry_idx in range(max_429_retries + 1):
             t0 = time.time()
+            kwargs = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            if json_mode:
+                kwargs["response_format"] = {"type": "json_object"}
+            if reasoning_effort and is_reasoning_supported(model):
+                kwargs["reasoning_effort"] = reasoning_effort
+
             try:
-                kwargs = {
-                    "model": model,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                }
-                if json_mode:
-                    kwargs["response_format"] = {"type": "json_object"}
                 response = self.client.chat.completions.create(**kwargs)
                 raw = response.choices[0].message.content or ""
                 lat_ms = int((time.time() - t0) * 1000)
                 ptoks = getattr(response.usage, "prompt_tokens", None) if getattr(response, "usage", None) else None
                 ctoks = getattr(response.usage, "completion_tokens", None) if getattr(response, "usage", None) else None
-                record_llm_call(None, "concept_clarifier", "generate", model, lat_ms, True, None, ptoks, ctoks)
+                ttoks = getattr(response.usage, "total_tokens", None) if getattr(response, "usage", None) else (
+                    (ptoks + ctoks) if (ptoks is not None and ctoks is not None) else None
+                )
+                record_llm_call(None, "concept_clarifier", purpose, model, lat_ms, True, None, ptoks, ctoks, ttoks)
                 return raw, None
             except Exception as exc:
                 lat_ms = int((time.time() - t0) * 1000)
-                record_llm_call(None, "concept_clarifier", "generate", model, lat_ms, False, str(exc))
                 status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
                 err_text = str(exc).lower()
+
+                # If HTTP 400 occurred with reasoning_effort, retry once without it and remember model
+                if (status_code == 400 or "400" in str(exc)) and "reasoning_effort" in kwargs:
+                    mark_reasoning_unsupported(model)
+                    del kwargs["reasoning_effort"]
+                    try:
+                        t0_retry = time.time()
+                        response = self.client.chat.completions.create(**kwargs)
+                        raw = response.choices[0].message.content or ""
+                        lat_ms = int((time.time() - t0_retry) * 1000)
+                        ptoks = getattr(response.usage, "prompt_tokens", None) if getattr(response, "usage", None) else None
+                        ctoks = getattr(response.usage, "completion_tokens", None) if getattr(response, "usage", None) else None
+                        ttoks = getattr(response.usage, "total_tokens", None) if getattr(response, "usage", None) else (
+                            (ptoks + ctoks) if (ptoks is not None and ctoks is not None) else None
+                        )
+                        record_llm_call(None, "concept_clarifier", purpose, model, lat_ms, True, None, ptoks, ctoks, ttoks)
+                        return raw, None
+                    except Exception as retry_exc:
+                        exc = retry_exc
+                        status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+                        err_text = str(exc).lower()
+
+                record_llm_call(None, "concept_clarifier", purpose, model, lat_ms, False, str(exc))
+
                 is_429 = (
                     status_code == 429
                     or "429" in str(exc)
@@ -943,7 +1050,7 @@ class ConceptClarifierAgent(object):
                     or "rate limit" in err_text
                     or "too many requests" in err_text
                 )
-                if is_429 and retry_idx < max_429_retries:
+                if is_429:
                     retry_after = None
                     resp_obj = getattr(exc, "response", None)
                     if resp_obj and hasattr(resp_obj, "headers"):
@@ -952,20 +1059,46 @@ class ConceptClarifierAgent(object):
                         m_wait = re.search(r"try again in (\d+(?:\.\d+)?)s", err_text)
                         if m_wait:
                             retry_after = float(m_wait.group(1))
-                    try:
-                        sleep_sec = min(20.0, max(1.0, float(retry_after) if retry_after else 2.0))
-                    except (ValueError, TypeError):
-                        sleep_sec = 2.0
-                    self._emit(
-                        f"HTTP 429 rate limit on '{model}': sleeping {sleep_sec:.1f}s (retry {retry_idx + 1}/{max_429_retries})",
-                        "warning",
-                    )
-                    time.sleep(sleep_sec)
-                    continue
+                        m_min = re.search(r"try again in (\d+)m([\d\.]+)s", err_text)
+                        if m_min:
+                            mins = float(m_min.group(1))
+                            secs = float(m_min.group(2))
+                            retry_after = mins * 60.0 + secs
+
+                    # If 429 says tokens-per-day or Retry-After > 60s, mark exhausted today without sleeping
+                    if check_429_exhaustion(model, err_text, retry_after):
+                        self._emit(
+                            f"Model '{model}' reached daily token limit or Retry-After > 60s; marked exhausted for today.",
+                            "warning",
+                        )
+                        return None, exc
+
+                    if retry_idx < max_429_retries:
+                        try:
+                            sleep_sec = min(20.0, max(1.0, float(retry_after) if retry_after else 2.0))
+                        except (ValueError, TypeError):
+                            sleep_sec = 2.0
+                        self._emit(
+                            f"HTTP 429 rate limit on '{model}': sleeping {sleep_sec:.1f}s (retry {retry_idx + 1}/{max_429_retries})",
+                            "warning",
+                        )
+                        time.sleep(sleep_sec)
+                        continue
                 return None, exc
 
-    def _call_llm(self, system_prompt, user_prompt, model=None, fallback_model=None):
+    def _call_llm(
+        self,
+        system_prompt,
+        user_prompt,
+        model=None,
+        fallback_model=None,
+        max_tokens=3000,
+        purpose="generate",
+        reasoning_effort=None,
+    ):
         """Try primary model, then fallback model. Returns a parsed dict or None."""
+        from core.token_budget import is_model_exhausted
+
         if model:
             models_to_try = [model]
             if fallback_model and fallback_model != model:
@@ -975,6 +1108,17 @@ class ConceptClarifierAgent(object):
             if len(models_to_try) > 1 and models_to_try[0] == models_to_try[1]:
                 models_to_try = [models_to_try[0]]
 
+        # Exclude models marked exhausted today or exceeding daily token budget
+        available_models = [
+            m for m in models_to_try
+            if not is_model_exhausted(m, self.model, self.fallback_model)
+        ]
+        if not available_models:
+            self.last_error = "Daily LLM budget reached"
+            self._emit("Daily LLM budget reached. Live generation is disabled.", "warning")
+            return None
+
+        models_to_try = available_models
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -982,7 +1126,15 @@ class ConceptClarifierAgent(object):
 
         for attempt, target_model in enumerate(models_to_try):
             temperature = 0.6 if attempt == 0 else 0.4
-            raw, exc = self._create_completion(target_model, messages, temperature, 4000, json_mode=True)
+            raw, exc = self._create_completion(
+                target_model,
+                messages,
+                temperature,
+                max_tokens,
+                json_mode=True,
+                purpose=purpose,
+                reasoning_effort=reasoning_effort,
+            )
 
             if exc:
                 status_code = getattr(exc, "status_code", None) or getattr(exc, "code", None)
@@ -997,7 +1149,15 @@ class ConceptClarifierAgent(object):
                         "Model '{}' rejected json_object response_format; retrying without it".format(target_model),
                         "info",
                     )
-                    raw, retry_exc = self._create_completion(target_model, messages, temperature, 4000, json_mode=False)
+                    raw, retry_exc = self._create_completion(
+                        target_model,
+                        messages,
+                        temperature,
+                        max_tokens,
+                        json_mode=False,
+                        purpose=purpose,
+                        reasoning_effort=reasoning_effort,
+                    )
                     if retry_exc:
                         retry_status = getattr(retry_exc, "status_code", None) or getattr(retry_exc, "code", None)
                         if retry_status == 401 or "401" in str(retry_exc):
@@ -1022,6 +1182,8 @@ class ConceptClarifierAgent(object):
             else:
                 self.last_error = "Model '{}' returned invalid JSON".format(target_model)
                 self._emit(self.last_error, "warning")
+
+        return None
 
         return None
 

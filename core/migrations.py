@@ -413,10 +413,38 @@ def migration_3_misconceptions_and_facets(conn):
     cur.execute("CREATE INDEX IF NOT EXISTS idx_sqh_misconception ON student_question_history(misconception_id)")
 
 
+def migration_4_verified_pool(conn):
+    """
+    Migration 4 (Phase 4C):
+    Additive only:
+      - questions.origin TEXT ('generated'|'bank'|'diagnostic')
+      - questions.pool_status TEXT DEFAULT 'active'
+      - questions.difficulty_verified INTEGER NULL
+      - questions.verifier_labels_json TEXT NULL
+      - questions.verified INTEGER DEFAULT 0
+      - llm_calls.total_tokens INTEGER NULL
+    Indexes:
+      - questions(concept, difficulty, qtype, pool_status, verified)
+    """
+    cur = conn.cursor()
+    _add_column(cur, "questions", "origin", "TEXT DEFAULT 'generated'")
+    _add_column(cur, "questions", "pool_status", "TEXT DEFAULT 'active'")
+    _add_column(cur, "questions", "difficulty_verified", "INTEGER NULL")
+    _add_column(cur, "questions", "verifier_labels_json", "TEXT NULL")
+    _add_column(cur, "questions", "verified", "INTEGER DEFAULT 0")
+    _add_column(cur, "llm_calls", "total_tokens", "INTEGER NULL")
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_questions_pool
+        ON questions(concept, difficulty, qtype, pool_status, verified)
+    """)
+
+
 MIGRATIONS = [
     (1, "initial_schema", migration_1_initial),
     (2, "analytics_and_evidence", migration_2_new_tables),
     (3, "misconceptions_and_facets", migration_3_misconceptions_and_facets),
+    (4, "verified_pool", migration_4_verified_pool),
 ]
 
 

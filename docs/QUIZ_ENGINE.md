@@ -186,3 +186,66 @@ Diagnostic sets are pregenerated via `scripts/build_diagnostic_sets.py --sets 3`
 3. **Curriculum Reviewability**: Statically persisted diagnostic sets allow instructors and examiners to audit questions, verified error messages, and misconception alignments in advance.
 4. **Seamless System Integration**: Prebuilt questions are ingested into `questions` through `record_generated_questions` upon serving, preserving standard server-side grading, adaptivity updates, and misconception tracking.
 
+---
+
+## 9. Verified Question Pool & Hybrid Serving (Phase 4C)
+
+To minimize runtime LLM token consumption, avoid provider rate limits, and provide instant sub-second quiz start times, Phase 4C introduces the **Verified Question Pool**:
+
+1. **Schema & Migration 4**:
+   - `questions` table extended additively with:
+     - `origin` (`TEXT`): `'generated'`, `'bank'`, or `'diagnostic'`.
+     - `pool_status` (`TEXT`): `'active'`, `'deprecated'`, or `'quarantined'`.
+     - `difficulty_verified` (`INTEGER`): Normalized numeric difficulty estimate (0=Easy, 1=Medium, 2=Hard) from the verifier.
+     - `verifier_labels_json` (`TEXT`): Misconception tags assigned by the independent verifier.
+     - `verified` (`INTEGER`): `1` if all gates (Java check, verifier, dedupe) passed, `0` otherwise.
+   - Composite index `idx_questions_pool` on `(concept, difficulty, qtype, pool_status, verified)`.
+   - `llm_calls` extended with `total_tokens` column.
+
+2. **Pool Selection Strategy (`select_from_pool`)**:
+   - **Candidate Filtering**: Only active, verified questions matching requested concept and exact difficulty.
+   - **Student Isolation**: Questions previously answered by the student (`student_question_history`) are strictly excluded.
+   - **Pedagogical Target Scoring**: Candidates covering the student's targeted misconceptions (`option_misconception_ids`) are scored higher and prioritized.
+   - **Load Balancing**: Tie-breaking favors lowest `times_served` followed by deterministic seeded random shuffling.
+   - **Within-Quiz Deduplication**: Rejects candidates with embedding cosine similarity >= 0.88 (or token-Jaccard >= 0.80) against other questions selected for the same quiz.
+
+3. **Hybrid Serving Pipeline (`/api/quiz/start`)**:
+   - Quizzes query the verified pool first.
+   - Live generation is triggered **only for unfilled slots**.
+   - Questions generated live that satisfy all quality gates automatically join the verified active pool.
+   - Telemetry in `build_report` exposes `served_from_pool`, `generated_live`, and `pool_hit_rate`.
+
+---
+
+## 10. Token Budgeting & Provider Efficiency (Phase 4C)
+
+1. **Prompt Compaction**:
+   - Context passages capped at top 2 passages (<=1200 characters each).
+   - Reference questions capped at top 2 items.
+   - Misconception list strictly truncated to catalog ID and core `wrong_belief`.
+   - Completion token limits enforced: 3000 tokens for generation, 1500 tokens for verification.
+
+2. **Reasoning Effort Optimization**:
+   - `reasoning_effort="low"` passed for quiz generation and independent verification.
+   - `reasoning_effort="medium"` reserved for lesson clarification.
+   - Automatic HTTP 400 fallback: If a provider returns 400 (unsupported parameter), the call retries immediately without `reasoning_effort` and remembers the model in memory to bypass the parameter on all subsequent requests.
+
+3. **Daily Token Budget Manager (`core/token_budget.py`)**:
+   - Tracks daily token usage per model from `llm_calls`.
+   - Primary model cap: `EDUGEN_DAILY_TOKEN_BUDGET` (default 160,000 tokens).
+   - Fallback model cap: `EDUGEN_FALLBACK_DAILY_TOKEN_BUDGET` (default 160,000 tokens).
+   - **Graceful Switching**: When primary budget is reached, switches to fallback model. When both are exhausted, live generation is disabled, serving purely from the verified pool, or returning HTTP 503 `"Daily LLM budget reached"` if the pool cannot fill required slots.
+   - **TPD Rate Limit Interception**: HTTP 429 errors indicating daily quota exhaustion (e.g., "TPD limit reached") or `Retry-After > 60s` mark the model exhausted immediately without sleeping.
+
+---
+
+## 11. Verifier Difficulty Check & Gate Hardening (Phase 4C)
+
+1. **Verifier Difficulty Estimate**:
+   - Independent verifier outputs `"difficulty_estimate": "Easy" | "Medium" | "Hard"`.
+   - If estimated difficulty differs from blueprint difficulty by 2 levels (e.g. Easy vs Hard), the question is rejected with `verifier_difficulty_mismatch`.
+   - Single-level differences (e.g. Easy vs Medium) are tolerated and stored as `difficulty_verified`.
+
+2. **Positional Explanation Gate**:
+   - Regex gate expanded to catch positional wording that leaks option order: `"the first/second/third/fourth/last option"`, `"option (a)"`, `"the former"`, `"the latter"`, `"the one above/below"`.
+

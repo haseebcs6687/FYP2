@@ -333,10 +333,17 @@ def api_quiz_start():
                 main_concept = payload.get("concept") or "class-definition"
                 main_diff = payload.get("difficulty") or "Medium"
                 add_log("Coordinator", f"Serving prebuilt diagnostic quiz ({payload.get('set_name', 'diagnostic')})")
+                br = payload.get("build_report") or {}
+                br["served_from_pool"] = len(payload["questions"])
+                br["generated_live"] = 0
+                br["pool_hit_rate"] = 1.0
+                payload["build_report"] = br
 
-    # Fallback to live generation if no prebuilt set matched
+    # Verified Pool & Live Fallback (Phase 4C)
     if payload is None:
-        from core.quiz_engine import build_blueprint
+        from core.quiz_engine import build_blueprint, select_from_pool
+        from core.token_budget import are_all_models_exhausted
+
         slots = build_blueprint(
             kind=kind,
             student_id=student_id,
@@ -351,11 +358,86 @@ def api_quiz_start():
         add_log("Coordinator", "Quiz requested: kind='{}', concept='{}' ({})".format(
             kind, main_concept, main_diff))
 
-        payload = agents()["cc"].generate_quiz_from_blueprint(
-            slots,
-            student_id=student_id,
-            focus_notes=_focus_notes_for(student_id, main_concept) if main_concept else [],
-        )
+        # 1. Serve from verified active pool first
+        pool_served, unfilled_slots = select_from_pool(slots, student_id=student_id)
+
+        live_questions = []
+        live_payload = {}
+        clarifier = agents()["cc"]
+
+        if unfilled_slots:
+            if are_all_models_exhausted(clarifier.model, clarifier.fallback_model):
+                add_log("Coordinator", "Daily LLM budget reached and pool cannot fill all slots", "warning")
+                return jsonify({
+                    "error": "Daily LLM budget reached",
+                    "code": "budget_exhausted",
+                }), 503
+
+            # 2. Live generation ONLY for unfilled slots
+            live_payload = clarifier.generate_quiz_from_blueprint(
+                unfilled_slots,
+                student_id=student_id,
+                focus_notes=_focus_notes_for(student_id, main_concept) if main_concept else [],
+                prior_questions=pool_served,
+                allow_partial=True,
+            )
+            live_questions = live_payload.get("questions") or []
+
+            # Stash verified live questions into pool
+            if live_questions:
+                record_generated_questions(
+                    main_concept,
+                    main_diff,
+                    live_questions,
+                    model=live_payload.get("model"),
+                    source=live_payload.get("generated_by", "llm_rag"),
+                    origin="generated",
+                    pool_status="active",
+                )
+
+        combined_questions = pool_served + live_questions
+        if not combined_questions:
+            return jsonify({
+                "error": live_payload.get("error") or "No questions could be generated for that quiz.",
+                "code": "generation_unavailable",
+            }), 503
+
+        # Merge build reports
+        live_br = live_payload.get("build_report") or {}
+        served_pool_count = len(pool_served)
+        gen_live_count = len(live_questions)
+        hit_rate = round(served_pool_count / len(slots), 2) if slots else 1.0
+
+        merged_br = {
+            "requested": len(slots),
+            "accepted": len(combined_questions),
+            "served_from_pool": served_pool_count,
+            "generated_live": gen_live_count,
+            "pool_hit_rate": hit_rate,
+            "rejected_by_reason": dict(live_br.get("rejected_by_reason") or {}),
+            "groups": live_br.get("groups", 0),
+            "latency_ms": live_br.get("latency_ms", 0.0),
+            "models": live_br.get("models", []),
+            "java_check": live_br.get("java_check", "available"),
+            "dedupe": live_br.get("dedupe", "vector"),
+            "verifier_tags_removed": live_br.get("verifier_tags_removed", 0),
+            "stage_timings_ms": live_br.get("stage_timings_ms", {}),
+            "warnings": live_br.get("warnings", []),
+        }
+
+        gen_source = "pool" if not gen_live_count else ("pool+llm" if served_pool_count else live_payload.get("generated_by", "llm"))
+        payload = {
+            "concept": main_concept,
+            "concept_title": concept_title(main_concept) if main_concept else "",
+            "difficulty": main_diff,
+            "questions": combined_questions,
+            "total_generated": len(combined_questions),
+            "grounded": live_payload.get("grounded", False),
+            "sources": live_payload.get("sources", []),
+            "generated_by": gen_source,
+            "model": live_payload.get("model"),
+            "build_report": merged_br,
+        }
 
     questions = payload.get("questions") or []
     if not questions:
