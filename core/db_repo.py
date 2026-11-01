@@ -58,7 +58,7 @@ def record_generated_questions(concept, difficulty, questions, model=None, sourc
             options_raw = q.get("options", [])
             options_clean = [opt["text"] if isinstance(opt, dict) else str(opt) for opt in options_raw]
             options_json = json.dumps(options_clean)
-            correct_idx = int(q.get("correct", 0))
+            correct_idx = int(q.get("correct") if q.get("correct") is not None else q.get("correct_index", 0))
             explanation = q.get("explanation", "")
             facet = q.get("facet")
             verified = 1 if q.get("verified") else 0
@@ -94,8 +94,8 @@ def record_generated_questions(concept, difficulty, questions, model=None, sourc
                        SET verified = ?,
                            tags_json = ?,
                            embedding = COALESCE(embedding, ?),
-                           origin = COALESCE(origin, ?),
-                           pool_status = COALESCE(pool_status, ?),
+                           origin = COALESCE(?, origin),
+                           pool_status = COALESCE(?, pool_status),
                            difficulty_verified = COALESCE(?, difficulty_verified),
                            verifier_labels_json = COALESCE(?, verifier_labels_json)
                        WHERE id = ?""",
@@ -357,3 +357,82 @@ def record_rag_retrieval(run_id, student_id, concept, mode, query, embedder, res
         conn.close()
     except Exception as exc:
         add_log("Database", f"record_rag_retrieval failed: {exc}", "warning")
+
+
+def quarantine_positional_explanation_questions(conn=None):
+    """
+    Step 0 (Phase 4D): Scan all questions in the database and quarantine any
+    whose explanation violates the positional-wording rule (_OPTION_LABEL_RE).
+    Sets pool_status='quarantined' so they are excluded from quiz pool selection.
+    Returns the count of questions set to quarantined.
+    """
+    from core.quiz_engine import _OPTION_LABEL_RE
+
+    should_close = False
+    if conn is None:
+        try:
+            conn = get_db()
+            should_close = True
+        except Exception as exc:
+            add_log("Database", f"quarantine_positional_explanation_questions conn error: {exc}", "warning")
+            return 0
+
+    count = 0
+    try:
+        rows = conn.execute("SELECT id, explanation, pool_status FROM questions").fetchall()
+        to_quarantine = []
+        for r in rows:
+            exp = str(r["explanation"] or "")
+            if _OPTION_LABEL_RE.search(exp):
+                to_quarantine.append(r["id"])
+
+        if to_quarantine:
+            cur = conn.cursor()
+            for qid in to_quarantine:
+                cur.execute("UPDATE questions SET pool_status = 'quarantined' WHERE id = ?", (qid,))
+            conn.commit()
+            count = len(to_quarantine)
+            add_log("Database", f"Quarantined {count} question(s) with positional explanation wording: {to_quarantine}", "info")
+    except Exception as exc:
+        add_log("Database", f"quarantine_positional_explanation_questions failed: {exc}", "warning")
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return count
+
+
+def list_quarantined(conn=None):
+    """
+    Return a list of question dicts currently marked with pool_status='quarantined'.
+    """
+    should_close = False
+    if conn is None:
+        try:
+            conn = get_db()
+            should_close = True
+        except Exception as exc:
+            add_log("Database", f"list_quarantined conn error: {exc}", "warning")
+            return []
+
+    results = []
+    try:
+        rows = conn.execute(
+            """SELECT id, concept, difficulty, qtype, question_text, explanation, origin, pool_status, verified
+               FROM questions
+               WHERE pool_status = 'quarantined'
+               ORDER BY id"""
+        ).fetchall()
+        for r in rows:
+            results.append(dict(r))
+    except Exception as exc:
+        add_log("Database", f"list_quarantined query failed: {exc}", "warning")
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return results

@@ -471,6 +471,105 @@ class ConceptClarifierAgent(object):
 
         return accepted, rejected, tags_removed, None, v_model
 
+    def verify_bank_batch(self, batch_questions, concept):
+        """
+        Verify a batch of bank questions (12 questions from a raw bank file)
+        using the independent verifier (Phase 4D).
+        Input: batch_questions (list of dicts with stem, options), concept.
+        Returns: (verifications_map, v_model_used, error_msg_or_None)
+        where verifications_map is {index: {"answer": ..., "ambiguous": ..., "labels": [...], "difficulty_estimate": ..., "note": ...}}
+        """
+        if not batch_questions:
+            return {}, None, None
+
+        from core.token_budget import is_model_exhausted
+
+        v_model = os.environ.get("EDUGEN_VERIFIER_MODEL") or self.verifier_model
+        v_fallback = os.environ.get("EDUGEN_VERIFIER_FALLBACK_MODEL") or self.verifier_fallback_model
+
+        if is_model_exhausted(v_model, self.model, self.fallback_model):
+            if v_fallback and not is_model_exhausted(v_fallback, self.model, self.fallback_model):
+                v_model = v_fallback
+            else:
+                return None, v_model, "budget_exhausted"
+
+        if not self.llm_available:
+            return None, None, "verifier_unavailable_no_llm"
+
+        cat = misconceptions_for(concept) or []
+        cat_summary = [{"id": m["id"], "wrong_belief": m["wrong_belief"]} for m in cat]
+
+        system_prompt = (
+            "You are an independent Java / OOP exam verifier, quality assessor, and grader.\n"
+            "Evaluate each multiple-choice question independently without an answer key.\n"
+            "Determine the single correct option index (0, 1, 2, or 3).\n"
+            "If more than one option is arguably true, or none is true, or the question is unanswerable, set ambiguous: true.\n"
+            "For bug_find questions, state the first javac compile error in 'note'.\n"
+            "For each option (0-3), assign the matching misconception ID from the catalog if it represents that misconception; otherwise null.\n"
+            "Estimate difficulty: 'Easy', 'Medium', or 'Hard'.\n"
+            "Output strictly valid JSON and nothing else."
+        )
+
+        user_parts = [
+            f"Verify the following {len(batch_questions)} question(s) for Java concept '{concept}'.",
+            "",
+            "MISCONCEPTION CATALOG FOR THIS CONCEPT:",
+        ]
+        if cat_summary:
+            for m in cat_summary:
+                user_parts.append(f"- ID: {m['id']}")
+                user_parts.append(f"  Wrong Belief: {m['wrong_belief']}")
+        else:
+            user_parts.append("(No misconceptions cataloged for this concept)")
+
+        user_parts.append("\nQUESTIONS TO VERIFY (Answer key is omitted):")
+        for idx, q in enumerate(batch_questions):
+            q_stem = q.get("question") or q.get("stem") or ""
+            user_parts.append(f"\n--- Question #{idx} (qtype: {q.get('qtype', 'concept')}) ---")
+            user_parts.append(f"Stem: {q_stem}")
+            user_parts.append("Options:")
+            for oi, opt in enumerate(q.get("options", [])):
+                opt_str = opt["text"] if isinstance(opt, dict) else str(opt)
+                user_parts.append(f"  [{oi}] {opt_str}")
+
+        user_parts.append(
+            "\nOUTPUT FORMAT:\n"
+            'Return a JSON object: {"verifications": [\n'
+            '  {"index": 0, "answer": 0, "ambiguous": false, "labels": [null, "catalog_id", null, null], "difficulty_estimate": "Easy|Medium|Hard", "note": "..."},\n'
+            '  ...\n'
+            ']}'
+        )
+
+        try:
+            resp = self._invoke_llm(
+                system_prompt,
+                "\n".join(user_parts),
+                model=v_model,
+                fallback_model=v_fallback,
+                max_tokens=1500,
+                purpose="verify",
+                reasoning_effort="low",
+            )
+        except Exception as exc:
+            resp = None
+            self.last_error = str(exc)
+
+        if not resp:
+            err = getattr(self, "last_error", None) or f"verifier_call_failed for {v_model}"
+            return None, v_model, err
+
+        v_items = resp.get("verifications") or resp.get("questions") or resp.get("items") or []
+        v_map = {}
+        for i, item in enumerate(v_items):
+            idx = item.get("index")
+            try:
+                k = int(idx)
+            except (ValueError, TypeError):
+                k = i
+            v_map[k] = item
+
+        return v_map, v_model, None
+
     def generate_quiz_from_blueprint(
         self,
         slots,
