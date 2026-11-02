@@ -48,6 +48,7 @@ def create_demo_data(db_path):
         (3, "Student C (Theory vs Tracing Gap)", "student_c@example.com"),
         (4, "Student D (Random Guesser)", "student_d@example.com"),
         (5, "Student E (Weak Prerequisite)", "student_e@example.com"),
+        (6, "Student F (Mastered 6 Concepts)", "student_f@example.com"),
     ]
     for sid, name, email in students:
         cur.execute("INSERT OR IGNORE INTO users (id, name, email, password_hash) VALUES (?, ?, ?, 'demo')", (sid, name, email))
@@ -196,6 +197,27 @@ def create_demo_data(db_path):
             (i, json.dumps(["dynamic-method-dispatch"]), is_c, 0 if is_c else 1),
         )
 
+    # ── Student F: Mastered First 6 Concepts (Curriculum Frontier Advance) ───
+    c6_list = [
+        "class-definition", "object-instantiation", "static-members",
+        "this-keyword", "reference-semantics", "object-composition"
+    ]
+    for q_idx, c_tag in enumerate(c6_list, start=1):
+        res_id = 600 + q_idx
+        cur.execute(
+            """INSERT INTO quiz_results (id, student_id, concept, topic, difficulty, score, total_questions, attempt_number, timestamp, source)
+               VALUES (?, 6, ?, 'Foundations', 'Medium', 5, 5, 1, '2026-11-01 16:00:00', 'demo')""",
+            (res_id, c_tag),
+        )
+        for i in range(5):
+            cur.execute(
+                """INSERT INTO question_attempts (
+                    quiz_result_id, question_index, concept_tags, is_correct, student_answer, correct_answer,
+                    misconception_id, offered_misconceptions, qtype, facet, difficulty, time_taken_ms
+                ) VALUES (?, ?, ?, 1, 0, 0, NULL, '[]', 'concept', 'syntax', 'Medium', 4500)""",
+                (res_id, i, json.dumps([c_tag])),
+            )
+
     conn.commit()
     conn.close()
 
@@ -225,6 +247,7 @@ def main():
         (3, "Student C", "Theory vs Code Tracing Skill Gap in Classes"),
         (4, "Student D", "Random Guesser (Low Accuracy Across the Board)"),
         (5, "Student E", "Weak Prerequisite Root Cause (Inheritance Basics behind Dynamic Dispatch)"),
+        (6, "Student F", "Mastered First 6 Concepts (Curriculum Frontier Advance)"),
     ]
 
     for sid, name, desc in student_profiles:
@@ -267,7 +290,7 @@ def main():
 
         md.append("### Generated Lesson Prompts & Focus Details")
         md.append("")
-        learning_steps = [s for s in plan["steps"] if s["kind"] not in ("probe", "reevaluation")]
+        learning_steps = [s for s in plan["steps"] if s.get("prompt_text")]
         for s in learning_steps:
             md.append(f"#### Step {s['position']}: {s['title']}")
             md.append(f"```text\n{s['prompt_text']}\n```")

@@ -13,11 +13,13 @@
 - **Phase 5 — Performance Analysis Agent**: Bayesian Knowledge Tracing (BKT) mastery estimation, misconception-level tracking (`active`, `suspected`, `resolved`), severity decay scoring, facet error mapping, skill profile by question type (`concept`, `code_output`, `bug_find`).
 - **Phase 5B — Simulation & Display Clamping**: Honest synthetic simulation harness, display mastery clamping ($[2.0\%, 98.0\%]$), baseline comparison.
 - **Phase 5C — Probe Quizzes & Closed-Loop Simulation**: Targeted `probe` quiz kind sweeping untargeted catalog misconceptions with relaxed difficulty, dual student response models (Model A & Model B), 81.2%–100.0% detectable recall (`docs/PA_EVAL.md`).
+- **Phase 6 — Adaptive Content Agent**: Full ordered study plan generation (weak concepts + prerequisite closure, topological sort via Kahn's algorithm, calibrated difficulty and lesson style per step, editable prompt per step with student notes, formal coverage checker validating no prerequisite or active misconception is missed).
+- **Phase 6B — Planner Refinements & Evaluation**: Frontier-based real advance progression along `learning_order()`, fast diagnostic `check` quiz steps for unproven prerequisites with dynamic runtime adaptation (`plan_after_check`), difficulty cap (`Medium`) for skill gaps, sentinel cleanup (`plan_step_concepts`), 100% topological validity, 100% prerequisite closure, 100% check precedence, 0 false negatives, honest evaluation wording (`docs/STUDY_PLANNER.md`, `docs/PLAN_EXAMPLES.md`).
 
 ---
 
 ## In Progress
-- **Phase 6 (Current) — Adaptive Content Agent**: Full ordered study plan generation (weak concepts + prerequisites closure, topological sort via Kahn's algorithm, calibrated difficulty and lesson style per step, editable prompt per step with student notes, formal coverage checker validating no prerequisite or active misconception is missed).
+- **Phase 7 (Next) — Concept Clarifier Agent**: Interactive lesson generation per study plan step, offering simplified and detailed versions grounded in RAG corpus passages.
 
 ---
 

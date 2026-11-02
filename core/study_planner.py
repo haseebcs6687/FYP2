@@ -15,6 +15,7 @@ No DB, no Flask, no external LLM calls.
 """
 
 from collections import defaultdict, deque
+import json
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.concepts import (
@@ -24,6 +25,7 @@ from core.concepts import (
     MODULES,
     PREREQUISITES,
     concept_title,
+    learning_order,
     module_of,
     prerequisites_of,
 )
@@ -144,6 +146,59 @@ def _detect_concept_skill_gap(concept: str, report: Dict[str, Any]) -> Optional[
     return None
 
 
+def frontier(report: Dict[str, Any], strong_threshold: float = 70.0) -> List[str]:
+    """
+    1. Real Advance:
+    Concepts in core.concepts.learning_order() that are NOT mastered
+    (no data, or mastery < strong_threshold) AND whose direct prerequisites
+    are all mastered (has attempt data AND mastery >= strong_threshold).
+    """
+    lo = learning_order()
+    front = []
+    for c in lo:
+        if c not in CONCEPTS:
+            continue
+        has_data = _has_attempt_data(c, report)
+        mst = _get_concept_mastery(c, report)
+        # Must not be mastered
+        if has_data and mst >= strong_threshold:
+            continue
+
+        prereqs = PREREQUISITES.get(c, [])
+        all_mastered = True
+        for p in prereqs:
+            p_has_data = _has_attempt_data(p, report)
+            p_mst = _get_concept_mastery(p, report)
+            if not (p_has_data and p_mst >= strong_threshold):
+                all_mastered = False
+                break
+
+        if all_mastered:
+            front.append(c)
+
+    return front
+
+
+def plan_step_concepts(step: Dict[str, Any]) -> List[str]:
+    """
+    4. Sentinel Cleanup:
+    Extract the real concept tags targeted by a plan step.
+    For reevaluation steps, extracts focus['concepts'].
+    For probe or single-concept steps, extracts [concept].
+    """
+    focus = step.get("focus") or {}
+    if isinstance(focus, dict):
+        if "concepts" in focus and isinstance(focus["concepts"], list):
+            return [c for c in focus["concepts"] if c]
+        if "concept" in focus and focus["concept"]:
+            return [focus["concept"]]
+
+    c = step.get("concept")
+    if c and c != "all-plan-concepts":
+        return [c]
+    return []
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. SEED IDENTIFICATION & PREREQUISITE CLOSURE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -170,8 +225,8 @@ def identify_seeds(report: Dict[str, Any], strong_threshold: float = 70.0) -> Li
             }
         else:
             seeds_dict[concept]["reasons"].append(reason)
-            # Prioritize 'weak' over 'review' or 'gap'
-            if kind == "weak" or (kind == "probe" and seeds_dict[concept]["kind"] == "review"):
+            # Prioritize 'weak' over 'review'
+            if kind == "weak":
                 seeds_dict[concept]["kind"] = kind
 
     # 1. Weak concepts
@@ -188,19 +243,20 @@ def identify_seeds(report: Dict[str, Any], strong_threshold: float = 70.0) -> Li
         if tag and tag in CONCEPTS:
             mst = _get_concept_mastery(tag, report)
             if mst < strong_threshold:
-                add_seed(tag, "probe", f"Active misconception [{m.get('misconception_id')}] with mastery {mst:.1f}%")
+                add_seed(tag, "weak", f"Active misconception [{m.get('misconception_id')}] with mastery {mst:.1f}%")
 
-    # 3. Up to 2 concepts due for review
+    # 3. Up to 2 concepts due for review (only if mastery < strong_threshold so mastered concepts do not receive lesson steps)
     due_list = report.get("due_for_review", [])
     for item in due_list[:2]:
         tag = _extract_tag(item)
         if tag:
-            add_seed(tag, "review", "Mastered concept due for retention review (> 7 days)")
+            mst = _get_concept_mastery(tag, report)
+            if mst < strong_threshold:
+                add_seed(tag, "review", f"Concept due for retention review (mastery {mst:.1f}% < {strong_threshold}%)")
 
     # 4. Concepts with skill gap findings
     sp = report.get("skill_profile", {})
     if sp.get("skill_gaps"):
-        # If any weak or moderate topic has a skill gap, flag it
         for item in (report.get("weak_topics", []) + report.get("moderate_topics", [])):
             tag = _extract_tag(item)
             if tag and _detect_concept_skill_gap(tag, report):
@@ -369,62 +425,94 @@ def apply_size_cap(
     seeds: List[str],
     priorities: Dict[str, float],
     size_cap: int = 7,
+    check_cap: int = 4,
     report: Optional[Dict[str, Any]] = None,
+    prereq_reasons: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[str], List[Dict[str, Any]], Optional[str]]:
     """
-    2.5 Size cap (default 7 steps):
-      - If candidates > size_cap, defer lowest-priority NON-prerequisite items.
+    2.5 Size cap (default 7 learning steps, 4 check steps):
+      - Check steps do NOT count against the 7 learning steps.
+      - At most check_cap (4) check steps per plan; extra unproven prerequisites
+        are deferred with 'will be verified when its dependent is reached'.
+      - If learning candidates > size_cap, defer lowest-priority non-prerequisite items.
       - Retain concepts carrying ACTIVE misconceptions (and their prerequisite closures) first.
-      - NEVER drop a concept that a retained step needs (closure first, cap second).
       - If closure alone exceeds the cap, keep closure and record note.
     Returns: (retained_concepts, deferred_items, closure_exceeded_note)
     """
-    if len(ordered_concepts) <= size_cap:
+    prereq_reasons = prereq_reasons or {}
+
+    def is_check_candidate(c: str) -> bool:
+        if report and c in prereq_reasons:
+            return not _has_attempt_data(c, report)
+        return False
+
+    check_candidates = [c for c in ordered_concepts if is_check_candidate(c)]
+    learning_candidates = [c for c in ordered_concepts if not is_check_candidate(c)]
+
+    if len(learning_candidates) <= size_cap and len(check_candidates) <= check_cap:
         return ordered_concepts, [], None
 
     closure_note = None
-    retained: Set[str] = set()
+    retained_learning: Set[str] = set()
 
-    # Step 1: Retain concepts with ACTIVE misconceptions and their prerequisites first
+    # Step 1: Retain learning candidates with ACTIVE misconceptions and their required learning prerequisites
     if report:
-        active_mis_concepts = [c for c in ordered_concepts if _get_concept_active_misconceptions(c, report)]
+        active_mis_concepts = [c for c in learning_candidates if _get_concept_active_misconceptions(c, report)]
         active_sorted = sorted(active_mis_concepts, key=lambda c: priorities.get(c, 0.0), reverse=True)
         for c in active_sorted:
-            needed = {c} | (set(prerequisites_of(c, deep=True)) & set(ordered_concepts))
-            candidate_union = retained | needed
+            needed = {c} | (set(prerequisites_of(c, deep=True)) & set(learning_candidates))
+            candidate_union = retained_learning | needed
             if len(candidate_union) <= size_cap:
-                retained = candidate_union
+                retained_learning = candidate_union
             else:
-                # Keep closure even if it exceeds size_cap to guarantee coverage of critical active misconceptions
-                retained = candidate_union
+                retained_learning = candidate_union
                 closure_note = (
                     f"Prerequisite closure for active misconceptions in '{concept_title(c)}' requires "
-                    f"{len(retained)} steps, exceeding size cap of {size_cap}. Keeping closure to maintain validity."
+                    f"{len(retained_learning)} steps, exceeding size cap of {size_cap}. Keeping closure to maintain validity."
                 )
 
-    # Step 2: Fill remaining capacity up to size_cap with other candidates by descending priority
+    # Step 2: Fill remaining learning capacity up to size_cap
     by_prio = sorted(
-        [c for c in ordered_concepts if c not in retained],
+        [c for c in learning_candidates if c not in retained_learning],
         key=lambda c: priorities.get(c, 0.0),
         reverse=True,
     )
 
     for candidate in by_prio:
-        needed = {candidate} | (set(prerequisites_of(candidate, deep=True)) & set(ordered_concepts))
-        candidate_union = retained | needed
+        needed = {candidate} | (set(prerequisites_of(candidate, deep=True)) & set(learning_candidates))
+        candidate_union = retained_learning | needed
         if len(candidate_union) <= size_cap:
-            retained = candidate_union
+            retained_learning = candidate_union
 
     # Fallback if nothing was retained yet
-    if not retained and by_prio:
+    if not retained_learning and by_prio:
         top_seed = by_prio[0]
-        retained = {top_seed} | (set(prerequisites_of(top_seed, deep=True)) & set(ordered_concepts))
-        closure_note = f"Prerequisite closure for '{concept_title(top_seed)}' requires {len(retained)} steps, exceeding size cap of {size_cap}. Keeping closure to maintain validity."
+        retained_learning = {top_seed} | (set(prerequisites_of(top_seed, deep=True)) & set(learning_candidates))
+        closure_note = f"Prerequisite closure for '{concept_title(top_seed)}' requires {len(retained_learning)} steps, exceeding size cap of {size_cap}. Keeping closure to maintain validity."
+
+    # Step 3: Check steps for unproven prerequisites needed by retained learning
+    needed_checks = set()
+    for c in retained_learning:
+        for p in prerequisites_of(c, deep=True):
+            if p in check_candidates:
+                needed_checks.add(p)
+
+    retained_checks: Set[str] = set()
+    sorted_checks = sorted(needed_checks, key=lambda c: priorities.get(c, 0.0), reverse=True)
+    for c in sorted_checks[:check_cap]:
+        retained_checks.add(c)
 
     # Build deferred list
     deferred = []
     for c in ordered_concepts:
-        if c not in retained:
+        if c in check_candidates and c not in retained_checks:
+            deferred.append({
+                "concept": c,
+                "title": concept_title(c),
+                "priority": priorities.get(c, 0.0),
+                "reason": "will be verified when its dependent is reached",
+            })
+        elif c in learning_candidates and c not in retained_learning:
             deferred.append({
                 "concept": c,
                 "title": concept_title(c),
@@ -432,8 +520,8 @@ def apply_size_cap(
                 "reason": f"Deferred to maintain plan focus (size cap: {size_cap}); priority {priorities.get(c, 0.0):.1f}",
             })
 
-    # Preserve topological order for retained concepts
-    final_ordered = [c for c in ordered_concepts if c in retained]
+    final_retained = retained_learning | retained_checks
+    final_ordered = [c for c in ordered_concepts if c in final_retained]
     return final_ordered, deferred, closure_note
 
 
@@ -529,15 +617,30 @@ def _build_learning_step(
     if kind == "prerequisite" and (not has_data or mastery < 40.0):
         difficulty = "Easy"
 
-    # Lesson style
-    lesson_style = "simplified" if mastery < 40.0 else "detailed"
-
     # Focus components
     active_mis = _get_concept_active_misconceptions(concept, report)
     susp_mis = _get_concept_suspected_misconceptions(concept, report)
     all_mis = active_mis + susp_mis
     weak_facets = _get_concept_weak_facets(concept, report)
     skill_gap = _detect_concept_skill_gap(concept, report)
+
+    # 3. SKILL GAP DIFFICULTY:
+    # A step whose only reason is a skill gap (no weak mastery, no active misconception)
+    # gets difficulty at most Medium; prompt unchanged except the code-tracing instruction.
+    is_only_skill_gap = (
+        skill_gap is not None
+        and has_data
+        and mastery >= 40.0
+        and len(active_mis) == 0
+    )
+    if is_only_skill_gap and difficulty == "Hard":
+        difficulty = "Medium"
+
+    # Lesson style: advance steps always use detailed style; otherwise simplified if < 40
+    if kind == "advance":
+        lesson_style = "detailed"
+    else:
+        lesson_style = "simplified" if mastery < 40.0 else "detailed"
 
     # Focus item count for est_minutes: 5 + 3 per focus item, cap 20
     focus_item_count = len(all_mis) + len(weak_facets) + (1 if skill_gap else 0)
@@ -583,18 +686,22 @@ def _build_learning_step(
 def generate_study_plan(
     report: Dict[str, Any],
     size_cap: int = 7,
+    check_cap: int = 4,
     strong_threshold: float = 70.0,
 ) -> Dict[str, Any]:
     """
     Master plan generation algorithm:
       1. Cold start check (no quiz attempts -> return empty plan).
-      2. Identify seed concepts (weak, active misconceptions, review, skill gaps).
-      3. Compute prerequisite closure (mastery < 70 or unproven <= 2 edges).
-      4. Compute priority scores and sort topologically (Kahn).
-      5. Apply size cap and create deferred items without breaking closure.
-      6. Assemble learning steps with calibrated difficulty and prompts.
-      7. Append closing probe quiz step and final reevaluation quiz step.
-      8. Run coverage checker.
+      2. Course complete check (all concepts mastered -> mixed review reevaluation).
+      3. Identify seed concepts (weak, active misconceptions, review, skill gaps).
+      4. Advance concepts: if no weak seeds, take up to 2 frontier concepts.
+      5. Compute prerequisite closure (mastery < 70 or unproven <= 2 edges).
+      6. Compute priority scores and sort topologically (Kahn).
+      7. Apply size cap and create deferred items (check steps cap 4, learning cap 7).
+      8. Assemble check steps (unproven prereqs) and learning steps with calibrated difficulty.
+      9. If weak seeds present and learning steps < 3: add ONE advance step from frontier.
+      10. Append closing probe quiz step and final reevaluation quiz step.
+      11. Run coverage checker.
     """
     total_attempts = report.get("total_questions_attempted", 0)
     if total_attempts == 0 and not report.get("concept_stats"):
@@ -607,49 +714,162 @@ def generate_study_plan(
         empty_plan["coverage"] = check_coverage(empty_plan, report, strong_threshold)
         return empty_plan
 
-    # 1. Seeds
+    # 1. Course Complete Check:
+    # If all 44 concepts in the curriculum are mastered (mastery >= strong_threshold),
+    # return a plan with a single 'reevaluation' step over a mixed review (the 3 oldest-mastered concepts).
+    all_mastered = all(
+        _has_attempt_data(c, report) and _get_concept_mastery(c, report) >= strong_threshold
+        for c in CONCEPTS
+    )
+    front = frontier(report, strong_threshold)
+    has_weak_report = bool(report.get("weak_topics")) or bool(report.get("misconceptions", {}).get("active"))
+
+    if all_mastered or (not front and not has_weak_report):
+        due_list = [_extract_tag(x) for x in report.get("due_for_review", []) if _extract_tag(x) in CONCEPTS]
+        review_concepts = due_list[:3] if len(due_list) >= 3 else [c for c in learning_order() if c in CONCEPTS][:3]
+        avg_mst = sum(_get_concept_mastery(c, report) for c in review_concepts) / max(len(review_concepts), 1)
+        course_step = {
+            "concept": "all-plan-concepts",
+            "title": "Comprehensive Reevaluation Quiz",
+            "module": None,
+            "kind": "reevaluation",
+            "difficulty": "Medium",
+            "lesson_style": None,
+            "priority": 0.0,
+            "mastery": round(avg_mst, 1),
+            "est_minutes": 10,
+            "reason": "Course complete - mixed review",
+            "focus": {"concepts": review_concepts},
+            "status": "pending",
+            "user_note": None,
+            "prompt_text": None,
+            "closing_quiz": True,
+            "position": 1,
+        }
+        plan = {
+            "steps": [course_step],
+            "deferred": [],
+            "summary": "Course complete - mixed review covering 3 concepts.",
+            "reason": "Course complete - mixed review",
+        }
+        plan["coverage"] = check_coverage(plan, report, strong_threshold)
+        return plan
+
+    # 2. Seed Identification
     seed_objs = identify_seeds(report, strong_threshold)
-    if not seed_objs:
-        # Fallback if student is performing well: pick entry concept or next learning order concept
-        seed_objs = [{"concept": ENTRY_CONCEPT, "kind": "advance", "reasons": ["Baseline curriculum entry point"]}]
+    weak_seeds = [s for s in seed_objs if s["kind"] in ("weak", "probe")]
+
+    # 3. Real Advance:
+    # With no weak seeds, take up to 2 frontier concepts as kind 'advance'
+    if not weak_seeds:
+        for c in front[:2]:
+            has_data = _has_attempt_data(c, report)
+            mst = _get_concept_mastery(c, report)
+            diff = "Easy" if not has_data else ("Easy" if mst < 40 else ("Medium" if mst < 70 else "Hard"))
+            seed_objs.append({
+                "concept": c,
+                "kind": "advance",
+                "reasons": [f"Next concept on your path: {concept_title(c)}; prerequisites mastered"],
+                "difficulty": diff,
+                "lesson_style": "detailed",
+            })
 
     seeds_list = [s["concept"] for s in seed_objs]
     seed_kind_map = {s["concept"]: s["kind"] for s in seed_objs}
     seed_reason_map = {s["concept"]: s["reasons"][0] for s in seed_objs}
 
-    # 2. Prerequisite closure
+    # 4. Prerequisite Closure
     all_selected, prereq_reasons = compute_prerequisite_closure(seeds_list, report, strong_threshold)
 
-    # 3. Compute priority per concept
+    # 5. Priority & Kahn Topological Sort
     priorities = {c: compute_priority(c, seeds_list, report) for c in all_selected}
-
-    # 4. Topological sort (Kahn)
     topological_concepts = topological_sort_kahn(all_selected, priorities)
 
-    # 5. Size cap & deferral
+    # 6. Size Cap & Deferral (Check cap 4, Learning cap 7)
     retained_concepts, deferred_items, closure_note = apply_size_cap(
-        topological_concepts, seeds_list, priorities, size_cap=size_cap, report=report
+        topological_concepts,
+        seeds_list,
+        priorities,
+        size_cap=size_cap,
+        check_cap=check_cap,
+        report=report,
+        prereq_reasons=prereq_reasons,
     )
 
-    # 6. Build learning steps
-    learning_steps = []
+    # 7. Build Steps: Check steps (unproven prereqs) vs Learning steps
+    plan_steps = []
     preceding_titles = []
 
     for c in retained_concepts:
-        if c in prereq_reasons:
-            kind = "prerequisite"
-            reason = prereq_reasons[c]
-        else:
-            kind = seed_kind_map.get(c, "weak")
-            reason = seed_reason_map.get(c, f"Targeted for remediation ({_get_concept_mastery(c, report):.1f}% mastery)")
-
         prio = priorities.get(c, 0.0)
-        step = _build_learning_step(c, kind, reason, prio, report)
-        step["prompt_text"] = format_step_prompt(step, preceding_titles=preceding_titles)
-        preceding_titles.append(step["title"])
-        learning_steps.append(step)
+        # Check step for unproven prerequisite
+        if c in prereq_reasons and not _has_attempt_data(c, report):
+            check_step = {
+                "concept": c,
+                "title": f"Check: {concept_title(c)}",
+                "module": module_of(c),
+                "kind": "check",
+                "difficulty": "Easy",
+                "lesson_style": None,
+                "priority": prio,
+                "mastery": 30.0,
+                "est_minutes": 3,
+                "reason": prereq_reasons.get(c, f"Verify prerequisite {concept_title(c)}"),
+                "focus": {
+                    "quiz_kind": "practice",
+                    "concept": c,
+                    "n": 3,
+                    "difficulty": "Easy",
+                },
+                "status": "pending",
+                "user_note": None,
+                "prompt_text": None,
+                "closing_quiz": False,
+            }
+            plan_steps.append(check_step)
+        else:
+            # Learning step
+            if c in prereq_reasons:
+                kind = "prerequisite"
+                reason = prereq_reasons[c]
+            else:
+                kind = seed_kind_map.get(c, "weak")
+                reason = seed_reason_map.get(c, f"Targeted for remediation ({_get_concept_mastery(c, report):.1f}% mastery)")
 
-    # 7. Closing Steps (2.7)
+            step = _build_learning_step(c, kind, reason, prio, report)
+            step["prompt_text"] = format_step_prompt(step, preceding_titles=preceding_titles)
+            preceding_titles.append(step["title"])
+            plan_steps.append(step)
+
+    # 8. If weak seeds present and fewer than 3 learning steps, add ONE advance step from frontier
+    learning_steps = [s for s in plan_steps if s.get("kind") in ("weak", "prerequisite", "review", "advance")]
+    if weak_seeds and len(learning_steps) < 3:
+        retained_set = set(retained_concepts)
+        deferred_set = {d.get("concept") for d in deferred_items}
+        for c in front:
+            if c in retained_set or c in deferred_set:
+                continue
+            # Advance concept must not be a prerequisite of any step already in the plan
+            if any(c in prerequisites_of(s["concept"], deep=True) for s in plan_steps):
+                continue
+            has_data = _has_attempt_data(c, report)
+            mst = _get_concept_mastery(c, report)
+            diff = "Easy" if not has_data else ("Easy" if mst < 40 else ("Medium" if mst < 70 else "Hard"))
+            prio = compute_priority(c, seeds_list, report)
+            adv_step = _build_learning_step(
+                c,
+                "advance",
+                f"Next concept on your path: {concept_title(c)}; prerequisites mastered",
+                prio,
+                report,
+            )
+            adv_step["prompt_text"] = format_step_prompt(adv_step, preceding_titles=preceding_titles)
+            preceding_titles.append(adv_step["title"])
+            plan_steps.append(adv_step)
+            retained_concepts.append(c)
+            break
+
+    # 9. Closing Steps
     # (a) ONE probe step for highest-severity active/suspected misconception
     probe_concept = None
     top_mis_id = None
@@ -672,7 +892,10 @@ def generate_study_plan(
     if probe_concept:
         probe_mst = _get_concept_mastery(probe_concept, report)
         p_diff = "Easy" if probe_mst < 40 else ("Medium" if probe_mst < 70 else "Hard")
-        reason_str = f"Diagnostic probe quiz sweeping misconception [{top_mis_id}] in {concept_title(probe_concept)}" if top_mis_id else f"Diagnostic probe quiz on {concept_title(probe_concept)}"
+        reason_str = (
+            f"Diagnostic probe quiz sweeping misconception [{top_mis_id}] in {concept_title(probe_concept)}"
+            if top_mis_id else f"Diagnostic probe quiz on {concept_title(probe_concept)}"
+        )
         closing_steps.append({
             "concept": probe_concept,
             "title": f"Probe Quiz: {concept_title(probe_concept)}",
@@ -684,7 +907,11 @@ def generate_study_plan(
             "mastery": probe_mst,
             "est_minutes": 8,
             "reason": reason_str,
-            "focus": {"probe_misconception_id": top_mis_id},
+            "focus": {
+                "concept": probe_concept,
+                "target_misconceptions": [top_mis_id] if top_mis_id else [],
+                "probe_misconception_id": top_mis_id,
+            },
             "status": "pending",
             "user_note": None,
             "prompt_text": None,
@@ -692,6 +919,14 @@ def generate_study_plan(
         })
 
     # (b) ONE final reevaluation step covering all plan concepts
+    all_plan_concepts = [
+        s["concept"] for s in plan_steps
+        if s.get("concept") and s["concept"] != "all-plan-concepts"
+    ]
+    avg_plan_mst = (
+        round(sum(_get_concept_mastery(c, report) for c in all_plan_concepts) / max(len(all_plan_concepts), 1), 1)
+        if all_plan_concepts else 50.0
+    )
     closing_steps.append({
         "concept": "all-plan-concepts",
         "title": "Comprehensive Reevaluation Quiz",
@@ -700,21 +935,23 @@ def generate_study_plan(
         "difficulty": "Medium",
         "lesson_style": None,
         "priority": 0.0,
-        "mastery": round(sum(_get_concept_mastery(c, report) for c in retained_concepts) / max(len(retained_concepts), 1), 1),
+        "mastery": avg_plan_mst,
         "est_minutes": 10,
-        "reason": f"Comprehensive reevaluation quiz covering all {len(retained_concepts)} study plan concepts",
-        "focus": {"concepts": list(retained_concepts)},
+        "reason": f"Comprehensive reevaluation quiz covering all {len(all_plan_concepts)} study plan concepts",
+        "focus": {"concepts": all_plan_concepts},
         "status": "pending",
         "user_note": None,
         "prompt_text": None,
         "closing_quiz": True,
     })
 
-    all_steps = learning_steps + closing_steps
+    all_steps = plan_steps + closing_steps
     for idx, s in enumerate(all_steps, start=1):
         s["position"] = idx
 
-    summary = f"Generated {len(learning_steps)} learning steps + {len(closing_steps)} quiz verification steps."
+    n_learning = sum(1 for s in plan_steps if s.get("kind") in ("weak", "prerequisite", "review", "advance"))
+    n_check = sum(1 for s in plan_steps if s.get("kind") == "check")
+    summary = f"Generated {n_learning} learning steps + {n_check} check steps + {len(closing_steps)} quiz verification steps."
     if closure_note:
         summary += f" ({closure_note})"
 
@@ -726,6 +963,61 @@ def generate_study_plan(
     }
     plan["coverage"] = check_coverage(plan, report, strong_threshold)
     return plan
+
+
+def plan_after_check(
+    plan: Dict[str, Any],
+    concept: str,
+    check_mastery: float,
+    report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    2. Check Steps: Update study plan after a check quiz completes:
+      - If check_mastery < 50.0: convert check step to a lesson step
+        (kind 'prerequisite', Easy, simplified) with generated prompt_text.
+      - If check_mastery >= 50.0: mark check step as done and dependents keep order.
+    """
+    updated_plan = json.loads(json.dumps(plan))
+    steps = updated_plan.get("steps", [])
+
+    step_idx = None
+    target_step = None
+    for idx, s in enumerate(steps):
+        if s.get("concept") == concept and s.get("kind") == "check":
+            step_idx = idx
+            target_step = s
+            break
+
+    if target_step is None:
+        return updated_plan
+
+    if check_mastery < 50.0:
+        # Convert to prerequisite lesson step
+        target_step["kind"] = "prerequisite"
+        target_step["difficulty"] = "Easy"
+        target_step["lesson_style"] = "simplified"
+        target_step["mastery"] = float(check_mastery)
+        target_step["status"] = "pending"
+        target_step["title"] = concept_title(concept)
+        target_step["reason"] = f"Prerequisite check failed ({check_mastery:.1f}% mastery); foundational remediation needed"
+        target_step["focus"] = {
+            "misconceptions": [],
+            "weak_facets": [],
+            "skill_gap": None,
+        }
+        prec_titles = [s["title"] for s in steps[:step_idx] if s.get("title") and s.get("kind") != "reevaluation"]
+        target_step["prompt_text"] = format_step_prompt(target_step, preceding_titles=prec_titles)
+    else:
+        # Prerequisite verified: mark as done
+        target_step["status"] = "done"
+        target_step["mastery"] = float(check_mastery)
+        target_step["reason"] = f"Prerequisite check passed ({check_mastery:.1f}% mastery)"
+
+    # Refresh coverage if report is provided
+    if report:
+        updated_plan["coverage"] = check_coverage(updated_plan, report)
+
+    return updated_plan
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -741,12 +1033,14 @@ def check_coverage(
     2.10 Formal Coverage Checker:
       Checks:
         (a) order_valid: Every prerequisite of a planned concept is mastered (>= strong_threshold)
-            or appears in an earlier active non-skipped learning step.
-        (b) weak_concepts_covered: Every weak concept is in an active plan step or deferred.
+            or appears in an earlier active non-skipped step (lesson or check),
+            or was deferred with 'will be verified when its dependent is reached'.
+        (b) weak_concepts_covered: Every weak concept is in an active plan lesson step (not check) or deferred.
         (c) active_misconceptions_addressed: Every active misconception is addressed by
             at least one active step focus.
         (d) no_cycles_or_duplicates: No duplicate concepts or cyclic dependencies.
-        (e) closing_steps_present: Contains both probe and reevaluation closing quiz steps.
+        (e) closing_steps_present: Contains both probe and reevaluation closing quiz steps,
+            or single reevaluation if course complete.
 
       Skipped steps count as NOT covering; checker details exactly what becomes uncovered.
     """
@@ -757,28 +1051,36 @@ def check_coverage(
     violations = []
     checks = []
 
-    # Active non-skipped learning steps
-    active_learning_steps = [
+    # Active non-skipped steps (learning and check) before closing quizzes
+    active_steps = [
         s for s in steps
         if not s.get("closing_quiz") and s.get("kind") != "reevaluation" and s.get("status") != "skipped"
     ]
-    active_concepts = [s.get("concept") for s in active_learning_steps]
+    active_concepts = [s.get("concept") for s in active_steps]
     active_concept_set = set(active_concepts)
+
+    # Active learning steps (excluding check steps)
+    active_learning_steps = [s for s in active_steps if s.get("kind") != "check"]
+    active_learning_concept_set = {s.get("concept") for s in active_learning_steps}
 
     # ── Check (a): Order valid & prerequisite presence ──────────────────────
     order_ok = True
     order_details = []
     seen_in_plan: Set[str] = set()
 
-    for idx, s in enumerate(active_learning_steps):
+    for idx, s in enumerate(active_steps):
         c = s.get("concept")
         direct_prereqs = PREREQUISITES.get(c, [])
         for p in direct_prereqs:
             p_mst = _get_concept_mastery(p, report)
             p_has_data = _has_attempt_data(p, report)
             p_mastered = p_has_data and p_mst >= strong_threshold
+            p_deferred_check = (not p_has_data) and any(
+                d.get("concept") == p and "will be verified" in d.get("reason", "")
+                for d in deferred
+            )
 
-            if not p_mastered and p not in seen_in_plan:
+            if not p_mastered and p not in seen_in_plan and not p_deferred_check:
                 order_ok = False
                 msg = f"Prerequisite '{p}' of '{c}' is neither mastered ({p_mst:.1f}%) nor completed earlier in the plan."
                 order_details.append(msg)
@@ -793,24 +1095,26 @@ def check_coverage(
     })
 
     # ── Check (b): Every weak concept in plan or deferred ───────────────────
+    # A check step NEVER counts as covering a weak concept
     weak_ok = True
     weak_details = []
     weak_list = [_extract_tag(x) for x in report.get("weak_topics", [])]
 
     for w in weak_list:
-        if w not in active_concept_set and w not in deferred_concepts:
+        if w not in active_learning_concept_set and w not in deferred_concepts:
             weak_ok = False
-            msg = f"Weak concept '{w}' is neither in active study steps nor deferred."
+            msg = f"Weak concept '{w}' is neither in active learning steps nor deferred."
             weak_details.append(msg)
             violations.append(msg)
 
     checks.append({
         "name": "weak_concepts_covered",
         "ok": weak_ok,
-        "detail": "All weak concepts are scheduled or deferred." if weak_ok else "; ".join(weak_details),
+        "detail": "All weak concepts are scheduled in lessons or deferred." if weak_ok else "; ".join(weak_details),
     })
 
     # ── Check (c): Active misconceptions addressed ─────────────────────────
+    # A check step NEVER counts as addressing a misconception
     mis_ok = True
     mis_details = []
     addressed_mis_ids = set()
@@ -825,6 +1129,9 @@ def check_coverage(
         pmid = ps.get("focus", {}).get("probe_misconception_id")
         if pmid:
             addressed_mis_ids.add(pmid)
+        for tm in ps.get("focus", {}).get("target_misconceptions", []):
+            if tm:
+                addressed_mis_ids.add(tm)
 
     active_mis_list = report.get("misconceptions", {}).get("active", [])
     for m in active_mis_list:
@@ -845,7 +1152,7 @@ def check_coverage(
     cycle_ok = True
     cycle_details = []
 
-    # Check duplicates in active learning concepts
+    # Check duplicates in active concepts
     if len(active_concepts) != len(active_concept_set):
         cycle_ok = False
         dups = [c for c in active_concept_set if active_concepts.count(c) > 1]
@@ -901,23 +1208,31 @@ def check_coverage(
 
     has_probe = "probe" in kinds
     has_reeval = "reevaluation" in kinds
+    is_course_complete = plan.get("reason") == "Course complete - mixed review"
 
-    if not has_probe:
-        closing_ok = False
-        msg = "Missing closing 'probe' quiz step."
-        closing_details.append(msg)
-        violations.append(msg)
+    if is_course_complete:
+        if not has_reeval:
+            closing_ok = False
+            msg = "Missing final 'reevaluation' quiz step for course complete plan."
+            closing_details.append(msg)
+            violations.append(msg)
+    else:
+        if not has_probe:
+            closing_ok = False
+            msg = "Missing closing 'probe' quiz step."
+            closing_details.append(msg)
+            violations.append(msg)
 
-    if not has_reeval:
-        closing_ok = False
-        msg = "Missing final 'reevaluation' quiz step."
-        closing_details.append(msg)
-        violations.append(msg)
+        if not has_reeval:
+            closing_ok = False
+            msg = "Missing final 'reevaluation' quiz step."
+            closing_details.append(msg)
+            violations.append(msg)
 
     checks.append({
         "name": "closing_steps_present",
         "ok": closing_ok,
-        "detail": "Both probe and reevaluation closing quiz steps are present." if closing_ok else "; ".join(closing_details),
+        "detail": "Both probe and reevaluation closing quiz steps are present (or mixed review for completed course)." if closing_ok else "; ".join(closing_details),
     })
 
     return {

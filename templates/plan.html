@@ -172,7 +172,7 @@ function renderPlan(data) {
   let stepsHtml = '';
 
   plan.steps.forEach(s => {
-    const isQuiz = s.kind === 'probe' || s.kind === 'reevaluation';
+    const isQuiz = s.kind === 'probe' || s.kind === 'reevaluation' || s.kind === 'check';
     const statusBadges = {
       pending: '<span class="badge tiny">Pending</span>',
       in_progress: '<span class="badge badge-attn tiny">In Progress</span>',
@@ -182,6 +182,9 @@ function renderPlan(data) {
 
     let focusHtml = '';
     const focus = s.focus || {};
+    if (s.kind === 'check') {
+      focusHtml += '<div class="small muted" style="margin-top:4px;">Prerequisite check quiz: ' + (focus.n || 3) + ' questions (' + escHtml(focus.difficulty || 'Easy') + ')</div>';
+    }
     if (focus.misconceptions && focus.misconceptions.length) {
       focusHtml += '<div style="margin-top:6px;font-size:0.85rem;"><strong>Target Misconceptions to Fix:</strong><ul style="margin:4px 0;padding-left:18px;">';
       focus.misconceptions.forEach(m => {
@@ -246,3 +249,4 @@ function renderPlan(data) {
 document.addEventListener('DOMContentLoaded', loadPlan);
 </script>
 {% endblock %}
+

@@ -41,7 +41,10 @@ from core.study_planner import (
     check_coverage,
     compute_priority,
     format_step_prompt,
+    frontier,
     generate_study_plan,
+    plan_after_check,
+    plan_step_concepts,
     topological_sort_kahn,
 )
 
@@ -200,16 +203,204 @@ class TestStudyPlannerPureAlgorithms(unittest.TestCase):
         big_report["concept_stats"] = {c: {"mastery": 30.0, "attempts": 2} for c in many_weak}
 
         plan = generate_study_plan(big_report, size_cap=4)
-        learning_steps = [s for s in plan["steps"] if s["kind"] not in ("probe", "reevaluation")]
+        learning_steps = [s for s in plan["steps"] if s["kind"] in ("weak", "prerequisite", "advance", "review")]
+        check_steps = [s for s in plan["steps"] if s["kind"] == "check"]
 
-        # Retained learning steps must not exceed size_cap (or its minimal closure)
-        self.assertLessEqual(len(learning_steps), 6)
+        # Retained learning steps must not exceed size_cap (4)
+        self.assertLessEqual(len(learning_steps), 4)
+        # Retained check steps must not exceed check_cap (4)
+        self.assertLessEqual(len(check_steps), 4)
         self.assertGreater(len(plan["deferred"]), 0)
 
         # Check that deferred items contain reasons and priority
         for d in plan["deferred"]:
             self.assertIn("Deferred", d["reason"])
             self.assertIn("priority", d)
+
+    def test_frontier_selection_and_course_complete(self):
+        """Frontier identifies unmastered concepts whose direct prerequisites are mastered; handles course complete."""
+        from core.concepts import CONCEPTS, learning_order
+
+        # 1. New student with no data: frontier is entry concept
+        rep_cold = {"concept_stats": {}}
+        front_cold = frontier(rep_cold)
+        self.assertIn("class-definition", front_cold)
+
+        # 2. Student who mastered class-definition: frontier advances to next concepts
+        rep_b = {"concept_stats": {"class-definition": {"mastery": 85.0, "attempts": 5}}}
+        front_b = frontier(rep_b)
+        self.assertNotIn("class-definition", front_b)
+        self.assertIn("object-instantiation", front_b)
+        self.assertIn("static-members", front_b)
+
+        # 3. Student who mastered all 44 concepts: frontier empty, course complete plan generated
+        rep_all = {
+            "total_questions_attempted": 220,
+            "concept_stats": {c: {"mastery": 85.0, "attempts": 5} for c in CONCEPTS},
+            "weak_topics": [],
+            "moderate_topics": [],
+            "strong_topics": list(CONCEPTS.keys()),
+            "due_for_review": [{"concept_tag": "class-definition", "mastery": 85.0}],
+            "misconceptions": {"active": [], "suspected": []},
+        }
+        self.assertEqual(len(frontier(rep_all)), 0)
+        complete_plan = generate_study_plan(rep_all)
+        self.assertEqual(len(complete_plan["steps"]), 1)
+        self.assertEqual(complete_plan["steps"][0]["kind"], "reevaluation")
+        self.assertEqual(complete_plan["reason"], "Course complete - mixed review")
+        self.assertTrue(complete_plan["coverage"]["ok"])
+
+    def test_advance_never_repeats_mastered_concepts(self):
+        """Advance steps only target unmastered concepts, never repeating mastered ones."""
+        from core.concepts import CONCEPTS
+
+        rep = {
+            "total_questions_attempted": 20,
+            "concept_stats": {
+                "class-definition": {"mastery": 85.0, "attempts": 5},
+                "object-instantiation": {"mastery": 80.0, "attempts": 5},
+            },
+            "weak_topics": [],
+            "moderate_topics": [],
+            "strong_topics": ["class-definition", "object-instantiation"],
+            "misconceptions": {"active": [], "suspected": []},
+            "due_for_review": [],
+        }
+        plan = generate_study_plan(rep)
+        advance_steps = [s for s in plan["steps"] if s["kind"] == "advance"]
+        self.assertGreater(len(advance_steps), 0)
+
+        for s in advance_steps:
+            c = s["concept"]
+            # Must not be an already-mastered concept
+            mst = rep["concept_stats"].get(c, {}).get("mastery", 0.0)
+            self.assertLess(mst, 70.0, f"Advance step {c} cannot be for a mastered concept")
+            self.assertNotIn(c, ["class-definition", "object-instantiation"])
+
+    def test_check_step_creation_placement_cap_deferral(self):
+        """Unproven prerequisites become 'check' quiz steps, placed before dependents, capped at 4."""
+        # Dynamic-method-dispatch depends on method-overriding which depends on inheritance-basics which depends on class-definition
+        rep = {
+            "total_questions_attempted": 5,
+            "weak_topics": ["dynamic-method-dispatch"],
+            "concept_stats": {
+                "dynamic-method-dispatch": {"mastery": 20.0, "attempts": 5},
+                # method-overriding, inheritance-basics, class-definition have NO attempt data
+            },
+            "misconceptions": {"active": [], "suspected": []},
+            "due_for_review": [],
+        }
+        plan = generate_study_plan(rep)
+        check_steps = [s for s in plan["steps"] if s["kind"] == "check"]
+        check_concepts = [s["concept"] for s in check_steps]
+
+        # Verify kind is 'check', quiz parameters stored in focus, no prompt_text
+        self.assertGreater(len(check_steps), 0)
+        for s in check_steps:
+            self.assertEqual(s["kind"], "check")
+            self.assertEqual(s["difficulty"], "Easy")
+            self.assertIsNone(s["lesson_style"])
+            self.assertIsNone(s["prompt_text"])
+            self.assertEqual(s["focus"]["quiz_kind"], "practice")
+            self.assertEqual(s["focus"]["n"], 3)
+
+        # Verify topological placement: check steps precede their dependents
+        all_concepts = [s["concept"] for s in plan["steps"]]
+        dmd_idx = all_concepts.index("dynamic-method-dispatch")
+        for chk in check_concepts:
+            chk_idx = all_concepts.index(chk)
+            self.assertLess(chk_idx, dmd_idx, f"Check step {chk} must precede dependent dynamic-method-dispatch")
+
+        # Test check step cap of 4
+        # Add 6 unproven prerequisites by including multiple independent seeds
+        rep_many_unproven = {
+            "total_questions_attempted": 10,
+            "weak_topics": ["dynamic-method-dispatch", "try-with-resources", "downcasting"],
+            "concept_stats": {
+                "dynamic-method-dispatch": {"mastery": 20.0, "attempts": 5},
+                "try-with-resources": {"mastery": 20.0, "attempts": 5},
+                "downcasting": {"mastery": 20.0, "attempts": 5},
+            },
+            "misconceptions": {"active": [], "suspected": []},
+            "due_for_review": [],
+        }
+        plan_capped = generate_study_plan(rep_many_unproven, check_cap=4)
+        retained_checks = [s for s in plan_capped["steps"] if s["kind"] == "check"]
+        self.assertLessEqual(len(retained_checks), 4)
+
+    def test_plan_after_check_both_branches(self):
+        """plan_after_check converts failed check (<50) to prerequisite lesson; marks passed check (>=50) done."""
+        rep = {
+            "total_questions_attempted": 5,
+            "weak_topics": ["dynamic-method-dispatch"],
+            "concept_stats": {"dynamic-method-dispatch": {"mastery": 20.0, "attempts": 5}},
+            "misconceptions": {"active": [], "suspected": []},
+            "due_for_review": [],
+        }
+        plan = generate_study_plan(rep)
+        check_steps = [s for s in plan["steps"] if s["kind"] == "check"]
+        self.assertGreater(len(check_steps), 0)
+        target_concept = check_steps[0]["concept"]
+
+        # Branch 1: Check score < 50% -> converts to prerequisite lesson step
+        updated_fail = plan_after_check(plan, target_concept, check_mastery=35.0, report=rep)
+        converted_step = next(s for s in updated_fail["steps"] if s["concept"] == target_concept)
+        self.assertEqual(converted_step["kind"], "prerequisite")
+        self.assertEqual(converted_step["difficulty"], "Easy")
+        self.assertEqual(converted_step["lesson_style"], "simplified")
+        self.assertIsNotNone(converted_step["prompt_text"])
+        self.assertIn("Prerequisite check failed", converted_step["reason"])
+
+        # Branch 2: Check score >= 50% -> marks done, preserves dependents
+        updated_pass = plan_after_check(plan, target_concept, check_mastery=75.0, report=rep)
+        passed_step = next(s for s in updated_pass["steps"] if s["concept"] == target_concept)
+        self.assertEqual(passed_step["kind"], "check")
+        self.assertEqual(passed_step["status"], "done")
+        self.assertIn("Prerequisite check passed", passed_step["reason"])
+
+    def test_skill_gap_difficulty_cap(self):
+        """Step whose only reason is a skill gap gets difficulty capped at Medium."""
+        rep = {
+            "total_questions_attempted": 12,
+            "weak_topics": [],
+            "moderate_topics": ["class-definition"],
+            "strong_topics": [],
+            "concept_stats": {"class-definition": {"mastery": 80.0, "attempts": 12}},
+            "skill_profile": {
+                "by_module": {
+                    "classes-objects": {
+                        "concept": {"attempts": 6, "accuracy": 100.0},
+                        "code_output": {"attempts": 6, "accuracy": 20.0},
+                    }
+                },
+                "skill_gaps": ["Knows theory but struggles with code tracing"],
+            },
+            "misconceptions": {"active": [], "suspected": []},
+            "due_for_review": [],
+        }
+        plan = generate_study_plan(rep)
+        step = next(s for s in plan["steps"] if s["concept"] == "class-definition")
+        self.assertEqual(step["difficulty"], "Medium")
+        self.assertEqual(step["lesson_style"], "detailed")
+        self.assertIn("code-tracing examples", step["prompt_text"])
+
+    def test_plan_step_concepts_helper(self):
+        """plan_step_concepts extracts targeted concepts for single, probe, and reevaluation steps."""
+        single_step = {"concept": "class-definition", "kind": "weak", "focus": {}}
+        self.assertEqual(plan_step_concepts(single_step), ["class-definition"])
+
+        probe_step = {"concept": "inheritance-basics", "kind": "probe", "focus": {"concept": "inheritance-basics"}}
+        self.assertEqual(plan_step_concepts(probe_step), ["inheritance-basics"])
+
+        reeval_step = {
+            "concept": "all-plan-concepts",
+            "kind": "reevaluation",
+            "focus": {"concepts": ["class-definition", "inheritance-basics", "method-overriding"]},
+        }
+        self.assertEqual(
+            plan_step_concepts(reeval_step),
+            ["class-definition", "inheritance-basics", "method-overriding"],
+        )
 
 
 class TestCoverageChecker(unittest.TestCase):
@@ -287,6 +478,18 @@ class TestCoverageChecker(unittest.TestCase):
         self.assertFalse(cov["ok"])
         violations_str = " ".join(cov["violations"])
         self.assertIn("inheritance-basics", violations_str)
+
+    def test_check_step_does_not_cover_weak_concept(self):
+        """A check step satisfies prerequisite ordering, but does not count as covering a weak concept."""
+        flawed_plan = json.loads(json.dumps(self.valid_plan))
+        for s in flawed_plan["steps"]:
+            if s.get("concept") == "dynamic-method-dispatch":
+                s["kind"] = "check"
+
+        cov = check_coverage(flawed_plan, self.report)
+        self.assertFalse(cov["ok"])
+        violations_str = " ".join(cov["violations"])
+        self.assertIn("dynamic-method-dispatch", violations_str)
 
 
 class TestStudyPlanIntegrationAndSecurity(unittest.TestCase):
