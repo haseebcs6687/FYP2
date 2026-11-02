@@ -859,3 +859,85 @@ def api_logs():
 def api_logs_clear():
     clear_logs()
     return jsonify({"status": "cleared"})
+
+
+# ═════════════════════════════════════════════════════════════
+# Study Plan (Phase 6)
+# ═════════════════════════════════════════════════════════════
+@bp.get("/plan")
+@api_login_required
+def api_get_plan():
+    """Retrieve active study plan, coverage check, and deferred items."""
+    student_id = current_student_id()
+    plan = agents()["ac"].get_active_plan(student_id)
+    if not plan:
+        return jsonify({"plan": None, "coverage": {}, "deferred": [], "message": "No active study plan found."})
+    return jsonify({
+        "plan": plan,
+        "coverage": plan.get("coverage", {}),
+        "deferred": plan.get("deferred", []),
+    })
+
+
+@bp.post("/plan/build")
+@api_login_required
+def api_build_plan():
+    """Generate or replan the active study plan for current student."""
+    student_id = current_student_id()
+    plan = agents()["ac"].build_plan(student_id)
+    return jsonify({
+        "plan": plan,
+        "coverage": plan.get("coverage", {}),
+        "deferred": plan.get("deferred", []),
+    })
+
+
+@bp.post("/plan/step/<int:step_id>/status")
+@api_login_required
+def api_update_step_status(step_id):
+    """
+    Update step lifecycle status (pending -> in_progress -> done | skipped).
+    Student may only modify steps in their own active plan.
+    """
+    student_id = current_student_id()
+    from core.db_repo import get_study_plan_step, get_study_plan_by_id
+
+    step = get_study_plan_step(step_id)
+    if not step:
+        return jsonify({"error": f"Step {step_id} not found"}), 404
+
+    plan = get_study_plan_by_id(step["plan_id"])
+    if not plan or plan["student_id"] != student_id:
+        return jsonify({"error": "Forbidden: You do not own this study plan step"}), 403
+
+    data = request.get_json(silent=True) or {}
+    new_status = data.get("status")
+    if not new_status or new_status not in ("pending", "in_progress", "done", "skipped"):
+        return jsonify({"error": "Invalid status. Must be pending, in_progress, done, or skipped"}), 400
+
+    result = agents()["ac"].update_step(step_id, status=new_status)
+    return jsonify(result)
+
+
+@bp.post("/plan/step/<int:step_id>/note")
+@api_login_required
+def api_update_step_note(step_id):
+    """
+    Update student note on a study plan step and rebuild prompt_text.
+    Student may only modify steps in their own active plan.
+    """
+    student_id = current_student_id()
+    from core.db_repo import get_study_plan_step, get_study_plan_by_id
+
+    step = get_study_plan_step(step_id)
+    if not step:
+        return jsonify({"error": f"Step {step_id} not found"}), 404
+
+    plan = get_study_plan_by_id(step["plan_id"])
+    if not plan or plan["student_id"] != student_id:
+        return jsonify({"error": "Forbidden: You do not own this study plan step"}), 403
+
+    data = request.get_json(silent=True) or {}
+    note = data.get("note", "")
+    result = agents()["ac"].update_step(step_id, user_note=note)
+    return jsonify(result)

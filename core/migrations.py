@@ -480,12 +480,30 @@ def migration_5_bkt_and_misconceptions(conn):
     """)
 
 
+def migration_6_study_planner(conn):
+    """
+    Migration 6 (Phase 6): Adaptive Content Agent Study Planner
+    Additive only:
+      - study_plan_steps: ADD lesson_style TEXT, focus_json TEXT, priority REAL, est_minutes INTEGER
+      - study_plans: ADD coverage_json TEXT, deferred_json TEXT
+    """
+    cur = conn.cursor()
+    _add_column(cur, "study_plan_steps", "lesson_style", "TEXT")
+    _add_column(cur, "study_plan_steps", "focus_json", "TEXT")
+    _add_column(cur, "study_plan_steps", "priority", "REAL DEFAULT 0.0")
+    _add_column(cur, "study_plan_steps", "est_minutes", "INTEGER DEFAULT 10")
+
+    _add_column(cur, "study_plans", "coverage_json", "TEXT")
+    _add_column(cur, "study_plans", "deferred_json", "TEXT")
+
+
 MIGRATIONS = [
     (1, "initial_schema", migration_1_initial),
     (2, "analytics_and_evidence", migration_2_new_tables),
     (3, "misconceptions_and_facets", migration_3_misconceptions_and_facets),
     (4, "verified_pool", migration_4_verified_pool),
     (5, "bkt_and_misconceptions", migration_5_bkt_and_misconceptions),
+    (6, "study_planner", migration_6_study_planner),
 ]
 
 

@@ -11,6 +11,7 @@ student learning sessions, quizzes, or agent pipelines.
 import hashlib
 import json
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.agent_log import add_log
 from core.db import get_db
@@ -487,3 +488,332 @@ def list_quarantined(conn=None):
             except Exception:
                 pass
     return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STUDY PLAN PERSISTENCE (PHASE 6)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_study_plan(student_id: int, plan_dict: Dict[str, Any], conn=None) -> Dict[str, Any]:
+    """
+    Persist a newly generated study plan.
+    - Sets any existing 'active' plan for this student to 'superseded'.
+    - Inserts the new plan and all its steps inside an explicit transaction.
+    - Returns the saved plan dictionary with step IDs.
+    """
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+
+    try:
+        cur = conn.cursor()
+        # Supersede previous active plan
+        cur.execute(
+            "UPDATE study_plans SET status = 'superseded' WHERE student_id = ? AND status = 'active'",
+            (student_id,),
+        )
+
+        summary = plan_dict.get("summary", "")
+        analysis_json = json.dumps(plan_dict.get("analysis", {}))
+        coverage_json = json.dumps(plan_dict.get("coverage", {}))
+        deferred_json = json.dumps(plan_dict.get("deferred", []))
+
+        cur.execute(
+            """INSERT INTO study_plans (student_id, status, summary, analysis_json, coverage_json, deferred_json)
+               VALUES (?, 'active', ?, ?, ?, ?)""",
+            (student_id, summary, analysis_json, coverage_json, deferred_json),
+        )
+        plan_id = cur.lastrowid
+
+        saved_steps = []
+        for pos, s in enumerate(plan_dict.get("steps", []), start=1):
+            concept = s.get("concept", "")
+            difficulty = s.get("difficulty", "Easy")
+            kind = s.get("kind", "weak")
+            status = s.get("status", "pending")
+            reason = s.get("reason", "")
+            prompt_text = s.get("prompt_text")
+            user_note = s.get("user_note")
+            step_cov = json.dumps(s.get("coverage_json", {})) if s.get("coverage_json") else None
+            lesson_style = s.get("lesson_style")
+            focus_json = json.dumps(s.get("focus", {}))
+            priority = float(s.get("priority", 0.0))
+            est_minutes = int(s.get("est_minutes", 10))
+
+            cur.execute(
+                """INSERT INTO study_plan_steps (
+                    plan_id, position, concept, difficulty, kind, status, reason,
+                    prompt_text, user_note, coverage_json, lesson_style, focus_json,
+                    priority, est_minutes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    plan_id, pos, concept, difficulty, kind, status, reason,
+                    prompt_text, user_note, step_cov, lesson_style, focus_json,
+                    priority, est_minutes,
+                ),
+            )
+            step_id = cur.lastrowid
+            saved_step = dict(s)
+            saved_step["id"] = step_id
+            saved_step["plan_id"] = plan_id
+            saved_step["position"] = pos
+            saved_steps.append(saved_step)
+
+        conn.commit()
+
+        out_plan = dict(plan_dict)
+        out_plan["id"] = plan_id
+        out_plan["student_id"] = student_id
+        out_plan["status"] = "active"
+        out_plan["steps"] = saved_steps
+        return out_plan
+    except Exception as exc:
+        conn.rollback()
+        add_log("Database", f"create_study_plan failed: {exc}", "error")
+        raise
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_active_study_plan(student_id: int, conn=None) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve the active study plan for student_id, including all steps ordered by position.
+    """
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+
+    try:
+        row = conn.execute(
+            """SELECT * FROM study_plans
+               WHERE student_id = ? AND status = 'active'
+               ORDER BY id DESC LIMIT 1""",
+            (student_id,),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        plan_data = dict(row)
+        plan_id = plan_data["id"]
+
+        # Parse JSON fields
+        for j_col in ("coverage_json", "deferred_json", "analysis_json"):
+            if plan_data.get(j_col):
+                try:
+                    plan_data[j_col.replace("_json", "")] = json.loads(plan_data[j_col])
+                except Exception:
+                    plan_data[j_col.replace("_json", "")] = {}
+            else:
+                plan_data[j_col.replace("_json", "")] = {} if j_col != "deferred_json" else []
+
+        step_rows = conn.execute(
+            """SELECT * FROM study_plan_steps
+               WHERE plan_id = ?
+               ORDER BY position ASC""",
+            (plan_id,),
+        ).fetchall()
+
+        steps = []
+        for r in step_rows:
+            sd = dict(r)
+            if sd.get("focus_json"):
+                try:
+                    sd["focus"] = json.loads(sd["focus_json"])
+                except Exception:
+                    sd["focus"] = {}
+            else:
+                sd["focus"] = {}
+            steps.append(sd)
+
+        plan_data["steps"] = steps
+        return plan_data
+    except Exception as exc:
+        add_log("Database", f"get_active_study_plan failed: {exc}", "error")
+        return None
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_study_plan_by_id(plan_id: int, conn=None) -> Optional[Dict[str, Any]]:
+    """Retrieve any study plan by its ID."""
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+
+    try:
+        row = conn.execute(
+            "SELECT * FROM study_plans WHERE id = ?",
+            (plan_id,),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        plan_data = dict(row)
+        for j_col in ("coverage_json", "deferred_json", "analysis_json"):
+            if plan_data.get(j_col):
+                try:
+                    plan_data[j_col.replace("_json", "")] = json.loads(plan_data[j_col])
+                except Exception:
+                    plan_data[j_col.replace("_json", "")] = {}
+            else:
+                plan_data[j_col.replace("_json", "")] = {} if j_col != "deferred_json" else []
+
+        step_rows = conn.execute(
+            "SELECT * FROM study_plan_steps WHERE plan_id = ? ORDER BY position ASC",
+            (plan_id,),
+        ).fetchall()
+
+        steps = []
+        for r in step_rows:
+            sd = dict(r)
+            if sd.get("focus_json"):
+                try:
+                    sd["focus"] = json.loads(sd["focus_json"])
+                except Exception:
+                    sd["focus"] = {}
+            else:
+                sd["focus"] = {}
+            steps.append(sd)
+
+        plan_data["steps"] = steps
+        return plan_data
+    except Exception as exc:
+        add_log("Database", f"get_study_plan_by_id failed: {exc}", "error")
+        return None
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_study_plan_step(step_id: int, conn=None) -> Optional[Dict[str, Any]]:
+    """Retrieve a single study plan step by ID."""
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+
+    try:
+        row = conn.execute(
+            "SELECT * FROM study_plan_steps WHERE id = ?",
+            (step_id,),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        sd = dict(row)
+        if sd.get("focus_json"):
+            try:
+                sd["focus"] = json.loads(sd["focus_json"])
+            except Exception:
+                sd["focus"] = {}
+        else:
+            sd["focus"] = {}
+        return sd
+    except Exception as exc:
+        add_log("Database", f"get_study_plan_step failed: {exc}", "error")
+        return None
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def update_study_plan_step(
+    step_id: int,
+    status: Optional[str] = None,
+    user_note: Optional[str] = None,
+    prompt_text: Optional[str] = None,
+    conn=None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Update step lifecycle status, user note, or prompt text.
+    Maintains started_at and completed_at timestamps.
+    """
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+
+    try:
+        cur = conn.cursor()
+        updates = []
+        params = []
+
+        if status:
+            updates.append("status = ?")
+            params.append(status)
+            if status == "in_progress":
+                updates.append("started_at = COALESCE(started_at, CURRENT_TIMESTAMP)")
+            elif status in ("done", "skipped"):
+                updates.append("completed_at = CURRENT_TIMESTAMP")
+
+        if user_note is not None:
+            updates.append("user_note = ?")
+            params.append(user_note)
+
+        if prompt_text is not None:
+            updates.append("prompt_text = ?")
+            params.append(prompt_text)
+
+        if not updates:
+            return get_study_plan_step(step_id, conn=conn)
+
+        params.append(step_id)
+        sql = f"UPDATE study_plan_steps SET {', '.join(updates)} WHERE id = ?"
+        cur.execute(sql, params)
+        conn.commit()
+
+        return get_study_plan_step(step_id, conn=conn)
+    except Exception as exc:
+        conn.rollback()
+        add_log("Database", f"update_study_plan_step failed: {exc}", "error")
+        return None
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def update_study_plan_coverage(plan_id: int, coverage_dict: Dict[str, Any], conn=None):
+    """Update the coverage_json field of a study plan."""
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+
+    try:
+        cov_str = json.dumps(coverage_dict)
+        conn.execute(
+            "UPDATE study_plans SET coverage_json = ? WHERE id = ?",
+            (cov_str, plan_id),
+        )
+        conn.commit()
+    except Exception as exc:
+        add_log("Database", f"update_study_plan_coverage failed: {exc}", "error")
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass

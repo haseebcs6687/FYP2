@@ -138,6 +138,12 @@ def library():
     return render_template("library.html", **_ctx(page="library"))
 
 
+@bp.route("/plan")
+@login_required
+def plan():
+    return render_template("plan.html", **_ctx(page="plan"))
+
+
 @bp.route("/about")
 def about():
     return render_template("about.html", **_ctx(page="about"))

@@ -321,6 +321,149 @@ class AdaptiveContentAgent(object):
             "rule": decision["rule"],
         }
 
+    # ─────────────────────────────────────────────────────────
+    # Phase 6 Additions: Study Plan Methods
+    # ─────────────────────────────────────────────────────────
+    def build_plan(self, student_id, report=None):
+        """
+        Build an ordered, prerequisite-closed study plan for student_id.
+        Persists to DB and supersedes any existing active plan.
+        """
+        import time
+        from datetime import datetime
+        from core.study_planner import generate_study_plan, check_coverage
+        from core.db_repo import create_study_plan
+
+        t0 = time.time()
+        if report is None:
+            from agents.performance_analysis_agent import PerformanceAnalysisAgent
+            pa = PerformanceAnalysisAgent(log=self.log)
+            report = pa.analyze_student(student_id)
+
+        plan = generate_study_plan(report)
+        plan["analysis"] = {
+            "overall_performance": report.get("overall_performance", 0.0),
+            "weak_topics": report.get("weak_topics", []),
+            "moderate_topics": report.get("moderate_topics", []),
+            "strong_topics": report.get("strong_topics", []),
+            "due_for_review": report.get("due_for_review", []),
+            "misconceptions": report.get("misconceptions", {}),
+            "concept_stats": report.get("concept_stats", {}),
+            "facet_map": report.get("facet_map", {}),
+            "skill_profile": report.get("skill_profile", {}),
+            "total_questions_attempted": report.get("total_questions_attempted", 0),
+        }
+
+        saved_plan = create_study_plan(student_id, plan)
+
+        elapsed_ms = int((time.time() - t0) * 1000)
+        steps_count = len(saved_plan.get("steps", []))
+        def_count = len(saved_plan.get("deferred", []))
+        cov = saved_plan.get("coverage", {})
+        cov_ok = cov.get("ok", False)
+
+        self._emit(
+            f"Plan built: {steps_count} steps, {def_count} deferred in {elapsed_ms} ms",
+            "success" if cov_ok else "warning",
+            {"steps": steps_count, "deferred": def_count, "elapsed_ms": elapsed_ms},
+        )
+        self._emit(
+            f"Coverage check: {'PASSED (5/5 checks passed)' if cov_ok else 'VIOLATIONS DETECTED'}",
+            "info" if cov_ok else "warning",
+            cov,
+        )
+
+        return saved_plan
+
+    def get_active_plan(self, student_id):
+        """Fetch current active study plan for student_id from db_repo."""
+        from core.db_repo import get_active_study_plan
+        return get_active_study_plan(student_id)
+
+    def update_step(self, step_id, status=None, user_note=None):
+        """
+        Update a step's lifecycle status or user note.
+        Rebuilds step prompt if user_note is modified.
+        Re-evaluates coverage if step status changes (e.g. skipped).
+        """
+        from core.db_repo import (
+            get_study_plan_step,
+            get_study_plan_by_id,
+            update_study_plan_step,
+            update_study_plan_coverage,
+        )
+        from core.study_planner import check_coverage, format_step_prompt
+
+        step = get_study_plan_step(step_id)
+        if not step:
+            return {"ok": False, "error": f"Step {step_id} not found"}
+
+        plan_id = step["plan_id"]
+        plan = get_study_plan_by_id(plan_id)
+        if not plan:
+            return {"ok": False, "error": f"Plan {plan_id} not found"}
+
+        new_prompt = None
+        clean_note = None
+        if user_note is not None:
+            clean_note = user_note.strip()[:400]
+            preceding = []
+            for s in plan.get("steps", []):
+                if s["position"] < step["position"] and s.get("kind") not in ("probe", "reevaluation"):
+                    preceding.append(s.get("title") or s.get("concept"))
+            step["user_note"] = clean_note
+            new_prompt = format_step_prompt(step, preceding_titles=preceding, user_note=clean_note)
+
+        updated_step = update_study_plan_step(
+            step_id=step_id,
+            status=status,
+            user_note=clean_note if user_note is not None else None,
+            prompt_text=new_prompt,
+        )
+
+        fresh_plan = get_study_plan_by_id(plan_id)
+        analysis_dict = fresh_plan.get("analysis", {})
+        cov = check_coverage(fresh_plan, analysis_dict)
+        update_study_plan_coverage(plan_id, cov)
+        fresh_plan["coverage"] = cov
+
+        warnings = []
+        if status == "skipped":
+            if not cov.get("ok"):
+                for v in cov.get("violations", []):
+                    warnings.append(f"Skipping step {step['position']} ({step['concept']}) broke coverage: {v}")
+                self._emit(
+                    f"Step {step['position']} ({step['concept']}) skipped with warnings: {'; '.join(cov.get('violations', []))}",
+                    "warning",
+                    {"step_id": step_id, "violations": cov.get("violations")},
+                )
+            else:
+                self._emit(
+                    f"Step {step['position']} ({step['concept']}) skipped without breaking coverage",
+                    "info",
+                    {"step_id": step_id},
+                )
+        elif status:
+            self._emit(
+                f"Step {step['position']} ({step['concept']}) status updated to '{status}'",
+                "info",
+                {"step_id": step_id, "status": status},
+            )
+
+        return {
+            "ok": True,
+            "step": updated_step,
+            "coverage": cov,
+            "warnings": warnings,
+        }
+
+    def replan(self, student_id):
+        """Fetch fresh analysis and generate a new study plan."""
+        from agents.performance_analysis_agent import PerformanceAnalysisAgent
+        pa = PerformanceAnalysisAgent(log=self.log)
+        fresh_report = pa.analyze_student(student_id)
+        return self.build_plan(student_id, report=fresh_report)
+
 
 WEAK_MIDPOINT = 42.0
 

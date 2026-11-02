@@ -239,14 +239,18 @@ def compute_misconception_stats(
         severity = round(float(chosen) * (0.9 ** avoided), 3)
 
         # Status classification
-        if chosen >= 2 and avoided < 2:
+        # Chance Argument: If chosen / offered < 0.5, the distractor choice rate is consistent
+        # with random slips or guessing across 4-option MCQs (~25-33% distractor selection rate)
+        # rather than a systematic mental model defect. A misconception is classified as ACTIVE
+        # only if chosen >= 2 AND chosen/offered >= 0.5 AND avoided_streak < 2.
+        # Otherwise, if avoided_streak >= 2 it is 'resolved', else it stays 'suspected'.
+        ratio = (chosen / offered) if offered > 0 else 0.0
+        if chosen >= 2 and ratio >= 0.5 and avoided < 2:
             status = "active"
         elif chosen >= 1 and avoided >= 2:
             status = "resolved"
-        elif chosen == 1 and avoided < 2:
-            status = "suspected"
         else:
-            status = "resolved"
+            status = "suspected"
 
         rec["status"] = status
         rec["severity"] = severity

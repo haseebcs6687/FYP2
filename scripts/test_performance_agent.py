@@ -119,7 +119,7 @@ class TestMisconceptionLifecycle(unittest.TestCase):
         self.assertEqual(item["avoided_streak"], 0)
 
     def test_active_transition(self):
-        """Chosen >= 2 times with avoided_streak < 2 -> active."""
+        """Chosen >= 2 times with chosen/offered >= 0.5 and avoided_streak < 2 -> active."""
         attempts = [
             {
                 "timestamp": "2026-11-01 10:00:00",
@@ -144,6 +144,26 @@ class TestMisconceptionLifecycle(unittest.TestCase):
         self.assertEqual(item["status"], "active")
         self.assertEqual(item["chosen"], 2)
         self.assertEqual(item["avoided_streak"], 0)
+
+    def test_low_ratio_remains_suspected(self):
+        """Chosen >= 2 times but chosen/offered < 0.5 with avoided_streak < 2 remains suspected."""
+        # 5 offers: chosen 2 times, avoided 1 time, but 2/5 = 0.4 < 0.5
+        attempts = [
+            {"timestamp": "2026-11-01 10:00:00", "concept": "method-overriding", "offered_misconceptions": [self.mid], "misconception_id": self.mid, "is_correct": False},
+            {"timestamp": "2026-11-01 10:01:00", "concept": "method-overriding", "offered_misconceptions": [self.mid], "misconception_id": None, "is_correct": True},
+            {"timestamp": "2026-11-01 10:02:00", "concept": "method-overriding", "offered_misconceptions": [self.mid], "misconception_id": None, "is_correct": True},
+            {"timestamp": "2026-11-01 10:03:00", "concept": "method-overriding", "offered_misconceptions": [self.mid], "misconception_id": self.mid, "is_correct": False},
+            {"timestamp": "2026-11-01 10:04:00", "concept": "method-overriding", "offered_misconceptions": [self.mid], "misconception_id": None, "is_correct": True},
+        ]
+        res = compute_misconception_stats(attempts)
+        self.assertEqual(len(res["active"]), 0)
+        self.assertEqual(len(res["suspected"]), 1)
+        self.assertEqual(len(res["resolved"]), 0)
+        item = res["suspected"][0]
+        self.assertEqual(item["status"], "suspected")
+        self.assertEqual(item["chosen"], 2)
+        self.assertEqual(item["offered"], 5)
+        self.assertEqual(item["avoided_streak"], 1)
 
     def test_resolved_transition(self):
         """Chosen >= 1 time, followed by 2 consecutive avoidances -> resolved."""
