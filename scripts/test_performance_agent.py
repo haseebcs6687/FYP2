@@ -79,6 +79,20 @@ class TestBKTMonotonicity(unittest.TestCase):
         self.assertEqual(get_confidence(6), "high")
         self.assertEqual(get_confidence(20), "high")
 
+    def test_mastery_display_clamp(self):
+        """7 consecutive correct answers reach p_known > 0.99 but displayed mastery is clamped to 98.0% (not 100%)."""
+        from core.pa_model import clamp_mastery
+        events = [{"is_correct": True, "difficulty": "Medium"} for _ in range(7)]
+        p_known, _ = compute_concept_bkt(events)
+        self.assertGreater(p_known, 0.99)
+        self.assertEqual(clamp_mastery(100.0 * p_known), 98.0)
+
+        # Lower bound clamp
+        events_fail = [{"is_correct": False, "difficulty": "Easy"} for _ in range(7)]
+        p_fail, _ = compute_concept_bkt(events_fail)
+        self.assertLess(p_fail, 0.05)
+        self.assertEqual(clamp_mastery(100.0 * p_fail), 2.0)
+
 
 class TestMisconceptionLifecycle(unittest.TestCase):
     def setUp(self):

@@ -61,6 +61,7 @@ from core.pa_model import (
     MIN_ATTEMPTS,
     STRONG_THRESHOLD,
     WEAK_THRESHOLD,
+    clamp_mastery,
     compute_concept_bkt,
     compute_facet_map,
     compute_misconception_stats,
@@ -247,9 +248,9 @@ class PerformanceAnalysisAgent(object):
             correct = sum(1 for e in events if e["is_correct"])
             accuracy = round(100.0 * correct / total, 1)
 
-            # BKT mastery over chronological sequence (Phase 5)
+            # BKT mastery over chronological sequence (Phase 5, display clamped to [2.0, 98.0])
             p_known, ewma_accuracy = compute_concept_bkt(events)
-            mastery = round(100.0 * p_known, 1)
+            mastery = clamp_mastery(100.0 * p_known)
             confidence = get_confidence(total)
 
             trend = _trend(events)
@@ -408,7 +409,7 @@ class PerformanceAnalysisAgent(object):
                 "attempts": bucket["attempts"],
                 "accuracy": round(100.0 * bucket["correct"] / bucket["attempts"], 1)
                 if bucket["attempts"] else 0.0,
-                "mastery": round(bucket["mastery_sum"] / bucket["concepts"], 1)
+                "mastery": clamp_mastery(bucket["mastery_sum"] / bucket["concepts"])
                 if bucket["concepts"] else 0.0,
                 "concepts": bucket["concepts"],
             })

@@ -32,8 +32,11 @@ For prior probability $P = P(L_{t-1})$:
 2. **Learning Transition Between Opportunities**:
    $$P(L_{t+1}) = P(L_t | obs) + (1 - P(L_t | obs)) \cdot P_{learn}$$
 
-3. **Mastery Score & Confidence**:
-   - $\text{Mastery} = 100 \times P(L_t | obs) \in [0.0, 100.0]$
+3. **Mastery Score, Display Clamping & Confidence**:
+   - Underlying probabilistic belief is preserved raw as `p_known` $= P(L_t | obs) \in [0.0, 1.0]$.
+   - Displayed concept and module mastery is clamped:
+     $$\text{Mastery} = \text{clamp}(100 \times P(L_t | obs), 2.0, 98.0) \in [2.0, 98.0]$$
+     This prevents misleading 0.0% or 100.0% saturation (e.g. after consecutive correct streaks) while ensuring adaptive rule thresholds (`WEAK_THRESHOLD = 50.0`, `STRONG_THRESHOLD = 80.0`) remain fully responsive.
    - Confidence levels: `low` (< 3 attempts), `medium` (3–5 attempts), `high` ($\ge 6$ attempts).
 
 #### Monotonicity Properties

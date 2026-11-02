@@ -57,6 +57,16 @@ WEAK_THRESHOLD = 50.0        # BKT mastery (0-100) below this -> weak
 STRONG_THRESHOLD = 80.0      # BKT mastery at or above -> strong
 MIN_ATTEMPTS = 2             # Fewer attempts -> insufficient evidence
 EWMA_ALPHA = 0.45            # Recency weight for legacy EWMA comparison
+MASTERY_MIN_DISPLAY = 2.0    # Display clamp lower bound
+MASTERY_MAX_DISPLAY = 98.0   # Display clamp upper bound
+
+
+def clamp_mastery(val: float) -> float:
+    """
+    Clamps displayed mastery percentage to [2.0, 98.0] to prevent misleading
+    0.0% or 100.0% saturation while keeping underlying p_known raw.
+    """
+    return round(min(MASTERY_MAX_DISPLAY, max(MASTERY_MIN_DISPLAY, float(val))), 1)
 
 
 def update_bkt(p_known: float, is_correct: bool, difficulty: str = "Medium", apply_transition: bool = True) -> float:
