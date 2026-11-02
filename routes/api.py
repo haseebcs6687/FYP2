@@ -281,7 +281,9 @@ def api_quiz_start():
     concept = data.get("concept")
     concepts = data.get("concepts")
     difficulty = data.get("difficulty")
-    count = max(1, min(int(data.get("count", 5)), 12))
+    raw_n = data.get("n") if data.get("n") is not None else data.get("count")
+    default_n = 8 if kind == "probe" else 5
+    count = max(1, min(int(raw_n if raw_n is not None else default_n), 12))
 
     payload = None
     main_concept = concept
@@ -341,13 +343,14 @@ def api_quiz_start():
 
     # Verified Pool & Live Fallback (Phase 4C)
     if payload is None:
-        from core.quiz_engine import build_blueprint, select_from_pool
+        from core.quiz_engine import build_blueprint, select_from_pool, select_probe_set
         from core.token_budget import are_all_models_exhausted
 
         slots = build_blueprint(
             kind=kind,
             student_id=student_id,
             concepts=concepts or ([concept] if concept else None),
+            concept=concept,
             n=count,
             difficulty=difficulty,
         )
@@ -359,7 +362,10 @@ def api_quiz_start():
             kind, main_concept, main_diff))
 
         # 1. Serve from verified active pool first
-        pool_served, unfilled_slots = select_from_pool(slots, student_id=student_id)
+        if kind == "probe":
+            pool_served, unfilled_slots = select_probe_set(slots, student_id=student_id)
+        else:
+            pool_served, unfilled_slots = select_from_pool(slots, student_id=student_id)
 
         live_questions = []
         live_payload = {}
@@ -425,6 +431,21 @@ def api_quiz_start():
             "warnings": live_br.get("warnings", []),
         }
 
+        if kind == "probe":
+            targets_requested = sorted(list({t for s in slots for t in s.get("target_misconceptions", [])}))
+            targets_covered = sorted(list({
+                m for q in combined_questions
+                for m in (q.get("option_misconception_ids") or [])
+                if m and m in targets_requested
+            }))
+            merged_br["probe"] = {
+                "concept": main_concept,
+                "targets_requested": len(targets_requested),
+                "targets_covered": len(targets_covered),
+                "served_from_pool": served_pool_count,
+                "generated_live": gen_live_count,
+            }
+
         gen_source = "pool" if not gen_live_count else ("pool+llm" if served_pool_count else live_payload.get("generated_by", "llm"))
         payload = {
             "concept": main_concept,
@@ -483,11 +504,14 @@ def api_quiz_start():
     br = payload.get("build_report")
     if br:
         rej = sum(br.get("rejected_by_reason", {}).values()) if isinstance(br.get("rejected_by_reason"), dict) else 0
-        resp["build_report_summary"] = {
+        summary = {
             "requested": br.get("requested", len(questions)),
             "accepted": br.get("accepted", len(questions)),
             "rejected": rej,
         }
+        if br.get("probe"):
+            summary["probe"] = br["probe"]
+        resp["build_report_summary"] = summary
     return jsonify(resp)
 
 

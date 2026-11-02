@@ -32,7 +32,7 @@ from agents.concept_clarifier_agent import ConceptClarifierAgent
 from core.db import get_db, init_db
 from core.db_repo import record_generated_questions, record_llm_call
 from core.migrations import run_migrations
-from core.quiz_engine import normalize_question, select_from_pool, serialize_embedding
+from core.quiz_engine import normalize_question, select_from_pool, select_probe_set, serialize_embedding
 from core.token_budget import (
     are_all_models_exhausted,
     check_429_exhaustion,
@@ -158,6 +158,19 @@ class TestPoolSelection(unittest.TestCase):
         self.assertEqual(len(served), 1)
         self.assertEqual(len(unfilled), 1)
         self.assertEqual(unfilled[0]["concept"], "inheritance-basics")
+
+    def test_select_probe_set_relaxed_difficulty(self):
+        """select_probe_set uses relaxed difficulty matching for probe slots."""
+        self._insert_pool_question(601, "class-definition", "Hard", "Class Hard Q")
+        slots = [{"concept": "class-definition", "difficulty": "Easy", "relax_difficulty": True, "target_misconceptions": []}]
+        served_reg, unfilled_reg = select_from_pool(slots, student_id=1)
+        self.assertEqual(len(served_reg), 0)
+        self.assertEqual(len(unfilled_reg), 1)
+
+        served_probe, unfilled_probe = select_probe_set(slots, student_id=1)
+        self.assertEqual(len(served_probe), 1)
+        self.assertEqual(len(unfilled_probe), 0)
+        self.assertEqual(served_probe[0]["id"], 601)
 
 
 class TestTokenBudget(unittest.TestCase):

@@ -215,11 +215,17 @@ def get_concept_mastery(student_id, concept):
 def default_difficulty_for_concept(student_id, concept):
     """
     Default difficulty from concept_mastery:
-      <0.40 Easy, 0.40-0.70 Medium, >0.70 Hard, unknown -> Easy.
+      <0.40 Easy, 0.40-0.70 Medium, >0.70 Hard (or <40, 40-70, >70 if percentage), unknown -> Easy.
     """
     mastery = get_concept_mastery(student_id, concept)
     if mastery is None:
         return "Easy"
+    if mastery > 1.0:
+        if mastery < 40.0:
+            return "Easy"
+        if mastery <= 70.0:
+            return "Medium"
+        return "Hard"
     if mastery < 0.40:
         return "Easy"
     if mastery <= 0.70:
@@ -288,7 +294,214 @@ def _foundational_concepts():
     return foundational[:12]
 
 
-def build_blueprint(kind="practice", student_id=None, concepts=None, n=None, difficulty=None):
+# ─────────────────────────────────────────────────────────────
+# 1.25 Probe Quiz Helpers (Phase 5C)
+# ─────────────────────────────────────────────────────────────
+def _is_concept_fully_probed(student_id, concept, conn=None):
+    """
+    Returns True if every catalog misconception of the concept has been
+    OFFERED >= 2 times to this student.
+    """
+    catalog = misconceptions_for(concept)
+    if not catalog:
+        return True
+    if not student_id:
+        return False
+
+    close_conn = False
+    if conn is None:
+        conn = get_db()
+        close_conn = True
+
+    try:
+        cur = conn.execute(
+            """SELECT qa.offered_misconceptions, qa.misconception_id
+               FROM question_attempts qa
+               JOIN quiz_results qr ON qa.quiz_result_id = qr.id
+               WHERE qr.student_id = ?""",
+            (student_id,),
+        )
+        offer_counts = collections.defaultdict(int)
+        for row in cur.fetchall():
+            raw = row["offered_misconceptions"]
+            found_mids = set()
+            if raw:
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    if isinstance(parsed, list):
+                        for mid in parsed:
+                            if mid:
+                                found_mids.add(mid)
+                except Exception:
+                    pass
+            chosen = row["misconception_id"]
+            if chosen:
+                found_mids.add(chosen)
+            for mid in found_mids:
+                offer_counts[mid] += 1
+
+        for m in catalog:
+            if offer_counts.get(m["id"], 0) < 2:
+                return False
+        return True
+    except Exception:
+        return False
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def _select_probe_concept(student_id):
+    """
+    Lowest-mastery concept that has >= 2 attempts and is not yet fully probed,
+    else the lowest-mastery concept overall.
+    """
+    if not student_id:
+        return ENTRY_CONCEPT
+
+    try:
+        conn = get_db()
+        rows = conn.execute(
+            """SELECT concept, mastery, attempts
+               FROM concept_mastery
+               WHERE student_id = ?
+               ORDER BY mastery ASC, attempts DESC""",
+            (student_id,),
+        ).fetchall()
+
+        # 1. Concept with >= 2 attempts and not yet fully probed
+        for r in rows:
+            c = r["concept"]
+            att = int(r["attempts"] or 0)
+            if c in CONCEPTS and att >= 2:
+                if not _is_concept_fully_probed(student_id, c, conn=conn):
+                    conn.close()
+                    return c
+
+        # 2. Any concept not yet fully probed
+        for r in rows:
+            c = r["concept"]
+            if c in CONCEPTS:
+                if not _is_concept_fully_probed(student_id, c, conn=conn):
+                    conn.close()
+                    return c
+
+        # 3. Lowest-mastery concept overall
+        for r in rows:
+            c = r["concept"]
+            if c in CONCEPTS:
+                conn.close()
+                return c
+
+        conn.close()
+    except Exception:
+        pass
+
+    fc = _foundational_concepts()
+    return fc[0] if fc else ENTRY_CONCEPT
+
+
+def _prioritize_probe_targets(student_id, concept):
+    """
+    All catalog misconceptions of concept ordered by priority:
+      1. chosen before by this student first (count descending)
+      2. never offered
+      3. fewest offers ascending
+      Deterministic tie-break (alphabetical).
+    """
+    catalog = misconceptions_for(concept)
+    if not catalog:
+        return []
+
+    all_mids = [m["id"] for m in catalog]
+    if not student_id:
+        return sorted(all_mids)
+
+    chose_counts = collections.defaultdict(int)
+    offer_counts = collections.defaultdict(int)
+
+    try:
+        conn = get_db()
+        cur = conn.execute(
+            """SELECT qa.misconception_id, qa.offered_misconceptions
+               FROM question_attempts qa
+               JOIN quiz_results qr ON qa.quiz_result_id = qr.id
+               WHERE qr.student_id = ?""",
+            (student_id,),
+        )
+        for row in cur.fetchall():
+            mid = row["misconception_id"]
+            if mid and mid in all_mids:
+                chose_counts[mid] += 1
+            raw = row["offered_misconceptions"]
+            found_in_row = set()
+            if raw:
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    if isinstance(parsed, list):
+                        for m in parsed:
+                            if m and m in all_mids:
+                                found_in_row.add(m)
+                except Exception:
+                    pass
+            if mid and mid in all_mids:
+                found_in_row.add(mid)
+            for m in found_in_row:
+                offer_counts[m] += 1
+        conn.close()
+    except Exception:
+        pass
+
+    def sort_key(m):
+        chosen = chose_counts.get(m, 0)
+        offered = offer_counts.get(m, 0)
+        if chosen > 0:
+            return (1, -chosen, offered, m)
+        elif offered == 0:
+            return (2, 0, 0, m)
+        else:
+            return (3, 0, offered, m)
+
+    return sorted(all_mids, key=sort_key)
+
+
+def _distribute_probe_targets(ordered_targets, n):
+    """
+    Distribute targets across n slots greedily so that each slot carries up to 3
+    targets NOT yet carried by earlier slots; wrap around when exhausted.
+    Guarantees no target is repeated before all are used once.
+    """
+    if not ordered_targets:
+        return [[] for _ in range(n)]
+
+    chunks = []
+    L = len(ordered_targets)
+    for i in range(0, L, 3):
+        chunks.append(ordered_targets[i : i + 3])
+
+    num_chunks = len(chunks)
+    slots_targets = []
+    for i in range(n):
+        slots_targets.append(list(chunks[i % num_chunks]))
+
+    return slots_targets
+
+
+def _probe_qtype_distribution(n):
+    """
+    Mostly 'concept' with at most 2 code-based slots.
+    """
+    if n <= 2:
+        return ["concept"] * n
+    if n == 3:
+        return ["concept", "code_output", "concept"]
+    types = ["concept"] * n
+    types[2] = "code_output"
+    types[min(5, n - 1)] = "code_output"
+    return types
+
+
+def build_blueprint(kind="practice", student_id=None, concepts=None, n=None, difficulty=None, concept=None):
     """
     Build a list of question slots for a quiz session.
     Each slot: {concept, difficulty, qtype, target_misconceptions:[ids]}.
@@ -301,6 +514,10 @@ def build_blueprint(kind="practice", student_id=None, concepts=None, n=None, dif
       'reevaluation':
         given concepts (or lowest 3), 2 slots each at difficulty,
         plus up to 2 retention slots from concepts mastered in last 14 days.
+      'probe':
+        concept-focused misconception sweep with relaxed difficulty.
+        Target concept is given or student's lowest-mastery unprobed concept.
+        n slots (default 8) carrying catalog misconceptions greedily distributed.
     """
     slots = []
 
@@ -319,6 +536,28 @@ def build_blueprint(kind="practice", student_id=None, concepts=None, n=None, dif
                 "difficulty": d,
                 "qtype": qt,
                 "target_misconceptions": targets,
+            })
+        return slots
+
+    if kind == "probe":
+        target_concept = concept or (concepts[0] if (concepts and isinstance(concepts, (list, tuple))) else concepts)
+        if not target_concept or target_concept not in CONCEPTS:
+            target_concept = _select_probe_concept(student_id)
+
+        slot_count = n if (isinstance(n, int) and n > 0) else 8
+        slot_diff = difficulty or default_difficulty_for_concept(student_id, target_concept)
+
+        ordered_targets = _prioritize_probe_targets(student_id, target_concept)
+        targets_per_slot = _distribute_probe_targets(ordered_targets, slot_count)
+        qtypes = _probe_qtype_distribution(slot_count)
+
+        for i in range(slot_count):
+            slots.append({
+                "concept": target_concept,
+                "difficulty": slot_diff,
+                "relax_difficulty": True,
+                "qtype": qtypes[i],
+                "target_misconceptions": targets_per_slot[i],
             })
         return slots
 
@@ -1011,6 +1250,215 @@ def select_from_pool(slots, student_id=None, seed=None):
         chosen = scored_candidates[0][1]
         served.append(chosen)
         used_qids.add(chosen["id"])
+
+    return served, unfilled
+
+
+# ─────────────────────────────────────────────────────────────
+# 1.7 Probe Set Selection (Phase 5C)
+# ─────────────────────────────────────────────────────────────
+def select_probe_set(slots, student_id=None, seed=None):
+    """
+    Select questions from the verified active question pool to fulfill probe slots.
+    Greedy coverage:
+      - Concept match (same concept)
+      - Never serve questions the student has seen (student_question_history)
+      - Covers the most still-uncovered target misconceptions (weighted by priority)
+      - Tie-break by closeness to slot difficulty: exact (0), adjacent (1), any (2)
+      - Then lowest times_served, then seeded random tie-break
+      - Within-quiz dedupe (embedding cosine >= 0.88 or token-Jaccard fallback)
+    Slots that cannot be filled are returned as unfilled WITH their uncovered targets.
+    Returns:
+      (served_questions: list, unfilled_slots: list)
+    """
+    if not slots:
+        return [], []
+
+    try:
+        conn = get_db()
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(questions)").fetchall()}
+        if "pool_status" not in cols or "verified" not in cols:
+            conn.close()
+            return [], list(slots)
+
+        seen_qids = set()
+        if student_id:
+            s_rows = conn.execute(
+                "SELECT DISTINCT question_id FROM student_question_history WHERE student_id = ?",
+                (student_id,),
+            ).fetchall()
+            seen_qids = {r["question_id"] for r in s_rows if r["question_id"]}
+
+        query = """
+            SELECT id, concept, facet, difficulty, qtype, question_text, options_json,
+                   correct_index, explanation, tags_json, source, model, verified,
+                   text_hash, embedding, origin, pool_status, difficulty_verified,
+                   times_served, times_correct
+            FROM questions
+            WHERE pool_status = 'active' AND verified = 1
+        """
+        rows = conn.execute(query).fetchall()
+        conn.close()
+    except Exception:
+        return [], list(slots)
+
+    if not rows:
+        return [], list(slots)
+
+    records = []
+    for r in rows:
+        opts = []
+        try:
+            opts = json.loads(r["options_json"] or "[]")
+        except Exception:
+            pass
+
+        t_data = {}
+        try:
+            t_data = json.loads(r["tags_json"] or "{}")
+        except Exception:
+            pass
+
+        emb = deserialize_embedding(r["embedding"])
+        r_keys = r.keys()
+        rec = {
+            "question_id": r["id"],
+            "id": r["id"],
+            "question": r["question_text"],
+            "options": opts,
+            "correct": int(r["correct_index"] or 0),
+            "explanation": r["explanation"] or "",
+            "concept": r["concept"],
+            "concept_tags": t_data.get("tags", [r["concept"]]),
+            "difficulty": r["difficulty"],
+            "qtype": r["qtype"] or "concept",
+            "option_misconception_ids": t_data.get("option_misconception_ids", [None] * 4),
+            "facet": r["facet"],
+            "embedding": emb,
+            "verified": r["verified"],
+            "origin": r["origin"] if "origin" in r_keys else "generated",
+            "pool_status": r["pool_status"] if "pool_status" in r_keys else "active",
+            "difficulty_verified": r["difficulty_verified"] if "difficulty_verified" in r_keys else None,
+            "times_served": int(r["times_served"] or 0),
+            "served_from": "pool",
+        }
+        records.append(rec)
+
+    # Collect all targets requested across slots in appearance order for priority weighting
+    all_targets_ordered = []
+    for s in slots:
+        for t in s.get("target_misconceptions", []):
+            if t not in all_targets_ordered:
+                all_targets_ordered.append(t)
+
+    num_t = len(all_targets_ordered)
+    target_weights = {t: (num_t - idx) for idx, t in enumerate(all_targets_ordered)}
+    still_uncovered_targets = set(all_targets_ordered)
+
+    served = []
+    unfilled = []
+    used_qids = set()
+    rng = random.Random(seed)
+
+    def diff_distance(slot_diff, cand_diff):
+        if not slot_diff or not cand_diff:
+            return 2
+        sd = str(slot_diff).capitalize()
+        cd = str(cand_diff).capitalize()
+        if sd == cd:
+            return 0
+        adj = {
+            "Easy": {"Medium"},
+            "Medium": {"Easy", "Hard"},
+            "Hard": {"Medium"},
+        }
+        if cd in adj.get(sd, set()):
+            return 1
+        return 2
+
+    for slot in slots:
+        s_concept = slot.get("concept")
+        s_diff = slot.get("difficulty")
+        s_qtype = slot.get("qtype")
+
+        # Candidates matching concept that are unseen and not used yet in this quiz
+        candidates = [
+            c for c in records
+            if c["concept"] == s_concept
+            and c["id"] not in seen_qids
+            and c["id"] not in used_qids
+        ]
+
+        if not candidates:
+            unfilled_targets = [t for t in slot.get("target_misconceptions", []) if t in still_uncovered_targets]
+            unfilled_slot = dict(slot)
+            unfilled_slot["target_misconceptions"] = unfilled_targets if unfilled_targets else list(slot.get("target_misconceptions", []))
+            unfilled.append(unfilled_slot)
+            continue
+
+        scored_candidates = []
+        for c in candidates:
+            # Check within-quiz dedupe against already served
+            is_dup = False
+            c_stem = c["question"]
+            c_opts = c["options"]
+            c_corr = c["correct"]
+            c_ans = c_opts[c_corr] if (0 <= c_corr < len(c_opts)) else ""
+            c_full_text = f"{c_stem}\n{c_ans}".strip()
+
+            for s_q in served:
+                if c.get("embedding") and s_q.get("embedding"):
+                    if cosine_similarity(c["embedding"], s_q["embedding"]) >= 0.88:
+                        is_dup = True
+                        break
+                else:
+                    s_stem = s_q["question"]
+                    s_opts = s_q["options"]
+                    s_corr = s_q["correct"]
+                    s_ans = s_opts[s_corr] if (0 <= s_corr < len(s_opts)) else ""
+                    s_full_text = f"{s_stem}\n{s_ans}".strip()
+                    if token_jaccard(c_full_text, s_full_text) >= 0.80:
+                        is_dup = True
+                        break
+
+            if is_dup:
+                continue
+
+            c_mids = set(c.get("option_misconception_ids") or [])
+            c_mids.discard(None)
+
+            # Greedy coverage: weight by still-uncovered targets covered
+            uncovered_matches = c_mids & still_uncovered_targets
+            coverage_weight = sum(target_weights.get(m, 1) for m in uncovered_matches)
+
+            dist = diff_distance(s_diff, c.get("difficulty"))
+            qtype_score = 1 if (s_qtype and c["qtype"] == s_qtype) else 0
+            rand_tie = rng.random()
+
+            # Sort key:
+            # 1. higher coverage_weight first (-coverage_weight)
+            # 2. closeness to slot difficulty (0 exact, 1 adjacent, 2 any)
+            # 3. preferred qtype (-qtype_score)
+            # 4. lowest times_served
+            # 5. random tie-break
+            sort_key = (-coverage_weight, dist, -qtype_score, c["times_served"], rand_tie)
+            scored_candidates.append((sort_key, c))
+
+        if not scored_candidates:
+            unfilled_targets = [t for t in slot.get("target_misconceptions", []) if t in still_uncovered_targets]
+            unfilled_slot = dict(slot)
+            unfilled_slot["target_misconceptions"] = unfilled_targets if unfilled_targets else list(slot.get("target_misconceptions", []))
+            unfilled.append(unfilled_slot)
+            continue
+
+        scored_candidates.sort(key=lambda item: item[0])
+        chosen = scored_candidates[0][1]
+        served.append(chosen)
+        used_qids.add(chosen["id"])
+
+        chosen_mids = set(chosen.get("option_misconception_ids") or [])
+        chosen_mids.discard(None)
+        still_uncovered_targets.difference_update(chosen_mids)
 
     return served, unfilled
 

@@ -14,6 +14,7 @@ Comprehensive unit and integration tests with NO network dependencies:
 """
 
 import collections
+from datetime import datetime, timedelta
 import json
 import os
 import shutil
@@ -35,6 +36,8 @@ from core.quiz_engine import (
     group_slots,
     normalize_question,
     prioritize_misconceptions,
+    select_from_pool,
+    select_probe_set,
 )
 from rag.embedding_cache import EmbeddingCache
 from rag.retriever import Retriever
@@ -476,6 +479,187 @@ class TestClarifierAndSubmitWiring(unittest.TestCase):
 
         finally:
             clarifier._call_llm = orig_call
+
+
+# ─────────────────────────────────────────────────────────────
+# 7. Probe Quiz Tests (Phase 5C)
+# ─────────────────────────────────────────────────────────────
+class TestProbeQuizEngine(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.temp_dir, "test_probe.db")
+        self.orig_db_path = os.environ.get("EDUGEN_DB_PATH")
+        os.environ["EDUGEN_DB_PATH"] = self.db_path
+        db.init_db(self.db_path)
+
+        # Flask test app for API test
+        from app import create_app
+        self.app = create_app()
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+        # Seed demo user & student
+        conn = db.get_db()
+        conn.execute("INSERT INTO users (id, name, email, password_hash) VALUES (1, 'ProbeTester', 'probe@test.com', 'pw')")
+        conn.execute("INSERT INTO students (id, user_id, name) VALUES (1, 1, 'ProbeTester')")
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        if self.orig_db_path:
+            os.environ["EDUGEN_DB_PATH"] = self.orig_db_path
+        elif "EDUGEN_DB_PATH" in os.environ:
+            del os.environ["EDUGEN_DB_PATH"]
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_probe_blueprint_target_distribution(self):
+        """Target distribution across n slots greedily: no target repeated before all are used once."""
+        catalog = misconceptions_for("class-definition")
+        self.assertGreater(len(catalog), 3)
+        cat_mids = [m["id"] for m in catalog]
+
+        slots = build_blueprint(kind="probe", concept="class-definition", n=8)
+        self.assertEqual(len(slots), 8)
+
+        seen_targets_in_cycle = []
+        cycle_count = 0
+
+        for slot in slots:
+            self.assertEqual(slot["concept"], "class-definition")
+            self.assertTrue(slot.get("relax_difficulty"))
+            targets = slot.get("target_misconceptions", [])
+            self.assertLessEqual(len(targets), 3)
+
+            for t in targets:
+                if t in seen_targets_in_cycle:
+                    # Target repeated! Ensure all catalog targets were already seen once in this cycle
+                    for m in cat_mids:
+                        self.assertIn(m, seen_targets_in_cycle)
+                    seen_targets_in_cycle = [t]
+                    cycle_count += 1
+                else:
+                    seen_targets_in_cycle.append(t)
+
+        code_slots = [s for s in slots if s["qtype"] in ("code_output", "bug_find")]
+        self.assertLessEqual(len(code_slots), 2)
+        concept_slots = [s for s in slots if s["qtype"] == "concept"]
+        self.assertGreater(len(concept_slots), len(code_slots))
+
+    def test_fully_probed_rule(self):
+        """Concept is fully probed when all catalog misconceptions offered >= 2 times."""
+        conn = db.get_db()
+        now = datetime.now().isoformat()
+        conn.execute("INSERT INTO concept_mastery (student_id, concept, mastery, attempts, updated_at) VALUES (1, 'class-definition', 30.0, 5, ?)", (now,))
+        conn.execute("INSERT INTO concept_mastery (student_id, concept, mastery, attempts, updated_at) VALUES (1, 'inheritance-basics', 35.0, 5, ?)", (now,))
+
+        cd_mids = [m["id"] for m in misconceptions_for("class-definition")]
+        conn.execute("INSERT INTO quiz_results (id, student_id, concept, topic, difficulty, score, total_questions) VALUES (1, 1, 'class-definition', 'Classes', 'Easy', 0, 4)")
+        conn.execute("INSERT INTO question_attempts (quiz_result_id, question_index, concept_tags, is_correct, student_answer, correct_answer, offered_misconceptions) VALUES (1, 0, ?, 0, 1, 0, ?)",
+                     (json.dumps(["class-definition"]), json.dumps(cd_mids)))
+        conn.execute("INSERT INTO question_attempts (quiz_result_id, question_index, concept_tags, is_correct, student_answer, correct_answer, offered_misconceptions) VALUES (1, 1, ?, 0, 1, 0, ?)",
+                     (json.dumps(["class-definition"]), json.dumps(cd_mids)))
+        conn.commit()
+        conn.close()
+
+        slots = build_blueprint(kind="probe", student_id=1, n=4)
+        self.assertEqual(slots[0]["concept"], "inheritance-basics")
+
+    def test_relaxed_difficulty_selection_order(self):
+        """Difficulty tie-break prefers exact, then adjacent, then any."""
+        conn = db.get_db()
+        mid = "static-members/static-access-via-instance"
+        conn.execute("""
+            INSERT INTO questions (id, concept, difficulty, qtype, question_text, text_hash, options_json, correct_index, tags_json, pool_status, verified, times_served)
+            VALUES (101, 'static-members', 'Hard', 'concept', 'Hard Q', 'hash_101', '["A","B","C","D"]', 0, ?, 'active', 1, 0)
+        """, (json.dumps({"option_misconception_ids": [None, mid, None, None]}),))
+        conn.execute("""
+            INSERT INTO questions (id, concept, difficulty, qtype, question_text, text_hash, options_json, correct_index, tags_json, pool_status, verified, times_served)
+            VALUES (102, 'static-members', 'Easy', 'concept', 'Easy Q', 'hash_102', '["A","B","C","D"]', 0, ?, 'active', 1, 0)
+        """, (json.dumps({"option_misconception_ids": [None, mid, None, None]}),))
+        conn.commit()
+        conn.close()
+
+        slot = [{"concept": "static-members", "difficulty": "Hard", "relax_difficulty": True, "target_misconceptions": [mid]}]
+        served, unfilled = select_probe_set(slot, student_id=1)
+        self.assertEqual(len(served), 1)
+        self.assertEqual(served[0]["id"], 101)
+
+    def test_coverage_greedy_choice(self):
+        """Greedy coverage chooses question covering more still-uncovered targets."""
+        conn = db.get_db()
+        m1 = "static-members/static-access-via-instance"
+        m2 = "static-members/static-methods-override"
+        conn.execute("""
+            INSERT INTO questions (id, concept, difficulty, qtype, question_text, text_hash, options_json, correct_index, tags_json, pool_status, verified, times_served)
+            VALUES (201, 'static-members', 'Medium', 'concept', 'Q covering 2', 'hash_201', '["A","B","C","D"]', 0, ?, 'active', 1, 0)
+        """, (json.dumps({"option_misconception_ids": [None, m1, m2, None]}),))
+        conn.execute("""
+            INSERT INTO questions (id, concept, difficulty, qtype, question_text, text_hash, options_json, correct_index, tags_json, pool_status, verified, times_served)
+            VALUES (202, 'static-members', 'Medium', 'concept', 'Q covering 1', 'hash_202', '["A","B","C","D"]', 0, ?, 'active', 1, 0)
+        """, (json.dumps({"option_misconception_ids": [None, m1, None, None]}),))
+        conn.commit()
+        conn.close()
+
+        slots = [{"concept": "static-members", "difficulty": "Medium", "relax_difficulty": True, "target_misconceptions": [m1, m2]}]
+        served, unfilled = select_probe_set(slots, student_id=1)
+        self.assertEqual(len(served), 1)
+        self.assertEqual(served[0]["id"], 201)
+
+    def test_unseen_only(self):
+        """Questions previously seen by student are never served."""
+        conn = db.get_db()
+        conn.execute("""
+            INSERT INTO questions (id, concept, difficulty, qtype, question_text, text_hash, options_json, correct_index, tags_json, pool_status, verified, times_served)
+            VALUES (301, 'static-members', 'Medium', 'concept', 'Q301', 'hash_301', '["A","B","C","D"]', 0, '{}', 'active', 1, 0)
+        """)
+        conn.execute("INSERT INTO student_question_history (student_id, question_id) VALUES (1, 301)")
+        conn.commit()
+        conn.close()
+
+        slots = [{"concept": "static-members", "difficulty": "Medium", "relax_difficulty": True, "target_misconceptions": []}]
+        served, unfilled = select_probe_set(slots, student_id=1)
+        self.assertEqual(len(served), 0)
+        self.assertEqual(len(unfilled), 1)
+
+    def test_unfilled_slots_keep_uncovered_targets(self):
+        """When pool cannot fill a slot, unfilled slot preserves its targets."""
+        m_targ = ["static-members/static-access-via-instance"]
+        slots = [{"concept": "static-members", "difficulty": "Medium", "relax_difficulty": True, "target_misconceptions": m_targ}]
+        served, unfilled = select_probe_set(slots, student_id=1)
+        self.assertEqual(len(unfilled), 1)
+        self.assertEqual(unfilled[0]["target_misconceptions"], m_targ)
+
+    def test_api_probe_kind_response_shape(self):
+        """api_quiz_start accepts kind='probe' and returns unchanged response shape with probe summary."""
+        conn = db.get_db()
+        mid = "class-definition/class-stores-instance-data"
+        conn.execute("""
+            INSERT INTO questions (id, concept, difficulty, qtype, question_text, text_hash, options_json, correct_index, tags_json, pool_status, verified, times_served)
+            VALUES (401, 'class-definition', 'Easy', 'concept', 'Probe Q', 'hash_401', '["A","B","C","D"]', 0, ?, 'active', 1, 0)
+        """, (json.dumps({"option_misconception_ids": [None, mid, None, None]}),))
+        conn.commit()
+        conn.close()
+
+        with self.client.session_transaction() as sess:
+            sess["user_id"] = 1
+            sess["name"] = "ProbeTester"
+
+        resp = self.client.post("/api/quiz/start", json={
+            "kind": "probe",
+            "concept": "class-definition",
+            "n": 1,
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("quiz_session_id", data)
+        self.assertIn("questions", data)
+        self.assertEqual(data["kind"], "probe")
+        self.assertIn("build_report_summary", data)
+        brs = data["build_report_summary"]
+        self.assertIn("probe", brs)
+        self.assertEqual(brs["probe"]["concept"], "class-definition")
+        self.assertIn("targets_requested", brs["probe"])
+        self.assertIn("targets_covered", brs["probe"])
 
 
 if __name__ == "__main__":

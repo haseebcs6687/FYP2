@@ -34,6 +34,14 @@ A blueprint is a deterministic list of question slots:
    - 2 slots per target concept at recommended difficulty.
    - Includes up to 2 retention slots for concepts mastered ($\ge 0.70$) within the last 14 days.
 
+4. **`probe`** (Phase 5C):
+   - Concept-focused misconception sweep designed for high exposure and diagnostic precision.
+   - Targets a single concept: supplied concept, or the student's lowest-mastery concept with $\ge 2$ attempts that is not yet fully probed (all catalog misconceptions offered $\ge 2$ times), or lowest-mastery concept overall.
+   - Defaults to 8 slots.
+   - Question type mix: mostly `concept` (~75%) with at most 2 code-based slots (`code_output` / `bug_find`). Easy difficulty slots remain strictly `concept`.
+   - Relaxed difficulty enabled (`slot["relax_difficulty"] = True`) to prioritize misconception coverage over exact difficulty fit.
+   - Target distribution: all catalog misconceptions for the concept are ordered by priority (chosen before > never offered > fewest offers) and distributed across slots in chunks of up to 3 without repeating until all are assigned.
+
 ---
 
 ## 2. Misconception Prioritization
@@ -248,4 +256,50 @@ To minimize runtime LLM token consumption, avoid provider rate limits, and provi
 
 2. **Positional Explanation Gate**:
    - Regex gate expanded to catch positional wording that leaks option order: `"the first/second/third/fourth/last option"`, `"option (a)"`, `"the former"`, `"the latter"`, `"the one above/below"`.
+
+---
+
+## 12. Probe Quiz Kind & Coverage-Greedy Selection (Phase 5C)
+
+To eliminate exposure bottlenecks in misconception detection, Phase 5C introduces the **Probe Quiz Kind** and **Coverage-Greedy Pool Selection (`select_probe_set`)**:
+
+### 1. Target Concept & Fully-Probed Rule
+- If `concept` is explicitly provided, it is targeted directly.
+- Otherwise, the engine selects the student's lowest-mastery concept that has $\ge 2$ prior question attempts and is **not yet fully probed**.
+- A concept is considered **fully probed** when *every* catalog misconception associated with that concept in `core/misconceptions.py` has been presented to the student $\ge 2$ times (verified via `student_question_history` joined with `questions.tags_json["option_misconception_ids"]`).
+- If all concepts with $\ge 2$ attempts are fully probed, the engine falls back to the lowest-mastery concept overall.
+
+### 2. Misconception Prioritization & Slot Chunking
+- Catalog misconceptions for the chosen concept are ordered by pedagogical priority:
+  1. **Chosen Before**: Misconceptions previously chosen by the student (frequency descending).
+  2. **Never Offered**: Catalog misconceptions never offered to the student.
+  3. **Fewest Offers**: Catalog misconceptions with the lowest exposure counts.
+  4. Deterministic alphabetical tie-break on misconception ID.
+- Misconceptions are chunked into groups of up to 3 and distributed across $n$ blueprint slots (default 8).
+- If the concept has more misconceptions than slots can cover in one pass, remaining targets wrap into successive slots. No target is repeated until all catalog misconceptions have been assigned to at least one slot.
+
+### 3. Relaxed Difficulty & Question Mix
+- `slot["relax_difficulty"] = True` is attached to every probe slot.
+- Slot difficulty defaults from student mastery (<40: Easy, 40–70: Medium, >70: Hard).
+- Question type distribution prioritizes diagnostic clarity: ~75% `concept` questions and at most 2 code-based questions (`code_output` / `bug_find`). Easy slots are strictly `concept`.
+
+### 4. Coverage-Greedy Selection Algorithm (`select_probe_set`)
+- **Strict Filters**:
+  - Pool status must be `'active'` and `verified = 1`.
+  - Concept must match the slot's target concept.
+  - Strict student isolation: question IDs previously answered by the student are excluded.
+- **Coverage-Greedy Scoring**:
+  - Questions are scored by how many *uncovered* target misconceptions in the slot's target list they carry.
+  - Misconception matches are weighted by priority: chosen before (weight 3.0), never offered (2.0), fewest offers (1.0).
+- **Relaxed Difficulty Tie-Breaking**:
+  - Candidate questions are bucketed by distance from slot difficulty:
+    - Distance 0: Exact match.
+    - Distance 1: Adjacent difficulty (e.g. Medium when Easy/Hard requested, or Easy/Hard when Medium requested).
+    - Distance 2: Opposite difficulty (e.g. Hard when Easy requested).
+  - Candidates with higher target coverage are selected first; within identical coverage, candidates with lower difficulty distance are preferred.
+  - Secondary tie-breaks: lowest `times_served` followed by deterministic seeded random shuffling.
+- **Deduplication & Unfilled Fallback**:
+  - Rejects within-quiz duplicates (embedding cosine $\ge 0.88$ or token Jaccard $\ge 0.80$).
+  - Unfilled slots are returned with their still-uncovered targets preserved, allowing the hybrid generation pipeline in `routes/api.py` to prompt the LLM specifically for the missing misconceptions.
+
 
