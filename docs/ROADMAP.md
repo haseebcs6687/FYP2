@@ -17,16 +17,16 @@
 - **Phase 6B — Planner Refinements & Evaluation**: Frontier-based real advance progression along `learning_order()`, fast diagnostic `check` quiz steps for unproven prerequisites with dynamic runtime adaptation (`plan_after_check`), difficulty cap (`Medium`) for skill gaps, sentinel cleanup (`plan_step_concepts`), 100% topological validity, 100% prerequisite closure, 100% check precedence, 0 false negatives, honest evaluation wording (`docs/STUDY_PLANNER.md`, `docs/PLAN_EXAMPLES.md`).
 
 - **Phase 7 — Concept Clarifier Agent**: Plan-driven interactive lessons per study plan step (simplified <= 400w and detailed 400-900w styles), SHA-1 lesson cache with index signature invalidation, deterministic Java compilation gate (`javac`), independent pedagogical verifier gate (`states_wrong_belief_as_true`), injection-safe student notes, fallback ladder, and `/lesson-step/<id>` interactive UI (`core/lesson_engine.py`, `docs/LESSON_ENGINE.md`).
+- **Phase 8 — Coordinator Agent**: Autonomous learning loop orchestration (quiz -> analysis -> plan -> lessons -> "I'm ready" -> closing quizzes -> completion), state machine (`core/journey.py`), centralized structured event bus (`core/event_bus.py`) with contextvars-driven pipeline runs, background thread context propagation, in-memory ring buffer, non-blocking lesson prefetching, fail-safe SQLite persistence, 91.7% automation ratio, and 100% test coverage across all 17 test suites (`docs/COORDINATOR.md`, `docs/EVENT_BUS.md`).
 
 ---
 
 ## In Progress
-- **Phase 8 (Next) — Coordinator Agent**: Autonomous state machine orchestration (quiz -> analysis -> plan -> lessons -> "I'm ready" -> re-quiz loop) + event bus with real structured event emission.
+- **Phase 9 (Next) — UI Cleanup & Evaluator Activity Window**: Clean student experience (student sees only lesson/quiz/plan/progress; unreadable lesson text/backgrounds fixed) + Evaluator Activity window (opens on click, minimize button top-right, keeps updating while minimized, displays live agent events, RAG retrieval passages with cosine scores and chunks).
 
 ---
 
 ## Pending (by Phase)
-- **Phase 8 — Coordinator Agent**: Autonomous state machine orchestration (quiz -> analysis -> plan -> lessons -> "I'm ready" -> re-quiz loop) + event bus with real structured event emission.
 - **Phase 9 — UI Cleanup & Evaluator Activity Window**: Clean student experience (student sees only lesson/quiz/plan/progress; unreadable lesson text/backgrounds fixed) + Evaluator Activity window (opens on click, minimize button top-right, keeps updating while minimized, displays live agent events, RAG retrieval passages with cosine scores and chunks).
 - **Phase 10 — Demo Seed Student, PDF Report & Security**: Seed student profile, downloadable PDF performance summary report, CSRF protection, login rate limiting, final integration verification.
 - **End / Submission**: Ethics section with supervisor, comprehensive review of chat requirements, optional question pool top-up, Llama offline lesson generation fallback, Groq key rotation.

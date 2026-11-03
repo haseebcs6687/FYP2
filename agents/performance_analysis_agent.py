@@ -96,7 +96,7 @@ class PerformanceAnalysisAgent(object):
         `quiz_data` is accepted and ignored: kept so FYP-1 call sites still work.
         """
         t_start = datetime.now()
-        db_path = db_path or DB_PATH
+        db_path = db_path or os.environ.get("EDUGEN_DB_PATH") or DB_PATH
         attempts = _load_attempts(student_id, db_path)
         quiz_count = _count_quizzes(student_id, db_path)
 
@@ -164,6 +164,27 @@ class PerformanceAnalysisAgent(object):
                        {"concept": primary})
 
         # Structured logging for active misconceptions and skill gaps
+        try:
+            from core.event_bus import emit
+            for m in misconceptions_data.get("active", []):
+                emit("Performance Analysis", "misconception_active",
+                     f"Active misconception: [{m['misconception_id']}]",
+                     level="warn", student_id=student_id,
+                     output={"id": m["misconception_id"], "evidence": m.get("evidence", "")})
+
+            for m in misconceptions_data.get("resolved", []):
+                emit("Performance Analysis", "misconception_resolved",
+                     f"Resolved misconception: [{m['misconception_id']}]",
+                     level="success", student_id=student_id,
+                     output={"id": m["misconception_id"]})
+
+            for gap in skill_gaps:
+                emit("Performance Analysis", "skill_gap",
+                     f"Skill gap: {gap}", level="warn", student_id=student_id,
+                     output={"skill_gap": gap})
+        except Exception:
+            pass
+
         for m in misconceptions_data.get("active", []):
             self._emit("Active misconception: [{}] {}".format(m["misconception_id"], m.get("evidence", "")), "warning")
 
@@ -172,6 +193,15 @@ class PerformanceAnalysisAgent(object):
 
         elapsed_ms = int((datetime.now() - t_start).total_seconds() * 1000)
         self._emit("Performance analysis completed in {} ms".format(elapsed_ms), "info")
+        try:
+            from core.event_bus import emit
+            emit("Performance Analysis", "analyze",
+                 f"Analysis complete: {len(buckets['weak'])} weak, {len(buckets['strong'])} strong",
+                 level="info", student_id=student_id, duration_ms=elapsed_ms,
+                 output={"attempts_loaded": len(attempts), "concepts_updated": len(stats),
+                         "weak_count": len(buckets["weak"]), "strong_count": len(buckets["strong"])})
+        except Exception:
+            pass
 
         # Persist idempotently
         try:

@@ -373,6 +373,20 @@ class AdaptiveContentAgent(object):
             cov,
         )
 
+        try:
+            from core.event_bus import emit
+            emit("Adaptive Content", "plan_built",
+                 f"Plan built with {steps_count} steps, {def_count} deferred",
+                 level="success" if cov_ok else "warn", student_id=student_id, duration_ms=elapsed_ms,
+                 output={"seed_count": len(plan.get("seeds", [])), "closure_size": len(plan.get("all_concepts", [])),
+                         "steps": steps_count, "deferred": def_count})
+            emit("Adaptive Content", "coverage_check",
+                 f"Coverage check: {'PASSED' if cov_ok else 'VIOLATIONS'}",
+                 level="info" if cov_ok else "warn", student_id=student_id,
+                 output={"ok": cov_ok, "violations": cov.get("violations", [])})
+        except Exception:
+            pass
+
         return saved_plan
 
     def get_active_plan(self, student_id):

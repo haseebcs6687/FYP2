@@ -21,6 +21,9 @@ _QUIZ_OPTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Regex to detect source references like 'Source [1]'
+_SOURCE_REF_RE = re.compile(r"\bSource\s*\[\d+\]", re.IGNORECASE)
+
 # Control characters removal regex (preserves \t, \n, \r)
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -294,6 +297,11 @@ def validate_lesson(
     if leak_match:
         reasons.append(f"names a quiz option by letter: '{leak_match.group(0)}'")
 
+    # 9. Source reference gate: reject text mentioning source numbers like 'Source [1]'
+    source_match = _SOURCE_REF_RE.search(full_lesson_text)
+    if source_match:
+        reasons.append(f"mentions source numbers: '{source_match.group(0)}'")
+
     if reasons:
         return None, reasons
 
@@ -347,7 +355,7 @@ def build_step_lesson_prompt(
         "and provide the authoritative correct OOP idea. NEVER present a wrong belief as true.\n"
         "4. If a skill gap is present, include targeted short code-tracing examples with exact traced output.\n"
         "5. Recap prerequisites in concise one-line points.\n"
-        "6. Do NOT mention quiz options, questions, or letters (e.g., 'option A', 'choice B').\n"
+        "6. Do NOT mention quiz options, questions, or letters (e.g., 'option A', 'choice B'). Do not mention source numbers such as 'Source [1]' in the lesson text.\n"
         "7. Reply with a SINGLE valid JSON object and NO Markdown surrounding text."
     )
 
@@ -362,12 +370,14 @@ def build_step_lesson_prompt(
             "- Total length: <= 400 words across all prose.",
             "- Sections: At most 3 clear, focused sections.",
             "- Code: Exactly 1 short, compilable Java example illustrating the core principle.",
+            "- Do not mention source numbers such as 'Source [1]' in the lesson text.",
         ]
     else:
         user_parts += [
             "- Total length: 450 to 800 words across all prose. Write rich, thorough explanations with multiple paragraphs in each section so the total prose is between 450 and 800 words.",
             "- Sections: 3 to 5 modular sections developing the concept.",
             "- Code: Exactly 2 complete, compilable Java examples illustrating application and edge cases.",
+            "- Do not mention source numbers such as 'Source [1]' in the lesson text.",
         ]
 
     # Misconceptions

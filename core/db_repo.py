@@ -737,6 +737,17 @@ def get_study_plan_step(step_id: int, conn=None) -> Optional[Dict[str, Any]]:
                 pass
 
 
+def get_study_plan_steps(plan_id: int, conn=None) -> List[Dict[str, Any]]:
+    """Fetch all steps for a study plan ordered by position."""
+    plan = get_study_plan_by_id(plan_id, conn=conn)
+    return plan.get("steps", []) if plan else []
+
+
+def update_study_plan_step_status(step_id: int, status: str, conn=None) -> Optional[Dict[str, Any]]:
+    """Alias for update_study_plan_step(step_id, status=status)."""
+    return update_study_plan_step(step_id=step_id, status=status, conn=conn)
+
+
 def update_study_plan_step(
     step_id: int,
     status: Optional[str] = None,
@@ -1039,6 +1050,226 @@ def record_feedback(
         conn.rollback()
         add_log("Database", f"record_feedback failed: {exc}", "error")
         return None
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 8: Coordinator Journey, Pipeline Runs, and Agent Events Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_student_journey(student_id: int, conn=None) -> Optional[Dict[str, Any]]:
+    """Fetch student journey state machine row from student_journey table."""
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+    try:
+        cur = conn.cursor()
+        row = cur.execute("SELECT * FROM student_journey WHERE student_id = ?", (student_id,)).fetchone()
+        if not row:
+            return None
+        return {
+            "student_id": row["student_id"],
+            "state": row["state"],
+            "plan_id": row["plan_id"],
+            "current_step_id": row["current_step_id"],
+            "last_run_id": row["last_run_id"],
+            "last_result_id": row["last_result_id"],
+            "context": json.loads(row["context_json"]) if row["context_json"] else {},
+            "updated_at": row["updated_at"],
+        }
+    except Exception as exc:
+        add_log("Database", f"get_student_journey failed: {exc}", "error")
+        return None
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def save_student_journey(
+    student_id: int,
+    state: str,
+    plan_id: Optional[int] = None,
+    current_step_id: Optional[int] = None,
+    last_run_id: Optional[int] = None,
+    last_result_id: Optional[int] = None,
+    context: Optional[Dict[str, Any]] = None,
+    conn=None,
+) -> bool:
+    """Upsert student journey state."""
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+    try:
+        cur = conn.cursor()
+        c_json = json.dumps(context) if context is not None else None
+        cur.execute(
+            """INSERT INTO student_journey (
+                student_id, state, plan_id, current_step_id, last_run_id, last_result_id, context_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(student_id) DO UPDATE SET
+                state = excluded.state,
+                plan_id = COALESCE(excluded.plan_id, student_journey.plan_id),
+                current_step_id = COALESCE(excluded.current_step_id, student_journey.current_step_id),
+                last_run_id = COALESCE(excluded.last_run_id, student_journey.last_run_id),
+                last_result_id = COALESCE(excluded.last_result_id, student_journey.last_result_id),
+                context_json = COALESCE(excluded.context_json, student_journey.context_json),
+                updated_at = CURRENT_TIMESTAMP""",
+            (student_id, state, plan_id, current_step_id, last_run_id, last_result_id, c_json),
+        )
+        conn.commit()
+        return True
+    except Exception as exc:
+        conn.rollback()
+        add_log("Database", f"save_student_journey failed: {exc}", "error")
+        return False
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_recent_pipeline_runs(student_id: int, limit: int = 20, conn=None) -> List[Dict[str, Any]]:
+    """Fetch recent pipeline runs with associated event counts."""
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+    try:
+        cur = conn.cursor()
+        rows = cur.execute(
+            """SELECT r.id, r.student_id, r.trigger, r.status, r.started_at, r.finished_at, r.duration_ms,
+                      COUNT(e.id) as event_count
+               FROM pipeline_runs r
+               LEFT JOIN agent_events e ON e.run_id = r.id
+               WHERE r.student_id = ?
+               GROUP BY r.id
+               ORDER BY r.id DESC
+               LIMIT ?""",
+            (student_id, limit),
+        ).fetchall()
+        runs = []
+        for row in rows:
+            runs.append({
+                "id": row["id"],
+                "student_id": row["student_id"],
+                "trigger": row["trigger"],
+                "status": row["status"],
+                "started_at": row["started_at"],
+                "finished_at": row["finished_at"],
+                "duration_ms": row["duration_ms"] or 0,
+                "event_count": row["event_count"] or 0,
+            })
+        return runs
+    except Exception as exc:
+        add_log("Database", f"get_recent_pipeline_runs failed: {exc}", "error")
+        return []
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_pipeline_run_events(run_id: int, student_id: Optional[int] = None, conn=None) -> List[Dict[str, Any]]:
+    """Fetch all agent events associated with a pipeline run."""
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+    try:
+        cur = conn.cursor()
+        if student_id is not None:
+            rows = cur.execute(
+                """SELECT * FROM agent_events WHERE run_id = ? AND student_id = ? ORDER BY id ASC""",
+                (run_id, student_id),
+            ).fetchall()
+        else:
+            rows = cur.execute(
+                """SELECT * FROM agent_events WHERE run_id = ? ORDER BY id ASC""",
+                (run_id,),
+            ).fetchall()
+        events = []
+        for r in rows:
+            events.append({
+                "id": r["id"],
+                "run_id": r["run_id"],
+                "student_id": r["student_id"],
+                "agent": r["agent"],
+                "action": r["action"],
+                "level": r["level"],
+                "message": r["message"],
+                "input": json.loads(r["input_json"]) if r["input_json"] else None,
+                "output": json.loads(r["output_json"]) if r["output_json"] else None,
+                "duration_ms": r["duration_ms"],
+                "created_at": r["created_at"],
+            })
+        return events
+    except Exception as exc:
+        add_log("Database", f"get_pipeline_run_events failed: {exc}", "error")
+        return []
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_student_events(student_id: int, since_id: int = 0, limit: int = 200, conn=None) -> Dict[str, Any]:
+    """
+    Fetch paginated agent events for live Activity window polling.
+    Limits to <= 200 items in ascending order.
+    """
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+    try:
+        cur = conn.cursor()
+        capped_limit = min(max(1, int(limit)), 200)
+        rows = cur.execute(
+            """SELECT * FROM agent_events
+               WHERE student_id = ? AND id > ?
+               ORDER BY id ASC
+               LIMIT ?""",
+            (student_id, int(since_id), capped_limit),
+        ).fetchall()
+        events = []
+        max_id = int(since_id)
+        for r in rows:
+            eid = r["id"]
+            if eid > max_id:
+                max_id = eid
+            events.append({
+                "id": eid,
+                "run_id": r["run_id"],
+                "student_id": r["student_id"],
+                "agent": r["agent"],
+                "action": r["action"],
+                "level": r["level"],
+                "message": r["message"],
+                "input": json.loads(r["input_json"]) if r["input_json"] else None,
+                "output": json.loads(r["output_json"]) if r["output_json"] else None,
+                "duration_ms": r["duration_ms"],
+                "created_at": r["created_at"],
+            })
+        return {"events": events, "last_id": max_id}
+    except Exception as exc:
+        add_log("Database", f"get_student_events failed: {exc}", "error")
+        return {"events": [], "last_id": int(since_id)}
     finally:
         if should_close and conn:
             try:

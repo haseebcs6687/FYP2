@@ -1,83 +1,69 @@
 """
 =============================================================================
-EduGen - Agent Activity Log
+EduGen - Agent Activity Log (Compatibility Wrapper)
 =============================================================================
-An in-memory ring buffer of everything the four agents do, polled by the
-floating log console in the UI (`/api/logs?after=<id>`).
-
-This is the evidence of agentic behaviour that an FYP evaluator asks for:
-"prove the agents are actually talking to each other". Keep it on during the
-demo, flip EDUGEN_SHOW_LOGS=0 in .env to hide the console in production.
+In Phase 8, agent logging is unified under core/event_bus.py.
+This module preserves the exact API of add_log, handoff, get_logs, all_logs,
+and clear_logs so existing agent calls and the /api/logs UI console continue
+to operate seamlessly while benefiting from structured event persistence and
+pipeline run context tagging.
 =============================================================================
 """
 
-import threading
-from datetime import datetime
-
-MAX_ENTRIES = 300
-
-AGENTS = {
-    "Coordinator": "coordinator",
-    "Performance Analysis": "performance",
-    "Adaptive Content": "adaptive",
-    "Concept Clarifier": "clarifier",
-    "Retriever": "retriever",
-    "System": "system",
-}
-
-_lock = threading.Lock()
-_entries = []
-_counter = 0
+from typing import Any, Dict, List, Optional
+from core.event_bus import (
+    emit,
+    get_logs,
+    all_logs,
+    clear_logs,
+    AGENTS,
+    MAX_ENTRIES,
+)
 
 
-def add_log(agent_name, message, log_type="info", payload=None):
+def add_log(
+    agent_name: str,
+    message: str,
+    log_type: str = "info",
+    payload: Optional[Any] = None,
+) -> Dict[str, Any]:
     """
     Record one agent action.
-
-    agent_name : one of AGENTS keys (free text is accepted and shown as-is)
-    log_type   : info | success | warning | error | handoff
-    payload    : optional small dict shown when the entry is expanded
+    Delegates to core.event_bus.emit() with ambient pipeline context.
     """
-    global _counter
-    with _lock:
-        _counter += 1
-        entry = {
-            "id": _counter,
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
-            "agent": agent_name,
-            "slug": AGENTS.get(agent_name, "system"),
-            "message": message,
-            "type": log_type,
-            "payload": payload,
-        }
-        _entries.append(entry)
-        if len(_entries) > MAX_ENTRIES:
-            del _entries[0:len(_entries) - MAX_ENTRIES]
-    return entry
+    action = "log"
+    if isinstance(payload, dict) and "action" in payload:
+        action = str(payload["action"])
+    elif ":" in message:
+        # heuristic action name
+        candidate = message.split(":", 1)[0].strip()
+        if len(candidate) <= 30 and " " not in candidate:
+            action = candidate.lower()
 
-
-def handoff(from_agent, to_agent, summary, payload=None):
-    """Log one agent passing work to the next - the core of the pipeline."""
-    return add_log(
-        from_agent,
-        "-> {}: {}".format(to_agent, summary),
-        log_type="handoff",
-        payload=payload,
+    level = "warn" if log_type in ("warning", "warn") else log_type
+    return emit(
+        agent=agent_name,
+        action=action,
+        message=message,
+        level=level,
+        output=payload,
     )
 
 
-def get_logs(after_id=0):
-    with _lock:
-        return [e for e in _entries if e["id"] > after_id]
-
-
-def all_logs():
-    with _lock:
-        return list(_entries)
-
-
-def clear_logs():
-    global _entries, _counter
-    with _lock:
-        _entries = []
-        _counter = 0
+def handoff(
+    from_agent: str,
+    to_agent: str,
+    summary: str,
+    payload: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """
+    Log one agent passing work to the next - the core of the multi-agent pipeline.
+    """
+    return emit(
+        agent=from_agent,
+        action="handoff",
+        message=f"-> {to_agent}: {summary}",
+        level="handoff",
+        input={"from": from_agent, "to": to_agent, "summary": summary},
+        output=payload,
+    )

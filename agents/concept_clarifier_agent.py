@@ -515,12 +515,14 @@ class ConceptClarifierAgent(object):
                     "info",
                 )
                 try:
-                    from core.agent_log import add_log
-                    add_log(
+                    from core.event_bus import emit
+                    emit(
                         "Concept Clarifier",
+                        "cache_hit",
                         f"Lesson cache hit for '{concept}' ({style}, {difficulty})",
-                        "info",
-                        {
+                        level="info",
+                        student_id=student_id,
+                        output={
                             "cache_hit": True,
                             "cache_key": cache_key,
                             "tokens": 0,
@@ -538,6 +540,19 @@ class ConceptClarifierAgent(object):
                     "sources": cached["lesson"].get("sources", []),
                     "step": step,
                 }
+
+        try:
+            from core.event_bus import emit
+            emit(
+                "Concept Clarifier",
+                "cache_miss",
+                f"Lesson cache miss for '{concept}' ({style})",
+                level="info",
+                student_id=student_id,
+                input={"concept": concept, "difficulty": difficulty, "style": style},
+            )
+        except Exception:
+            pass
 
         # 2. RAG Retrieval
         extra_terms = " ".join(
@@ -623,12 +638,15 @@ class ConceptClarifierAgent(object):
         if validated:
             java_ok, java_errors = checker.check_lesson_code(validated)
 
-        focus_wbs = [
-            m.get("wrong_belief")
-            or MISCONCEPTIONS.get(m.get("id") or m.get("misconception_id", ""), {}).get("wrong_belief", "")
-            for m in focus_mis
-        ]
-        focus_wbs = [wb for wb in focus_wbs if wb]
+        focus_wbs = []
+        for m in focus_mis:
+            wb = m.get("wrong_belief")
+            if not wb:
+                mid = m.get("id") or m.get("misconception_id")
+                if mid and mid in MISCONCEPTIONS:
+                    wb = MISCONCEPTIONS[mid].get("wrong_belief")
+            if wb:
+                focus_wbs.append(wb)
         ver_failed, ver_note = (False, "")
         if validated and java_ok:
             ver_failed, ver_note = self.verify_lesson(validated, focus_wbs)
@@ -697,6 +715,35 @@ class ConceptClarifierAgent(object):
                         "sources": retrieval.get("citations", []),
                         "step": step,
                     }
+
+        # Phase 8 Part 0: Lesson serve policy
+        # If, after the allowed retry, a code block still fails the Java gate,
+        # REMOVE that block from the served lesson (keep the text), set lesson["code_removed"]=true and verified=0,
+        # and never serve a code block whose compiles flag disagrees with the compiler.
+        if validated:
+            code_removed = False
+            for sec in validated.get("sections", []):
+                if isinstance(sec, dict) and isinstance(sec.get("code"), dict):
+                    c_src = sec["code"].get("source", "")
+                    exp_comp = bool(sec["code"].get("compiles", True))
+                    compiles, _ = checker.compile_snippet(c_src)
+                    if compiles != exp_comp:
+                        sec["code"] = None
+                        code_removed = True
+            for m in validated.get("misconceptions", []):
+                if isinstance(m, dict) and m.get("example_code"):
+                    m_src = str(m["example_code"])
+                    compiles, _ = checker.compile_snippet(m_src)
+                    is_delib = ("// error" in m_src.lower() or "// does not compile" in m_src.lower())
+                    exp = not is_delib
+                    if compiles != exp:
+                        m["example_code"] = None
+                        code_removed = True
+            if code_removed:
+                validated["code_removed"] = True
+                verified = 0
+                if "warning" not in validated or not validated["warning"]:
+                    validated["warning"] = "Code block failed compiler check and was removed."
 
         # 8. Enrich lesson with sources and metadata
         validated["sources"] = retrieval.get("citations", [])

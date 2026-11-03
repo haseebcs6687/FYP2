@@ -537,6 +537,72 @@ def migration_7_lesson_cache(conn):
     """)
 
 
+def migration_8_coordinator_and_events(conn):
+    """Migration 8: Coordinator journey state machine and event bus tables."""
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS student_journey (
+            student_id      INTEGER PRIMARY KEY,
+            state           TEXT NOT NULL,
+            plan_id         INTEGER NULL,
+            current_step_id INTEGER NULL,
+            last_run_id     INTEGER NULL,
+            last_result_id  INTEGER NULL,
+            context_json    TEXT,
+            updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_runs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id  INTEGER NOT NULL,
+            trigger     TEXT NOT NULL,
+            status      TEXT NOT NULL,
+            started_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            finished_at TIMESTAMP NULL,
+            duration_ms INTEGER DEFAULT 0
+        )
+    """)
+    _add_column(cur, "pipeline_runs", "duration_ms", "INTEGER DEFAULT 0")
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS agent_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id      INTEGER NULL,
+            student_id  INTEGER NULL,
+            agent       TEXT NOT NULL,
+            action      TEXT NOT NULL,
+            level       TEXT NOT NULL,
+            message     TEXT NOT NULL,
+            input_json  TEXT,
+            output_json TEXT,
+            duration_ms INTEGER NULL,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    _add_column(cur, "agent_events", "duration_ms", "INTEGER NULL")
+    _add_column(cur, "agent_events", "input_json", "TEXT")
+    _add_column(cur, "agent_events", "output_json", "TEXT")
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_agent_events_student ON agent_events(student_id, id)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_agent_events_run ON agent_events(run_id)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pipeline_runs_student ON pipeline_runs(student_id, id)
+    """)
+    cur.execute("""
+        CREATE TRIGGER IF NOT EXISTS trg_cascade_delete_student
+        BEFORE DELETE ON students
+        BEGIN
+            DELETE FROM agent_events WHERE student_id = OLD.id;
+            DELETE FROM student_journey WHERE student_id = OLD.id;
+            DELETE FROM pipeline_runs WHERE student_id = OLD.id;
+        END;
+    """)
+
+
 MIGRATIONS = [
     (1, "initial_schema", migration_1_initial),
     (2, "analytics_and_evidence", migration_2_new_tables),
@@ -545,6 +611,7 @@ MIGRATIONS = [
     (5, "bkt_and_misconceptions", migration_5_bkt_and_misconceptions),
     (6, "study_planner", migration_6_study_planner),
     (7, "lesson_cache", migration_7_lesson_cache),
+    (8, "coordinator_and_events", migration_8_coordinator_and_events),
 ]
 
 

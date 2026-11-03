@@ -277,11 +277,39 @@ def api_quiz_start():
 
     student_id = current_student_id()
     data = request.get_json(silent=True) or {}
+    plan_step_id = data.get("plan_step_id")
     kind = data.get("kind", "practice")
     concept = data.get("concept")
     concepts = data.get("concepts")
     difficulty = data.get("difficulty")
     raw_n = data.get("n") if data.get("n") is not None else data.get("count")
+
+    # Phase 8: If plan_step_id is provided, derive kind and parameters from the step
+    if plan_step_id is not None:
+        try:
+            from core.db_repo import get_study_plan_step, update_study_plan_step_status
+            from core.study_planner import plan_step_concepts
+            step_rec = get_study_plan_step(int(plan_step_id))
+            if step_rec:
+                update_study_plan_step_status(int(plan_step_id), "in_progress")
+                s_kind = str(step_rec.get("kind", "")).lower().strip()
+                if s_kind == "check":
+                    kind = "practice"
+                    concept = step_rec.get("concept")
+                    difficulty = step_rec.get("difficulty") or "Easy"
+                    raw_n = 3
+                elif s_kind == "probe":
+                    kind = "probe"
+                    concept = step_rec.get("concept")
+                    raw_n = 8
+                elif s_kind == "reevaluation":
+                    kind = "reevaluation"
+                    raw_c = plan_step_concepts(step_rec) or [step_rec.get("concept")]
+                    concepts = [c for c in raw_c if c and c != "all-plan-concepts"]
+                    raw_n = 10
+        except Exception:
+            pass
+
     default_n = 8 if kind == "probe" else 5
     count = max(1, min(int(raw_n if raw_n is not None else default_n), 12))
 
@@ -366,6 +394,15 @@ def api_quiz_start():
             pool_served, unfilled_slots = select_probe_set(slots, student_id=student_id)
         else:
             pool_served, unfilled_slots = select_from_pool(slots, student_id=student_id)
+
+        try:
+            from core.event_bus import emit
+            emit("Question Pool", "pool_select",
+                 f"Pool selected {len(pool_served)}/{len(slots)} questions for {kind} quiz",
+                 output={"served_from_pool": len(pool_served), "unfilled_slots": len(unfilled_slots)},
+                 student_id=student_id)
+        except Exception:
+            pass
 
         live_questions = []
         live_payload = {}
@@ -473,6 +510,10 @@ def api_quiz_start():
         model=payload.get("model"),
         source=payload.get("generated_by", "llm_rag"),
     )
+
+    # Phase 8: Attach plan_step_id and kind to payload before persistence
+    payload["plan_step_id"] = int(plan_step_id) if plan_step_id is not None else None
+    payload["kind"] = kind
 
     conn = get_db()
     cur = conn.cursor()
@@ -669,6 +710,19 @@ def api_quiz_submit():
             "count": count,
         })
 
+    # Phase 8: Autonomous coordinator state machine step
+    outcome = {}
+    try:
+        coord = agents()["coordinator"]
+        outcome = coord.on_quiz_submitted(student_id, quiz_result_id, quiz_session_id=quiz_session_id)
+    except Exception as exc:
+        add_log("Coordinator", f"on_quiz_submitted error: {exc}", "warn")
+        outcome = {
+            "next_action": {"type": "take_quiz", "quiz": {"kind": "practice"}},
+            "pipeline": [{"stage": "error", "summary": str(exc)}],
+            "plan_changed": False,
+        }
+
     return jsonify({
         "quiz_result_id": quiz_result_id,
         "score": score,
@@ -680,6 +734,8 @@ def api_quiz_submit():
         "difficulty": difficulty,
         "review": review,
         "misconceptions_detected": misconceptions_detected,
+        "next_action": outcome.get("next_action"),
+        "pipeline": outcome.get("pipeline", []),
     })
 
 
@@ -825,6 +881,7 @@ def api_concepts():
 def api_status():
     cc = agents()["cc"]
     rag = agents()["retriever"].status()
+    from core.event_bus import get_persist_failures
     return jsonify({
         "agents": {
             "coordinator": {"state": "active", "role": "Routing and orchestration"},
@@ -837,6 +894,9 @@ def api_status():
                 "role": "RAG-grounded lesson and quiz generation",
                 "detail": cc.status(),
             },
+        },
+        "event_bus": {
+            "persist_failures": get_persist_failures(),
         },
         "rag": {
             "ready": rag.get("ready"),
@@ -859,6 +919,74 @@ def api_logs():
 def api_logs_clear():
     clear_logs()
     return jsonify({"status": "cleared"})
+
+
+# ═════════════════════════════════════════════════════════════
+# Phase 8: Event Bus & Autonomous Journey Routes
+# ═════════════════════════════════════════════════════════════
+@bp.get("/events")
+@api_login_required
+def api_events():
+    """
+    Live event polling endpoint for Evaluator Activity window (no SSE needed).
+    Returns events for the logged-in student since since_id (ascending order, limit <= 200).
+    """
+    student_id = current_student_id()
+    since_id = request.args.get("since_id", 0, type=int)
+    limit = request.args.get("limit", 200, type=int)
+    from core.db_repo import get_student_events
+    res = get_student_events(student_id, since_id=since_id, limit=limit)
+    return jsonify(res)
+
+
+@bp.get("/runs")
+@api_login_required
+def api_runs():
+    """Recent pipeline runs for the logged-in student."""
+    student_id = current_student_id()
+    limit = request.args.get("limit", 20, type=int)
+    from core.db_repo import get_recent_pipeline_runs
+    runs = get_recent_pipeline_runs(student_id, limit=limit)
+    return jsonify({"runs": runs})
+
+
+@bp.get("/runs/<int:run_id>")
+@api_login_required
+def api_run_events(run_id):
+    """Events associated with a specific pipeline run (student ownership enforced)."""
+    student_id = current_student_id()
+    from core.db_repo import get_pipeline_run_events
+    events = get_pipeline_run_events(run_id, student_id=student_id)
+    if not events:
+        conn = get_db()
+        r = conn.execute("SELECT id FROM pipeline_runs WHERE id = ? AND student_id = ?", (run_id, student_id)).fetchone()
+        conn.close()
+        if not r:
+            return jsonify({"error": "Run not found or access denied"}), 404
+    return jsonify({"run_id": run_id, "events": events})
+
+
+@bp.get("/journey")
+@api_login_required
+def api_journey():
+    """Get current student journey state, progress, and next action."""
+    student_id = current_student_id()
+    coord = agents()["coordinator"]
+    res = coord.get_journey(student_id)
+    return jsonify(res)
+
+
+@bp.post("/journey/ready")
+@api_login_required
+def api_journey_ready():
+    """
+    Student action: 'I've studied this, re-evaluate me'.
+    Transitions pending lessons to skipped and returns closing quiz action.
+    """
+    student_id = current_student_id()
+    coord = agents()["coordinator"]
+    res = coord.mark_ready(student_id)
+    return jsonify(res)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -916,6 +1044,11 @@ def api_update_step_status(step_id):
         return jsonify({"error": "Invalid status. Must be pending, in_progress, done, or skipped"}), 400
 
     result = agents()["ac"].update_step(step_id, status=new_status)
+    if new_status == "done":
+        from core.journey import is_lesson_step
+        if is_lesson_step(step):
+            res_done = agents()["coordinator"].on_step_done(student_id, step_id)
+            result["next_action"] = res_done.get("next_action")
     return jsonify(result)
 
 
