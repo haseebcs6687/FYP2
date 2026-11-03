@@ -497,6 +497,46 @@ def migration_6_study_planner(conn):
     _add_column(cur, "study_plans", "deferred_json", "TEXT")
 
 
+def migration_7_lesson_cache(conn):
+    """
+    Migration 7 (Phase 7): Concept Clarifier Plan-Driven Lesson Cache
+    Additive only:
+      - lesson_cache table for storing generated plan-driven lessons:
+        (id, cache_key UNIQUE, student_id, concept, difficulty, style,
+         plan_step_id, lesson_json, model, index_signature, tokens,
+         verified, created_at, last_served_at, served_count)
+      - index on cache_key and (student_id, concept)
+    """
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS lesson_cache (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            cache_key       TEXT UNIQUE NOT NULL,
+            student_id      INTEGER NULL,
+            concept         TEXT NOT NULL,
+            difficulty      TEXT NOT NULL,
+            style           TEXT NOT NULL,
+            plan_step_id    INTEGER NULL,
+            lesson_json     TEXT NOT NULL,
+            model           TEXT NOT NULL,
+            index_signature TEXT NOT NULL,
+            tokens          INTEGER DEFAULT 0,
+            verified        INTEGER DEFAULT 0,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_served_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            served_count    INTEGER DEFAULT 0
+        )
+    """)
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_lesson_cache_key
+        ON lesson_cache(cache_key)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_lesson_cache_student_concept
+        ON lesson_cache(student_id, concept)
+    """)
+
+
 MIGRATIONS = [
     (1, "initial_schema", migration_1_initial),
     (2, "analytics_and_evidence", migration_2_new_tables),
@@ -504,6 +544,7 @@ MIGRATIONS = [
     (4, "verified_pool", migration_4_verified_pool),
     (5, "bkt_and_misconceptions", migration_5_bkt_and_misconceptions),
     (6, "study_planner", migration_6_study_planner),
+    (7, "lesson_cache", migration_7_lesson_cache),
 ]
 
 

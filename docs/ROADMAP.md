@@ -16,15 +16,16 @@
 - **Phase 6 — Adaptive Content Agent**: Full ordered study plan generation (weak concepts + prerequisite closure, topological sort via Kahn's algorithm, calibrated difficulty and lesson style per step, editable prompt per step with student notes, formal coverage checker validating no prerequisite or active misconception is missed).
 - **Phase 6B — Planner Refinements & Evaluation**: Frontier-based real advance progression along `learning_order()`, fast diagnostic `check` quiz steps for unproven prerequisites with dynamic runtime adaptation (`plan_after_check`), difficulty cap (`Medium`) for skill gaps, sentinel cleanup (`plan_step_concepts`), 100% topological validity, 100% prerequisite closure, 100% check precedence, 0 false negatives, honest evaluation wording (`docs/STUDY_PLANNER.md`, `docs/PLAN_EXAMPLES.md`).
 
+- **Phase 7 — Concept Clarifier Agent**: Plan-driven interactive lessons per study plan step (simplified <= 400w and detailed 400-900w styles), SHA-1 lesson cache with index signature invalidation, deterministic Java compilation gate (`javac`), independent pedagogical verifier gate (`states_wrong_belief_as_true`), injection-safe student notes, fallback ladder, and `/lesson-step/<id>` interactive UI (`core/lesson_engine.py`, `docs/LESSON_ENGINE.md`).
+
 ---
 
 ## In Progress
-- **Phase 7 (Next) — Concept Clarifier Agent**: Interactive lesson generation per study plan step, offering simplified and detailed versions grounded in RAG corpus passages.
+- **Phase 8 (Next) — Coordinator Agent**: Autonomous state machine orchestration (quiz -> analysis -> plan -> lessons -> "I'm ready" -> re-quiz loop) + event bus with real structured event emission.
 
 ---
 
 ## Pending (by Phase)
-- **Phase 7 — Concept Clarifier Agent**: Interactive lesson generation per study plan step, offering simplified and detailed versions grounded in RAG corpus passages.
 - **Phase 8 — Coordinator Agent**: Autonomous state machine orchestration (quiz -> analysis -> plan -> lessons -> "I'm ready" -> re-quiz loop) + event bus with real structured event emission.
 - **Phase 9 — UI Cleanup & Evaluator Activity Window**: Clean student experience (student sees only lesson/quiz/plan/progress; unreadable lesson text/backgrounds fixed) + Evaluator Activity window (opens on click, minimize button top-right, keeps updating while minimized, displays live agent events, RAG retrieval passages with cosine scores and chunks).
 - **Phase 10 — Demo Seed Student, PDF Report & Security**: Seed student profile, downloadable PDF performance summary report, CSRF protection, login rate limiting, final integration verification.

@@ -144,6 +144,33 @@ def plan():
     return render_template("plan.html", **_ctx(page="plan"))
 
 
+@bp.route("/lesson-step/<int:step_id>")
+@login_required
+def lesson_step(step_id):
+    from core.auth import current_student_id
+    from core.db_repo import get_study_plan_by_id, get_study_plan_step
+
+    student_id = current_student_id()
+    step = get_study_plan_step(step_id)
+    if not step:
+        return redirect(url_for("pages.plan"))
+
+    plan = get_study_plan_by_id(step["plan_id"])
+    if not plan or plan["student_id"] != student_id:
+        return redirect(url_for("pages.plan"))
+
+    return render_template(
+        "lesson_step.html",
+        **_ctx(
+            page="plan",
+            step=step,
+            plan=plan,
+            step_id=step_id,
+            concept_title=concept_title(step.get("concept", "")),
+        ),
+    )
+
+
 @bp.route("/about")
 def about():
     return render_template("about.html", **_ctx(page="about"))

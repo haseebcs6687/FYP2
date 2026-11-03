@@ -1,0 +1,445 @@
+{% extends "base.html" %}
+{% block title %}{{ concept_title }} &mdash; Study Step {{ step.position }}{% endblock %}
+
+{% block content %}
+<div class="wrap page" style="max-width: 860px; margin: 0 auto; padding: 24px 16px;">
+
+  <!-- Navigation & Step Header -->
+  <div style="margin-bottom: 20px;">
+    <a href="{{ url_for('pages.plan') }}" class="small muted" style="text-decoration:none;">&larr; Back to Study Plan</a>
+    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-top: 8px;">
+      <div>
+        <h1 id="lesson-header-title" style="margin: 0 0 6px 0; font-size: 1.8rem; color: #111;">
+          Step {{ step.position }}: {{ concept_title }}
+        </h1>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <span class="badge tiny" style="background:#eef2ff; color:#312e81; border:1px solid #c7d2fe;">{{ step.kind }}</span>
+          <span class="badge tiny" style="background:#f0fdf4; color:#14532d; border:1px solid #bbf7d0;">{{ step.difficulty }}</span>
+          {% if step.lesson_style %}
+          <span class="badge tiny" style="background:#fefce8; color:#713f12; border:1px solid #fef08a;">{{ step.lesson_style }}</span>
+          {% endif %}
+          <span class="badge tiny" id="badge-verified" style="display:none; background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0;">Verified</span>
+          <span class="badge tiny" id="badge-cached" style="display:none; background:#f3f4f6; color:#374151; border:1px solid #e5e7eb;">Cached</span>
+        </div>
+      </div>
+      <div>
+        <button id="btn-top-done" class="btn btn-sm btn-good" onclick="markStepDone()">I've Studied This</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading State -->
+  <div id="lesson-loading" class="card" style="padding: 32px; text-align: center; color: #4b5563; background: #fff; border: 1px solid #e5e7eb;">
+    <div style="font-size: 1.1rem; font-weight: 500;">Generating grounded lesson...</div>
+    <div class="small muted" style="margin-top: 8px;">Retrieving textbook passages, aligning misconceptions, and running verification gates.</div>
+  </div>
+
+  <!-- Lesson Container (Hidden during load) -->
+  <div id="lesson-container" style="display:none;">
+
+    <!-- Offline / Warning Notice (if applicable) -->
+    <div id="lesson-warning-banner" class="notice notice-attn" style="display:none; margin-bottom: 20px;"></div>
+
+    <!-- Main Content Card -->
+    <div class="card" style="padding: 28px; background: #ffffff; border: 1px solid #e5e7eb; box-shadow: 0 1px 3px rgba(0,0,0,0.05); color: #1f2937; margin-bottom: 24px;">
+
+      <!-- Summary -->
+      <div id="lesson-summary" style="font-size: 1.1rem; line-height: 1.6; color: #374151; font-weight: 500; border-bottom: 1px solid #f3f4f6; padding-bottom: 16px; margin-bottom: 20px;"></div>
+
+      <!-- Sections -->
+      <div id="lesson-sections"></div>
+
+      <!-- Misconceptions Box -->
+      <div id="lesson-misconceptions-wrap" style="display:none; margin-top: 28px;">
+        <h3 style="margin-bottom: 12px; color: #991b1b; display: flex; align-items: center; gap: 8px;">
+          <span>&#9888;</span> Common OOP Misconceptions &amp; Clarifications
+        </h3>
+        <div id="lesson-misconceptions-list"></div>
+      </div>
+
+      <!-- Worked Example -->
+      <div id="lesson-worked-example-wrap" style="display:none; margin-top: 28px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 18px;">
+        <h3 style="margin-top:0; color: #0f172a;">Worked Example</h3>
+        <div id="we-problem" style="font-weight: 500; margin-bottom: 10px; color: #334155;"></div>
+        <ol id="we-steps" style="margin-bottom: 0; padding-left: 20px; color: #475569; line-height: 1.6;"></ol>
+      </div>
+
+      <!-- Self Check -->
+      <div id="lesson-self-check-wrap" style="display:none; margin-top: 28px;">
+        <h3 style="margin-bottom: 12px; color: #1e3a8a;">Quick Self-Check</h3>
+        <div id="lesson-self-check-list" style="display: flex; flex-direction: column; gap: 12px;"></div>
+      </div>
+
+      <!-- Grounded Sources -->
+      <div id="lesson-sources-wrap" style="display:none; margin-top: 28px; border-top: 1px solid #f3f4f6; padding-top: 16px;">
+        <h4 style="margin: 0 0 8px 0; font-size: 0.9rem; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em;">Grounded Sources</h4>
+        <div id="lesson-sources-list" style="display: flex; flex-wrap: wrap; gap: 8px;"></div>
+      </div>
+
+    </div>
+
+    <!-- Student Notes & Custom Request Box -->
+    <div class="card" style="padding: 20px; background: #ffffff; border: 1px solid #e5e7eb; margin-bottom: 24px;">
+      <h3 style="margin: 0 0 6px 0; color: #111;">Student Notes &amp; Customization</h3>
+      <p class="small muted" style="margin-top: 0;">
+        Add a specific focus or request (max 400 chars). The lesson will regenerate safely focusing on your note.
+      </p>
+      <textarea id="student-note-input" rows="3" maxlength="400" placeholder="e.g., Focus more on constructor chaining with super() or include code tracing examples." style="width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #d1d5db; border-radius: 4px; font-family: inherit; font-size: 0.95rem; resize: vertical;"></textarea>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
+        <span class="small muted" id="note-char-count">0 / 400</span>
+        <button id="btn-save-note" class="btn btn-sm" onclick="saveNoteAndRegenerate()">Save Note &amp; Regenerate</button>
+      </div>
+    </div>
+
+    <!-- Lesson Completion & Feedback Panel -->
+    <div class="card" style="padding: 20px; background: #fafafa; border: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
+      <div>
+        <h4 style="margin: 0 0 4px 0; color: #111;">Finished studying this concept?</h4>
+        <div class="small muted">Mark this step completed to advance through your personalized study plan.</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <!-- Feedback Buttons -->
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span class="small muted">Helpful?</span>
+          <button class="btn btn-sm btn-ghost" id="btn-feedback-up" onclick="sendFeedback(1)" title="Thumbs up">&#128077;</button>
+          <button class="btn btn-sm btn-ghost" id="btn-feedback-down" onclick="sendFeedback(-1)" title="Thumbs down">&#128078;</button>
+          <span id="feedback-msg" class="small muted" style="margin-left: 4px;"></span>
+        </div>
+        <button class="btn btn-good" id="btn-bottom-done" onclick="markStepDone()">I've Studied This</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const stepId = {{ step_id }};
+let currentCacheKey = null;
+
+function esc(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+async function loadStepLesson() {
+  document.getElementById('lesson-loading').style.display = 'block';
+  document.getElementById('lesson-container').style.display = 'none';
+
+  try {
+    const res = await fetch('/api/plan/step/' + stepId + '/lesson');
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || 'Failed to load lesson (HTTP ' + res.status + ')');
+    }
+    const data = await res.json();
+    renderLesson(data);
+  } catch (err) {
+    document.getElementById('lesson-loading').innerHTML =
+      '<div class="notice notice-crit">Error loading lesson: ' + esc(err.message) + '</div>' +
+      '<div style="margin-top:12px;"><a href="{{ url_for("pages.plan") }}" class="btn btn-sm">&larr; Return to Study Plan</a></div>';
+  }
+}
+
+function renderLesson(resData) {
+  document.getElementById('lesson-loading').style.display = 'none';
+  document.getElementById('lesson-container').style.display = 'block';
+
+  const lesson = resData.lesson || {};
+  const isCached = !!resData.cached;
+  const isVerified = !!resData.verified;
+  currentCacheKey = resData.cache_key || '';
+
+  // Badges
+  const badgeCached = document.getElementById('badge-cached');
+  if (badgeCached) badgeCached.style.display = isCached ? 'inline-block' : 'none';
+
+  const badgeVerified = document.getElementById('badge-verified');
+  if (badgeVerified) {
+    badgeVerified.style.display = 'inline-block';
+    if (isVerified) {
+      badgeVerified.innerText = 'Verified';
+      badgeVerified.style.background = '#ecfdf5';
+      badgeVerified.style.color = '#065f46';
+      badgeVerified.style.border = '1px solid #a7f3d0';
+    } else {
+      badgeVerified.innerText = 'Unverified Warning';
+      badgeVerified.style.background = '#fef2f2';
+      badgeVerified.style.color = '#991b1b';
+      badgeVerified.style.border = '1px solid #fecaca';
+    }
+  }
+
+  // Warning banner
+  const warnBanner = document.getElementById('lesson-warning-banner');
+  if (lesson.warning || lesson.offline_banner) {
+    warnBanner.style.display = 'block';
+    warnBanner.innerHTML = '<strong>Notice:</strong> ' + esc(lesson.warning || 'Offline mode: Served from local curated knowledge base.');
+  } else {
+    warnBanner.style.display = 'none';
+  }
+
+  // Title & Summary
+  if (lesson.title) {
+    document.getElementById('lesson-header-title').innerText = lesson.title;
+  }
+  document.getElementById('lesson-summary').innerText = lesson.summary || '';
+
+  // Sections
+  const secContainer = document.getElementById('lesson-sections');
+  secContainer.innerHTML = '';
+  (lesson.sections || []).forEach((sec, idx) => {
+    const secEl = document.createElement('div');
+    secEl.style.marginBottom = '24px';
+
+    let secHtml = '<h2 style="font-size:1.35rem; margin:18px 0 8px 0; color:#111827;">' + esc(sec.heading) + '</h2>' +
+                  '<p style="line-height:1.65; color:#374151; margin-bottom:12px; font-size:1rem;">' + esc(sec.body) + '</p>';
+
+    if (sec.code && sec.code.source) {
+      secHtml += '<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; overflow:hidden; margin:12px 0;">' +
+                   '<div style="background:#f1f5f9; padding:6px 12px; font-size:0.8rem; font-family:monospace; color:#475569; display:flex; justify-content:space-between;">' +
+                     '<span>Java Snippet ' + (sec.code.compiles === false ? '(Demonstrates Error)' : '(Compilable)') + '</span>' +
+                   '</div>' +
+                   '<pre style="margin:0; padding:14px; overflow-x:auto; font-family:Consolas, Monaco, monospace; font-size:0.9rem; line-height:1.5; color:#0f172a;"><code>' +
+                     esc(sec.code.source) +
+                   '</code></pre>' +
+                   (sec.code.explains ? '<div style="padding:8px 14px; font-size:0.85rem; color:#475569; background:#fff; border-top:1px solid #e2e8f0;">' + esc(sec.code.explains) + '</div>' : '') +
+                 '</div>';
+    }
+
+    secEl.innerHTML = secHtml;
+    secContainer.appendChild(secEl);
+  });
+
+  // Misconceptions
+  const misWrap = document.getElementById('lesson-misconceptions-wrap');
+  const misList = document.getElementById('lesson-misconceptions-list');
+  if (lesson.misconceptions && lesson.misconceptions.length) {
+    misWrap.style.display = 'block';
+    misList.innerHTML = '';
+    lesson.misconceptions.forEach(m => {
+      const box = document.createElement('div');
+      box.style.border = '1px solid #fecaca';
+      box.style.background = '#fff5f5';
+      box.style.borderRadius = '6px';
+      box.style.padding = '14px';
+      box.style.marginBottom = '12px';
+
+      let mHtml = '<div style="color:#b91c1c; font-weight:600; margin-bottom:4px;">&#10008; Common Pitfall: ' + esc(m.wrong_belief) + '</div>' +
+                  (m.why_students_think_it ? '<div style="font-size:0.9rem; color:#4b5563; margin-bottom:6px;"><em>Why it is tempting:</em> ' + esc(m.why_students_think_it) + '</div>' : '') +
+                  '<div style="color:#15803d; font-weight:600; margin-top:6px;">&#10004; Correct Principle: ' + esc(m.correct_idea) + '</div>';
+
+      if (m.example_code) {
+        mHtml += '<pre style="margin:8px 0 0 0; padding:10px; background:#fff; border:1px solid #fee2e2; border-radius:4px; font-size:0.85rem; overflow-x:auto;"><code>' +
+                 esc(m.example_code) + '</code></pre>';
+      }
+
+      box.innerHTML = mHtml;
+      misList.appendChild(box);
+    });
+  } else {
+    misWrap.style.display = 'none';
+  }
+
+  // Worked Example
+  const weWrap = document.getElementById('lesson-worked-example-wrap');
+  if (lesson.worked_example && lesson.worked_example.problem) {
+    weWrap.style.display = 'block';
+    document.getElementById('we-problem').innerText = lesson.worked_example.problem;
+    const weSteps = document.getElementById('we-steps');
+    weSteps.innerHTML = '';
+    (lesson.worked_example.steps || []).forEach(step => {
+      const li = document.createElement('li');
+      li.innerText = step;
+      weSteps.appendChild(li);
+    });
+  } else {
+    weWrap.style.display = 'none';
+  }
+
+  // Self Check
+  const scWrap = document.getElementById('lesson-self-check-wrap');
+  const scList = document.getElementById('lesson-self-check-list');
+  if (lesson.self_check && lesson.self_check.length) {
+    scWrap.style.display = 'block';
+    scList.innerHTML = '';
+    lesson.self_check.forEach((sc, idx) => {
+      const item = document.createElement('div');
+      item.style.border = '1px solid #e2e8f0';
+      item.style.borderRadius = '6px';
+      item.style.padding = '12px 16px';
+      item.style.background = '#f8fafc';
+
+      const qId = 'sc-ans-' + idx;
+      item.innerHTML = '<div style="display:flex; justify-content:space-between; align-items:center;">' +
+                         '<span style="font-weight:500; color:#1e293b;">Q: ' + esc(sc.question) + '</span>' +
+                         '<button class="btn btn-sm btn-ghost" onclick="toggleAnswer(\'' + qId + '\', this)" style="font-size:0.8rem;">Show Answer</button>' +
+                       '</div>' +
+                       '<div id="' + qId + '" style="display:none; margin-top:8px; padding-top:8px; border-top:1px dashed #cbd5e1; color:#0f766e; font-weight:500;">' +
+                         'A: ' + esc(sc.answer) +
+                       '</div>';
+      scList.appendChild(item);
+    });
+  } else {
+    scWrap.style.display = 'none';
+  }
+
+  // Sources
+  const srcWrap = document.getElementById('lesson-sources-wrap');
+  const srcList = document.getElementById('lesson-sources-list');
+  const sources = resData.sources || lesson.sources || [];
+  if (sources.length) {
+    srcWrap.style.display = 'block';
+    srcList.innerHTML = '';
+    sources.forEach(s => {
+      const pill = document.createElement('span');
+      pill.className = 'badge tiny';
+      pill.style.background = '#f3f4f6';
+      pill.style.color = '#374151';
+      pill.style.border = '1px solid #e5e7eb';
+      const sim = s.cosine !== undefined ? ' (' + (Math.round(s.cosine * 100) / 100) + ')' : '';
+      pill.innerText = (s.source || s.file || 'source') + sim;
+      srcList.appendChild(pill);
+    });
+  } else {
+    srcWrap.style.display = 'none';
+  }
+
+  // Initialize student note
+  const noteInput = document.getElementById('student-note-input');
+  if (noteInput && resData.step && resData.step.user_note) {
+    noteInput.value = resData.step.user_note;
+    updateCharCount();
+  }
+}
+
+function toggleAnswer(ansId, btn) {
+  const el = document.getElementById(ansId);
+  if (!el) return;
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    btn.innerText = 'Hide Answer';
+  } else {
+    el.style.display = 'none';
+    btn.innerText = 'Show Answer';
+  }
+}
+
+async function markStepDone() {
+  const btnTop = document.getElementById('btn-top-done');
+  const btnBot = document.getElementById('btn-bottom-done');
+  btnTop.disabled = true;
+  btnBot.disabled = true;
+
+  try {
+    const res = await fetch('/api/plan/step/' + stepId + '/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'done' }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to update step status');
+
+    if (data.warnings && data.warnings.length) {
+      alert('Step completed with coverage notes:\n- ' + data.warnings.join('\n- '));
+    }
+    window.location.href = "{{ url_for('pages.plan') }}";
+  } catch (err) {
+    alert('Error updating status: ' + err.message);
+    btnTop.disabled = false;
+    btnBot.disabled = false;
+  }
+}
+
+async function saveNoteAndRegenerate() {
+  const btn = document.getElementById('btn-save-note');
+  const noteInput = document.getElementById('student-note-input');
+  const noteText = noteInput.value.trim();
+
+  btn.disabled = true;
+  btn.innerText = 'Saving & Regenerating...';
+
+  try {
+    // 1. Update note on step
+    const noteRes = await fetch('/api/plan/step/' + stepId + '/note', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: noteText }),
+    });
+    if (!noteRes.ok) {
+      const err = await noteRes.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to save note');
+    }
+
+    // 2. Regenerate lesson
+    const regenRes = await fetch('/api/plan/step/' + stepId + '/lesson/regenerate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!regenRes.ok) {
+      const err = await regenRes.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to regenerate lesson (HTTP ' + regenRes.status + ')');
+    }
+    const data = await regenRes.json();
+    renderLesson(data);
+  } catch (err) {
+    alert('Note & Regeneration Error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerText = 'Save Note & Regenerate';
+  }
+}
+
+async function sendFeedback(rating) {
+  const btnUp = document.getElementById('btn-feedback-up');
+  const btnDown = document.getElementById('btn-feedback-down');
+  const msg = document.getElementById('feedback-msg');
+
+  btnUp.disabled = true;
+  btnDown.disabled = true;
+
+  try {
+    const res = await fetch('/api/plan/step/' + stepId + '/lesson/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rating: rating,
+        cache_key: currentCacheKey,
+      }),
+    });
+    if (!res.ok) throw new Error('Feedback submission failed');
+    msg.innerText = 'Thank you for your feedback!';
+    if (rating === 1) {
+      btnUp.style.background = '#dcfce7';
+    } else {
+      btnDown.style.background = '#fee2e2';
+    }
+  } catch (err) {
+    msg.innerText = 'Failed to submit feedback.';
+    btnUp.disabled = false;
+    btnDown.disabled = false;
+  }
+}
+
+function updateCharCount() {
+  const input = document.getElementById('student-note-input');
+  const countEl = document.getElementById('note-char-count');
+  if (input && countEl) {
+    countEl.innerText = input.value.length + ' / 400';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const input = document.getElementById('student-note-input');
+  if (input) {
+    input.addEventListener('input', updateCharCount);
+  }
+  loadStepLesson();
+});
+</script>
+{% endblock %}
+

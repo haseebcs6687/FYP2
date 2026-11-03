@@ -46,8 +46,14 @@ import time
 from pathlib import Path
 
 from core.concepts import CANONICAL_CONCEPT_TAGS, CONCEPTS, concept_title, normalise_tags
-from core.db_repo import record_llm_call
+from core.db_repo import get_cached_lesson, record_llm_call, save_cached_lesson
 from core.java_check import JavaChecker
+from core.lesson_engine import (
+    build_cache_key,
+    build_step_lesson_prompt,
+    select_passages,
+    validate_lesson,
+)
 from core.misconceptions import MISCONCEPTIONS, misconceptions_for
 from core.quiz_engine import (
     build_blueprint,
@@ -257,6 +263,496 @@ class ConceptClarifierAgent(object):
                 else "LLM request failed, local note served instead"
             ),
         }
+
+    def _get_index_signature(self):
+        """Extract index signature from vector store meta (invalidates cache on index rebuild)."""
+        if self.retriever and getattr(self.retriever, "store", None):
+            try:
+                self.retriever.ensure_loaded()
+                meta = getattr(self.retriever.store, "meta", {}) or {}
+                built = meta.get("built_at", "")
+                emb = meta.get("embedder", "")
+                cnt = meta.get("chunk_count", 0)
+                return f"{emb}:{cnt}:{built}"
+            except Exception:
+                pass
+        return "edugen_default_signature"
+
+    def verify_lesson(self, lesson_dict, focus_wrong_beliefs):
+        """
+        Cheap verifier call for generated lessons (Phase 7).
+        Input: the lesson's text and list of focus wrong beliefs.
+        Output: (states_wrong_belief_as_true: bool, note: str)
+        Skipped when verifier budget is exhausted or EDUGEN_LESSON_VERIFY is disabled.
+        """
+        verify_flag = os.environ.get("EDUGEN_LESSON_VERIFY", "1").lower()
+        if verify_flag not in ("1", "true", "yes"):
+            return False, "verifier_disabled"
+
+        if not self.llm_available or not focus_wrong_beliefs:
+            return False, "no_focus_beliefs"
+
+        from core.token_budget import is_model_exhausted
+
+        v_model = os.environ.get("EDUGEN_VERIFIER_MODEL") or self.verifier_model
+        v_fallback = os.environ.get("EDUGEN_VERIFIER_FALLBACK_MODEL") or self.verifier_fallback_model
+
+        if is_model_exhausted(v_model, self.model, self.fallback_model):
+            if v_fallback and not is_model_exhausted(v_fallback, self.model, self.fallback_model):
+                v_model = v_fallback
+            else:
+                return False, "verifier_budget_exhausted"
+
+        system_prompt = (
+            "You are an independent Java OOP pedagogical verifier.\n"
+            "Review the lesson text to ensure it NEVER states any misconception / wrong belief as true fact.\n"
+            "A lesson MUST explicitly refute wrong beliefs and present the correct OOP principle.\n"
+            "Return strictly JSON with schema: {\"states_wrong_belief_as_true\": bool, \"note\": \"...\"}"
+        )
+
+        user_prompt = (
+            "FOCUS WRONG BELIEFS TO CHECK:\n"
+            + "\n".join(f"- {wb}" for wb in focus_wrong_beliefs)
+            + "\n\nLESSON TEXT:\n"
+            + json.dumps(lesson_dict, indent=1)
+            + "\n\nDoes this lesson state any of the wrong beliefs above as true fact without explicitly refuting them? "
+            "Reply strictly in JSON: {\"states_wrong_belief_as_true\": true|false, \"note\": \"explanation\"}"
+        )
+
+        result = self._invoke_llm(
+            system_prompt,
+            user_prompt,
+            model=v_model,
+            fallback_model=v_fallback,
+            max_tokens=600,
+            purpose="verifier",
+            reasoning_effort="low",
+        )
+        if not result or not isinstance(result, dict):
+            return False, "verifier_call_failed"
+
+        states_wrong = bool(result.get("states_wrong_belief_as_true"))
+        note = str(result.get("note", ""))
+        return states_wrong, note
+
+    def _note_step_lesson(self, step, retrieval, error_reason="Offline mode"):
+        """
+        Build an offline schema-compliant lesson from local notes and RAG passages.
+        Used as fallback when LLM is unavailable, token budget is exhausted, or structural retry fails.
+        """
+        concept = step.get("concept", "class-definition")
+        difficulty = step.get("difficulty", "Easy")
+        style = step.get("lesson_style", "detailed")
+        focus = step.get("focus") or {}
+        if isinstance(focus, str):
+            try:
+                focus = json.loads(focus)
+            except Exception:
+                focus = {}
+
+        focus_mis = focus.get("misconceptions") or []
+        focus_ids = [
+            m.get("id") or m.get("misconception_id")
+            for m in focus_mis
+            if (m.get("id") or m.get("misconception_id"))
+        ]
+
+        meta = CONCEPTS.get(concept, {})
+        note = _read_note(concept) or meta.get("summary", "No note available for this concept yet.")
+        explanation, code, points = _split_note(note)
+
+        title = f"{concept_title(concept)} ({difficulty})"
+        summary = (explanation.split("\n\n")[0] if explanation else meta.get("summary", ""))[:180]
+
+        # Construct sections
+        sections = []
+        sec1_code = {
+            "language": "java",
+            "source": code if code else (
+                "public class Example {\n"
+                "    public static void main(String[] args) {\n"
+                f"        // Demonstration for {concept_title(concept)}\n"
+                "        System.out.println(\"EduGen Offline Lesson\");\n"
+                "    }\n"
+                "}"
+            ),
+            "compiles": True,
+            "explains": f"Core structure for {concept_title(concept)}.",
+        }
+        sections.append({
+            "heading": f"Understanding {concept_title(concept)}",
+            "body": explanation[:350] if explanation else "Key OOP concepts and principles.",
+            "code": sec1_code,
+        })
+
+        if style == "detailed":
+            sections.append({
+                "heading": "Core Mechanics & Implementation",
+                "body": "\n".join(points[:3]) if points else "Essential implementation rules and semantics in Java.",
+                "code": {
+                    "language": "java",
+                    "source": (
+                        "public class ImplementationDemo {\n"
+                        "    public static void main(String[] args) {\n"
+                        f"        // Secondary example for {concept_title(concept)}\n"
+                        "        System.out.println(\"Detailed demonstration\");\n"
+                        "    }\n"
+                        "}"
+                    ),
+                    "compiles": True,
+                    "explains": "Detailed code execution example.",
+                },
+            })
+            sections.append({
+                "heading": "Best Practices & Common Gotchas",
+                "body": "Carefully manage state, references, and encapsulation when applying these concepts.",
+                "code": None,
+            })
+        else:
+            if points:
+                sections.append({
+                    "heading": "Key Takeaways",
+                    "body": "\n".join(points[:2]),
+                    "code": None,
+                })
+
+        # Misconceptions
+        mis_list = []
+        for m in focus_mis:
+            mid = m.get("id") or m.get("misconception_id")
+            wb = m.get("wrong_belief") or MISCONCEPTIONS.get(mid, {}).get("wrong_belief", "")
+            ci = m.get("correct_idea") or MISCONCEPTIONS.get(mid, {}).get("correct_idea", "")
+            mis_list.append({
+                "id": mid,
+                "wrong_belief": wb,
+                "why_students_think_it": "Common confusion in Java object orientation.",
+                "correct_idea": ci,
+                "example_code": None,
+            })
+
+        worked_example = {
+            "problem": f"How to correctly apply {concept_title(concept)} in a standard Java application.",
+            "steps": [
+                f"Identify the scope and requirements involving {concept_title(concept)}.",
+                "Follow Java naming conventions and language rules.",
+                "Verify correct behavior at compile time and runtime.",
+            ],
+        }
+
+        self_check = [
+            {
+                "question": f"What is the primary purpose of {concept_title(concept)}?",
+                "answer": summary[:120] if summary else "To enforce clean object-oriented design.",
+            },
+            {
+                "question": f"What is a critical rule when working with {concept_title(concept)}?",
+                "answer": "Ensure correct syntax, proper type checking, and valid OOP relationships.",
+            },
+        ]
+
+        prereq_recap = [
+            f"Builds upon foundational OOP principles for {concept_title(concept)}."
+        ]
+
+        lesson_dict = {
+            "title": title,
+            "summary": summary,
+            "sections": sections,
+            "misconceptions": mis_list,
+            "worked_example": worked_example,
+            "self_check": self_check,
+            "prerequisite_recap": prereq_recap,
+            "misconceptions_addressed": focus_ids,
+            "source": "offline_notes",
+            "offline_banner": True,
+            "warning": error_reason,
+            "concept": concept,
+            "difficulty": difficulty,
+            "lesson_style": style,
+            "model": "offline",
+            "sources": retrieval.get("citations", []),
+        }
+        return lesson_dict
+
+    def generate_step_lesson(self, step, student_id=None, force_refresh=False):
+        """
+        Plan-driven lesson generation with caching, RAG grounding, Java check,
+        and verifier gate (Phase 7).
+        """
+        concept = step.get("concept", "class-definition")
+        difficulty = step.get("difficulty", "Easy")
+        style = step.get("lesson_style", "detailed")
+
+        focus = step.get("focus") or {}
+        if isinstance(focus, str):
+            try:
+                focus = json.loads(focus)
+            except Exception:
+                focus = {}
+
+        focus_mis = focus.get("misconceptions") or []
+        focus_ids = [
+            m.get("id") or m.get("misconception_id")
+            for m in focus_mis
+            if (m.get("id") or m.get("misconception_id"))
+        ]
+        weak_facets = focus.get("weak_facets") or []
+        skill_gap = focus.get("skill_gap")
+        note = step.get("user_note")
+        prompt_text = step.get("prompt_text")
+        index_signature = self._get_index_signature()
+
+        cache_key = build_cache_key(
+            concept, difficulty, style, focus_ids, skill_gap, note, index_signature
+        )
+
+        # 1. Check lesson_cache first (cache hit: no LLM call)
+        if not force_refresh:
+            cached = get_cached_lesson(cache_key)
+            if cached and cached.get("lesson"):
+                self._emit(
+                    f"Lesson cache hit for '{concept_title(concept)}' ({style}, {difficulty})",
+                    "info",
+                )
+                try:
+                    from core.agent_log import add_log
+                    add_log(
+                        "Concept Clarifier",
+                        f"Lesson cache hit for '{concept}' ({style}, {difficulty})",
+                        "info",
+                        {
+                            "cache_hit": True,
+                            "cache_key": cache_key,
+                            "tokens": 0,
+                            "served_count": cached.get("served_count", 1),
+                        },
+                    )
+                except Exception:
+                    pass
+
+                return {
+                    "lesson": cached["lesson"],
+                    "cached": True,
+                    "verified": bool(cached.get("verified", 1)),
+                    "cache_key": cache_key,
+                    "sources": cached["lesson"].get("sources", []),
+                    "step": step,
+                }
+
+        # 2. RAG Retrieval
+        extra_terms = " ".join(
+            [m.get("wrong_belief", "") for m in focus_mis] + (weak_facets or [])
+        )
+        brief = {
+            "concept": concept,
+            "difficulty": difficulty,
+            "mode": "lesson",
+            "extra_terms": extra_terms,
+            "top_k": 6,
+        }
+        retrieval = self._retrieve(brief)
+        selected_passages = select_passages(retrieval, style=style)
+
+        # 3. Check active model & token budget
+        from core.token_budget import select_active_model
+
+        active_model, budget_status = select_active_model(self.model, self.fallback_model)
+        if not self.llm_available or not active_model:
+            offline_lesson = self._note_step_lesson(
+                step, retrieval, error_reason="Daily LLM budget reached or offline mode"
+            )
+            try:
+                from core.agent_log import add_log
+                add_log(
+                    "Concept Clarifier",
+                    f"LLM budget exhausted / offline: served local note for '{concept}'",
+                    "warning",
+                    {"offline": True, "tokens": 0},
+                )
+            except Exception:
+                pass
+
+            return {
+                "lesson": offline_lesson,
+                "cached": False,
+                "verified": False,
+                "cache_key": cache_key,
+                "sources": retrieval.get("citations", []),
+                "step": step,
+            }
+
+        # 4. Prompt Assembly
+        covered_titles = []
+        if prompt_text and "Already covered earlier in this plan:" in prompt_text:
+            try:
+                part = prompt_text.split("Already covered earlier in this plan:", 1)[-1]
+                cov_line = part.split(".", 1)[0].strip()
+                if cov_line and cov_line.lower() != "none":
+                    covered_titles = [c.strip() for c in cov_line.split(",") if c.strip()]
+            except Exception:
+                pass
+
+        sys_prompt, user_prompt = build_step_lesson_prompt(
+            concept=concept,
+            difficulty=difficulty,
+            style=style,
+            focus_misconceptions=focus_mis,
+            weak_facets=weak_facets,
+            skill_gap=skill_gap,
+            note=note,
+            passages=selected_passages,
+            covered_titles=covered_titles,
+        )
+
+        # 5. LLM Call
+        t0 = time.time()
+        reasoning = os.environ.get("EDUGEN_LESSON_REASONING", "low")
+        raw_lesson = self._invoke_llm(
+            sys_prompt,
+            user_prompt,
+            max_tokens=2500,
+            purpose="lesson",
+            reasoning_effort=reasoning,
+        )
+        duration_ms = int((time.time() - t0) * 1000)
+
+        # 6. Verification Gates
+        checker = JavaChecker()
+        validated, val_errors = validate_lesson(raw_lesson, focus_ids=focus_ids, style=style)
+        java_ok, java_errors = (True, [])
+        if validated:
+            java_ok, java_errors = checker.check_lesson_code(validated)
+
+        focus_wbs = [
+            m.get("wrong_belief")
+            or MISCONCEPTIONS.get(m.get("id") or m.get("misconception_id", ""), {}).get("wrong_belief", "")
+            for m in focus_mis
+        ]
+        focus_wbs = [wb for wb in focus_wbs if wb]
+        ver_failed, ver_note = (False, "")
+        if validated and java_ok:
+            ver_failed, ver_note = self.verify_lesson(validated, focus_wbs)
+
+        gate_failed = (not validated) or (not java_ok) or ver_failed
+        verified = 1
+
+        # 7. One-shot regeneration on gate failure
+        if gate_failed:
+            feedback_lines = []
+            if val_errors:
+                feedback_lines.append("Schema / Style validation errors:\n" + "\n".join(val_errors))
+            if java_errors:
+                feedback_lines.append("Java compiler errors:\n" + "\n".join(java_errors))
+            if ver_failed:
+                feedback_lines.append(f"Pedagogical verifier issue: {ver_note}")
+
+            retry_user_prompt = (
+                user_prompt
+                + "\n\nCRITICAL FIXES REQUIRED (previous output failed quality gates):\n"
+                + "\n".join(feedback_lines)
+            )
+
+            t_retry0 = time.time()
+            retry_raw = self._invoke_llm(
+                sys_prompt,
+                retry_user_prompt,
+                max_tokens=2500,
+                purpose="lesson",
+                reasoning_effort=reasoning,
+            )
+            duration_ms += int((time.time() - t_retry0) * 1000)
+
+            validated2, val_errors2 = validate_lesson(
+                retry_raw, focus_ids=focus_ids, style=style
+            )
+            if validated2:
+                java_ok2, java_errors2 = checker.check_lesson_code(validated2)
+                ver_failed2, ver_note2 = (False, "")
+                if java_ok2:
+                    ver_failed2, ver_note2 = self.verify_lesson(validated2, focus_wbs)
+
+                if java_ok2 and not ver_failed2:
+                    validated = validated2
+                    verified = 1
+                else:
+                    validated = validated2
+                    verified = 0
+                    warns = java_errors2 + ([ver_note2] if ver_failed2 else [])
+                    validated["warning"] = "; ".join(warns)
+            else:
+                if validated:
+                    verified = 0
+                    validated["warning"] = "; ".join(val_errors + java_errors)
+                else:
+                    offline_lesson = self._note_step_lesson(
+                        step,
+                        retrieval,
+                        error_reason="LLM output failed structural validation after retry",
+                    )
+                    return {
+                        "lesson": offline_lesson,
+                        "cached": False,
+                        "verified": False,
+                        "cache_key": cache_key,
+                        "sources": retrieval.get("citations", []),
+                        "step": step,
+                    }
+
+        # 8. Enrich lesson with sources and metadata
+        validated["sources"] = retrieval.get("citations", [])
+        validated["concept"] = concept
+        validated["difficulty"] = difficulty
+        validated["lesson_style"] = style
+        validated["model"] = self.model
+        validated["cache_key"] = cache_key
+        if verified == 1 and "warning" in validated:
+            validated.pop("warning", None)
+
+        # 9. Save to cache
+        save_cached_lesson(
+            cache_key=cache_key,
+            concept=concept,
+            difficulty=difficulty,
+            style=style,
+            lesson_data=validated,
+            model=self.model,
+            index_signature=index_signature,
+            student_id=student_id,
+            plan_step_id=step.get("id"),
+            tokens=0,
+            verified=verified,
+        )
+
+        # 10. Structured logging (no lesson text in logs)
+        passages_summary = [
+            {"source": p.get("source"), "cosine": p.get("cosine_score", p.get("score"))}
+            for p in selected_passages
+        ]
+        try:
+            from core.agent_log import add_log
+            add_log(
+                "Concept Clarifier",
+                f"Lesson generated for '{concept}' ({style}, {difficulty})",
+                "success" if verified else "warning",
+                {
+                    "cached": False,
+                    "verified": bool(verified),
+                    "passages_used": passages_summary,
+                    "duration_ms": duration_ms,
+                },
+            )
+        except Exception:
+            pass
+
+        return {
+            "lesson": validated,
+            "cached": False,
+            "verified": bool(verified),
+            "cache_key": cache_key,
+            "sources": retrieval.get("citations", []),
+            "step": step,
+        }
+
 
     # =========================================================
     # QUIZ

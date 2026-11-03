@@ -941,3 +941,136 @@ def api_update_step_note(step_id):
     note = data.get("note", "")
     result = agents()["ac"].update_step(step_id, user_note=note)
     return jsonify(result)
+
+
+# ═════════════════════════════════════════════════════════════
+# Plan-Driven Lessons (Phase 7)
+# ═════════════════════════════════════════════════════════════
+
+@bp.get("/plan/step/<int:step_id>/lesson")
+@api_login_required
+def api_get_step_lesson(step_id):
+    """
+    Generate or retrieve cached plan-driven lesson for a study plan step.
+    Ownership enforced. First view sets step status to 'in_progress'.
+    """
+    student_id = current_student_id()
+    from core.db_repo import get_study_plan_by_id, get_study_plan_step, update_study_plan_step
+
+    step = get_study_plan_step(step_id)
+    if not step:
+        return jsonify({"error": f"Step {step_id} not found"}), 404
+
+    plan = get_study_plan_by_id(step["plan_id"])
+    if not plan or plan["student_id"] != student_id:
+        return jsonify({"error": "Forbidden: You do not own this study plan step"}), 403
+
+    # First successful view sets step status to in_progress
+    if step.get("status") == "pending":
+        update_study_plan_step(step_id, status="in_progress")
+        step["status"] = "in_progress"
+
+    res = agents()["cc"].generate_step_lesson(step, student_id=student_id)
+    return jsonify({
+        "lesson": res.get("lesson"),
+        "cached": res.get("cached", False),
+        "verified": res.get("verified", False),
+        "cache_key": res.get("cache_key"),
+        "sources": res.get("sources", []),
+        "step": step,
+    })
+
+
+@bp.post("/plan/step/<int:step_id>/lesson/feedback")
+@api_login_required
+def api_step_lesson_feedback(step_id):
+    """
+    Record student rating and optional comment on a step lesson.
+    Stores feedback row with target_type='lesson', target_ref=cache_key.
+    """
+    student_id = current_student_id()
+    from core.db_repo import get_db, get_study_plan_by_id, get_study_plan_step, record_feedback
+
+    step = get_study_plan_step(step_id)
+    if not step:
+        return jsonify({"error": f"Step {step_id} not found"}), 404
+
+    plan = get_study_plan_by_id(step["plan_id"])
+    if not plan or plan["student_id"] != student_id:
+        return jsonify({"error": "Forbidden: You do not own this study plan step"}), 403
+
+    data = request.get_json(silent=True) or {}
+    rating = data.get("rating")
+    if rating not in (1, -1):
+        return jsonify({"error": "Rating must be 1 or -1"}), 400
+
+    comment = str(data.get("comment", ""))[:300] if data.get("comment") else None
+    cache_key = data.get("cache_key")
+    if not cache_key:
+        conn = get_db()
+        row = conn.execute(
+            "SELECT cache_key FROM lesson_cache WHERE plan_step_id = ? ORDER BY id DESC LIMIT 1",
+            (step_id,),
+        ).fetchone()
+        cache_key = row["cache_key"] if row else f"step_{step_id}"
+
+    record_feedback(
+        student_id=student_id,
+        target_type="lesson",
+        target_ref=cache_key,
+        rating=rating,
+        comment=comment,
+    )
+    return jsonify({"ok": True, "message": "Feedback recorded."})
+
+
+@bp.post("/plan/step/<int:step_id>/lesson/regenerate")
+@api_login_required
+def api_step_lesson_regenerate(step_id):
+    """
+    Regenerate step lesson, bypassing cache once (max 3 regenerations per step per day).
+    Replaces cached entry and returns fresh lesson.
+    """
+    student_id = current_student_id()
+    from core.db_repo import (
+        count_step_regenerations_today,
+        get_study_plan_by_id,
+        get_study_plan_step,
+        record_llm_call,
+    )
+
+    step = get_study_plan_step(step_id)
+    if not step:
+        return jsonify({"error": f"Step {step_id} not found"}), 404
+
+    plan = get_study_plan_by_id(step["plan_id"])
+    if not plan or plan["student_id"] != student_id:
+        return jsonify({"error": "Forbidden: You do not own this study plan step"}), 403
+
+    # Enforce limit: max 3 regenerations per step per day
+    regen_count = count_step_regenerations_today(step_id)
+    if regen_count >= 3:
+        return jsonify({"error": "Maximum of 3 lesson regenerations per step per day reached."}), 429
+
+    record_llm_call(
+        student_id=student_id,
+        agent="Concept Clarifier",
+        purpose=f"step_regen_{step_id}",
+        model=agents()["cc"].model,
+        latency_ms=0,
+        ok=True,
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+    )
+
+    res = agents()["cc"].generate_step_lesson(step, student_id=student_id, force_refresh=True)
+    return jsonify({
+        "lesson": res.get("lesson"),
+        "cached": res.get("cached", False),
+        "verified": res.get("verified", False),
+        "cache_key": res.get("cache_key"),
+        "sources": res.get("sources", []),
+        "step": step,
+    })
+

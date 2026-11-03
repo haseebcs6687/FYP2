@@ -817,3 +817,231 @@ def update_study_plan_coverage(plan_id: int, coverage_dict: Dict[str, Any], conn
                 conn.close()
             except Exception:
                 pass
+
+
+# ═════════════════════════════════════════════════════════════
+# Lesson Cache & Feedback (Phase 7)
+# ═════════════════════════════════════════════════════════════
+
+def get_cached_lesson(cache_key: str, conn=None) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve cached lesson by cache_key.
+    Increments served_count and updates last_served_at timestamp.
+    """
+    if not cache_key:
+        return None
+
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+
+    try:
+        cur = conn.cursor()
+        row = cur.execute(
+            "SELECT * FROM lesson_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        # Update served_count and last_served_at
+        cur.execute(
+            """UPDATE lesson_cache
+               SET served_count = served_count + 1,
+                   last_served_at = CURRENT_TIMESTAMP
+               WHERE cache_key = ?""",
+            (cache_key,),
+        )
+        conn.commit()
+
+        data = dict(row)
+        # Reflect updated served_count in returned dict
+        data["served_count"] = (data.get("served_count") or 0) + 1
+        data["last_served_at"] = datetime.now().isoformat()
+        try:
+            data["lesson"] = json.loads(data["lesson_json"])
+        except Exception:
+            data["lesson"] = {}
+        return data
+    except Exception as exc:
+        add_log("Database", f"get_cached_lesson failed: {exc}", "error")
+        return None
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def save_cached_lesson(
+    cache_key: str,
+    concept: str,
+    difficulty: str,
+    style: str,
+    lesson_data: Dict[str, Any],
+    model: str,
+    index_signature: str,
+    student_id: Optional[int] = None,
+    plan_step_id: Optional[int] = None,
+    tokens: int = 0,
+    verified: int = 0,
+    conn=None,
+) -> Optional[int]:
+    """
+    Insert or update a generated lesson in the lesson_cache table.
+    """
+    if not cache_key or not lesson_data:
+        return None
+
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+
+    try:
+        cur = conn.cursor()
+        l_json = json.dumps(lesson_data)
+        cur.execute(
+            """INSERT INTO lesson_cache (
+                   cache_key, student_id, concept, difficulty, style,
+                   plan_step_id, lesson_json, model, index_signature,
+                   tokens, verified, created_at, last_served_at, served_count
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+               ON CONFLICT(cache_key) DO UPDATE SET
+                   lesson_json = excluded.lesson_json,
+                   model = excluded.model,
+                   index_signature = excluded.index_signature,
+                   tokens = excluded.tokens,
+                   verified = excluded.verified,
+                   last_served_at = CURRENT_TIMESTAMP,
+                   served_count = lesson_cache.served_count + 1""",
+            (
+                cache_key,
+                student_id,
+                concept,
+                difficulty,
+                style,
+                plan_step_id,
+                l_json,
+                model,
+                index_signature,
+                tokens,
+                verified,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    except Exception as exc:
+        conn.rollback()
+        add_log("Database", f"save_cached_lesson failed: {exc}", "error")
+        return None
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def cleanup_old_lesson_cache(days: int = 30, conn=None) -> int:
+    """
+    Delete lesson cache entries older than `days` days.
+    Returns the count of deleted entries.
+    """
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM lesson_cache WHERE last_served_at < datetime('now', '-' || ? || ' days')",
+            (int(days),),
+        )
+        deleted = cur.rowcount
+        conn.commit()
+        return deleted
+    except Exception as exc:
+        conn.rollback()
+        add_log("Database", f"cleanup_old_lesson_cache failed: {exc}", "error")
+        return 0
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def count_step_regenerations_today(step_id: int, conn=None) -> int:
+    """
+    Count how many times a step's lesson has been regenerated today (within the last 24h).
+    Enforces the maximum 3 regenerations per step per day limit.
+    """
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+
+    try:
+        cur = conn.cursor()
+        purpose = f"step_regen_{step_id}"
+        row = cur.execute(
+            """SELECT COUNT(*) as cnt FROM llm_calls
+               WHERE purpose = ?
+                 AND (created_at >= date('now', 'start of day')
+                      OR datetime(created_at) >= datetime('now', '-24 hours'))""",
+            (purpose,),
+        ).fetchone()
+        return row["cnt"] if row else 0
+    except Exception as exc:
+        add_log("Database", f"count_step_regenerations_today failed: {exc}", "error")
+        return 0
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def record_feedback(
+    student_id: int,
+    target_type: str,
+    target_ref: str,
+    rating: int,
+    comment: Optional[str] = None,
+    conn=None,
+) -> Optional[int]:
+    """
+    Record student feedback (rating: 1 or -1, comment <= 300) in the feedback table.
+    """
+    should_close = False
+    if conn is None:
+        conn = get_db()
+        should_close = True
+
+    try:
+        cur = conn.cursor()
+        clean_comment = str(comment or "")[:300] if comment else None
+        cur.execute(
+            """INSERT INTO feedback (student_id, target_type, target_ref, rating, comment, created_at)
+               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (student_id, str(target_type), str(target_ref), int(rating), clean_comment),
+        )
+        conn.commit()
+        return cur.lastrowid
+    except Exception as exc:
+        conn.rollback()
+        add_log("Database", f"record_feedback failed: {exc}", "error")
+        return None
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass

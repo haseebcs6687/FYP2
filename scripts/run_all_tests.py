@@ -122,6 +122,11 @@ TEST_SUITES = [
         "timeout": 60,
     },
     {
+        "name": "test_lesson_engine",
+        "cmd": [sys.executable, str(BASE_DIR / "scripts" / "test_lesson_engine.py")],
+        "timeout": 60,
+    },
+    {
         "name": "test_bank_tools",
         "cmd": [sys.executable, str(BASE_DIR / "tools" / "question_bank" / "test_bank_tools.py")],
         "timeout": 60,

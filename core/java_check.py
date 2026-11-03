@@ -293,3 +293,100 @@ class JavaChecker:
 
         return False
 
+    def compile_snippet(self, snippet):
+        """
+        Attempt to compile a Java code snippet.
+        Returns (compiles: bool, error_output: str).
+        If javac is not available, returns (True, "").
+        """
+        if not self.available or not snippet or not str(snippet).strip():
+            return True, ""
+
+        code, main_class = prepare_java_source(snippet)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src_file = os.path.join(tmpdir, f"{main_class}.java")
+            with open(src_file, "w", encoding="utf-8") as f:
+                f.write(code)
+
+            try:
+                ret, stdout, stderr = self.runner(
+                    [self.javac_path, f"{main_class}.java"],
+                    timeout=15,
+                    cwd=tmpdir,
+                )
+            except subprocess.TimeoutExpired:
+                return False, "javac_timeout"
+            except Exception as exc:
+                return False, f"javac_execution_error: {exc}"
+
+            combined = (stderr or "") + "\n" + (stdout or "")
+            if ret == 0:
+                return True, ""
+            return False, combined.strip()
+
+    def check_lesson_code(self, lesson):
+        """
+        Verify all Java code snippets in a generated lesson:
+          - Every section.code with compiles=true must compile.
+          - Every section.code with compiles=false must fail to compile.
+          - Any code fences in misconceptions[*].example_code count too.
+        Returns (ok: bool, list_of_compiler_failures).
+        """
+        if not self.available or not isinstance(lesson, dict):
+            return True, []
+
+        failures = []
+
+        # 1. Section code blocks
+        for idx, sec in enumerate(lesson.get("sections", [])):
+            if not isinstance(sec, dict):
+                continue
+            code_obj = sec.get("code")
+            if isinstance(code_obj, dict):
+                source = code_obj.get("source", "")
+                expected_compiles = bool(code_obj.get("compiles", True))
+                if source.strip():
+                    compiles, err = self.compile_snippet(source)
+                    if expected_compiles and not compiles:
+                        failures.append(
+                            f"Section {idx+1} ('{sec.get('heading', '')}') code expected to compile, but failed:\n{err}"
+                        )
+                    elif not expected_compiles and compiles:
+                        failures.append(
+                            f"Section {idx+1} ('{sec.get('heading', '')}') code expected to fail compilation, but compiled cleanly."
+                        )
+
+        # 2. Misconception example_code blocks
+        for idx, m in enumerate(lesson.get("misconceptions", [])):
+            if not isinstance(m, dict):
+                continue
+            ex_code = m.get("example_code")
+            if ex_code and isinstance(ex_code, str) and ex_code.strip():
+                snippets = extract_java_snippets(ex_code)
+                code_to_check = snippets[0] if snippets else ex_code.strip()
+
+                # Check if snippet indicates a deliberate compile error
+                lower_code = code_to_check.lower()
+                is_deliberate_error = (
+                    "// error" in lower_code
+                    or "// compile error" in lower_code
+                    or "// does not compile" in lower_code
+                    or "// compilation error" in lower_code
+                    or "does not compile" in m.get("why_students_think_it", "").lower()
+                )
+
+                compiles, err = self.compile_snippet(code_to_check)
+                if is_deliberate_error:
+                    if compiles:
+                        failures.append(
+                            f"Misconception '{m.get('id', idx+1)}' example code expected to fail compilation, but compiled cleanly."
+                        )
+                else:
+                    if not compiles:
+                        failures.append(
+                            f"Misconception '{m.get('id', idx+1)}' example code expected to compile, but failed:\n{err}"
+                        )
+
+        return (len(failures) == 0, failures)
+
+
