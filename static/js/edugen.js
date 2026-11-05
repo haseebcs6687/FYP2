@@ -213,6 +213,7 @@ const EvaluatorWindow = {
     if (closeBtn) {
       closeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
+        this.stopPolling();
         this.setState('closed');
       });
     }
@@ -288,10 +289,15 @@ const EvaluatorWindow = {
   },
 
   async pollEvents() {
+    if (this.state === 'closed') {
+      this.stopPolling();
+      return;
+    }
     if (this.isPolling) return;
     this.isPolling = true;
     try {
       const data = await EG.get('/api/events?since_id=' + this.lastId);
+      if (this.state === 'closed') return;
       if (data && data.events && data.events.length) {
         this.lastId = data.last_id || this.lastId;
         this.appendEvents(data.events);

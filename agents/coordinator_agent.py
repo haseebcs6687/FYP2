@@ -316,7 +316,15 @@ class CoordinatorAgent(object):
                     tot = q_res["total_questions"] if q_res and q_res["total_questions"] else len(sess_payload.get("questions", [])) or 1
                     sc = q_res["score"] if q_res else 0
                     accuracy = (sc / tot) * 100.0
+                    if accuracy >= 50.0:
+                        update_study_plan_step_status(plan_step_id, "done")
                     updated_plan = plan_after_check(active_plan, target_concept, accuracy, report=analysis)
+                    for s in updated_plan.get("steps", []):
+                        if s.get("id") == plan_step_id:
+                            if accuracy >= 50.0:
+                                s["status"] = "done"
+                            else:
+                                update_study_plan_step(step_id=plan_step_id, status="pending", prompt_text=s.get("prompt_text"))
                     if hasattr(self.ac, "save_plan"):
                         self.ac.save_plan(student_id, updated_plan)
                     plan_changed = True
@@ -379,19 +387,32 @@ class CoordinatorAgent(object):
                         if s.get("id") == plan_step_id:
                             s["status"] = "done"
 
-                    handoff("Coordinator", "Adaptive Content", "Re-evaluating mastery and replanning from fresh performance analysis")
-                    new_plan = self.ac.build_plan(student_id)
-                    active_plan = new_plan
-                    plan_changed = True
-                    steps = new_plan.get("steps", [])
-                    if not steps or all(s.get("kind") == "reevaluation" for s in steps):
+                    tot = q_res["total_questions"] if q_res and q_res["total_questions"] else len(sess_payload.get("questions", [])) or 1
+                    sc = q_res["score"] if q_res else 0
+                    accuracy = (sc / tot) * 100.0
+
+                    if accuracy >= 50.0:
                         state = STATE_COMPLETE
-                    stage_summaries.append({
-                        "stage": "reevaluation",
-                        "agent": "Adaptive Content",
-                        "summary": "Re-evaluation completed; new study plan calibrated",
-                        "at": time.strftime("%H:%M:%S"),
-                    })
+                        stage_summaries.append({
+                            "stage": "reevaluation",
+                            "agent": "Coordinator",
+                            "summary": f"Re-evaluation passed ({accuracy:.1f}%); study plan completed",
+                            "at": time.strftime("%H:%M:%S"),
+                        })
+                    else:
+                        handoff("Coordinator", "Adaptive Content", "Re-evaluating mastery and replanning from fresh performance analysis")
+                        new_plan = self.ac.build_plan(student_id)
+                        active_plan = new_plan
+                        plan_changed = True
+                        steps = new_plan.get("steps", [])
+                        if not steps or all(s.get("kind") == "reevaluation" for s in steps):
+                            state = STATE_COMPLETE
+                        stage_summaries.append({
+                            "stage": "reevaluation",
+                            "agent": "Adaptive Content",
+                            "summary": "Re-evaluation completed; new study plan calibrated",
+                            "at": time.strftime("%H:%M:%S"),
+                        })
 
                 # Case E: Any other quiz (free practice)
                 else:

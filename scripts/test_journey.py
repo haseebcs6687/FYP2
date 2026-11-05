@@ -33,6 +33,7 @@ from core.db import get_db, init_db
 from core.db_repo import (
     create_study_plan,
     get_active_study_plan,
+    get_study_plan_step,
     get_study_plan_steps,
     save_student_journey,
 )
@@ -382,6 +383,152 @@ class TestJourney(unittest.TestCase):
         journey = coord.get_journey(student_id=20)
         self.assertEqual(journey["state"], STATE_COMPLETE)
         self.assertEqual(journey["next_action"]["type"], "course_complete")
+
+    # 10. Phase 9B: Student with old completed plan who has a new plan with pending steps must NOT get course_complete
+    def test_old_plan_complete_new_plan_pending_not_course_complete(self):
+        conn = get_db()
+        conn.execute("INSERT INTO users (id, name, email, password_hash) VALUES (31, 'Student Charlie', 'charlie@edugen.edu', 'hash31')")
+        conn.execute("INSERT INTO students (id, user_id, name) VALUES (31, 31, 'Student Charlie')")
+        conn.commit()
+        conn.close()
+
+        old_plan_dict = {
+            "title": "Old Plan",
+            "concept": "inheritance-basics",
+            "steps": [
+                {"position": 1, "concept": "inheritance-basics", "kind": "weak", "status": "done", "lesson_style": "detailed"},
+                {"position": 2, "concept": "all-plan-concepts", "kind": "reevaluation", "status": "done", "focus": {"concepts": ["inheritance-basics"]}},
+            ],
+            "coverage": {"ok": True, "violations": []},
+            "deferred": [],
+        }
+        old_saved = create_study_plan(student_id=31, plan_dict=old_plan_dict)
+
+        new_plan_dict = {
+            "title": "New Plan",
+            "concept": "polymorphism-concept",
+            "steps": [
+                {"position": 1, "concept": "polymorphism-concept", "kind": "weak", "status": "pending", "lesson_style": "detailed"},
+                {"position": 2, "concept": "all-plan-concepts", "kind": "reevaluation", "status": "pending", "focus": {"concepts": ["polymorphism-concept"]}},
+            ],
+            "coverage": {"ok": True, "violations": []},
+            "deferred": [],
+        }
+        new_saved = create_study_plan(student_id=31, plan_dict=new_plan_dict)
+        save_student_journey(student_id=31, state=STATE_PLAN_ACTIVE, plan_id=new_saved["id"])
+
+        coord = self.app.extensions["edugen"]["coordinator"]
+        journey = coord.get_journey(student_id=31)
+        self.assertNotEqual(journey["next_action"]["type"], "course_complete")
+        self.assertEqual(journey["next_action"]["type"], "study_step")
+        self.assertEqual(journey["next_action"]["concept"], "polymorphism-concept")
+
+    # 11. Phase 9B: Student in state NEW with an old completed plan must get take_quiz/diagnostic, not course_complete
+    def test_student_in_state_new_with_old_completed_plan_gets_diagnostic(self):
+        conn = get_db()
+        conn.execute("INSERT INTO users (id, name, email, password_hash) VALUES (32, 'Student Dave', 'dave@edugen.edu', 'hash32')")
+        conn.execute("INSERT INTO students (id, user_id, name) VALUES (32, 32, 'Student Dave')")
+        conn.commit()
+        conn.close()
+
+        old_plan_dict = {
+            "title": "Old Completed Plan",
+            "concept": "inheritance-basics",
+            "steps": [
+                {"position": 1, "concept": "inheritance-basics", "kind": "weak", "status": "done", "lesson_style": "detailed"},
+                {"position": 2, "concept": "all-plan-concepts", "kind": "reevaluation", "status": "done"},
+            ],
+            "coverage": {"ok": True, "violations": []},
+            "deferred": [],
+        }
+        old_saved = create_study_plan(student_id=32, plan_dict=old_plan_dict)
+        save_student_journey(student_id=32, state=STATE_NEW, plan_id=old_saved["id"])
+
+        coord = self.app.extensions["edugen"]["coordinator"]
+        act = compute_next_action(STATE_NEW, old_saved, old_saved["steps"], quiz_history_count=0)
+        self.assertEqual(act["type"], "take_quiz")
+        self.assertEqual(act.get("quiz", {}).get("kind"), "diagnostic")
+        self.assertNotEqual(act["type"], "course_complete")
+
+        journey = coord.get_journey(student_id=32)
+        self.assertEqual(journey["next_action"]["type"], "take_quiz")
+        self.assertEqual(journey["next_action"].get("quiz", {}).get("kind"), "diagnostic")
+
+    # 12. Phase 9B: Check and probe steps become done through real submit path
+    def test_check_and_probe_steps_marked_done_via_real_submit_path(self):
+        conn = get_db()
+        conn.execute("INSERT INTO users (id, name, email, password_hash) VALUES (33, 'Student Eve', 'eve@edugen.edu', 'hash33')")
+        conn.execute("INSERT INTO students (id, user_id, name) VALUES (33, 33, 'Student Eve')")
+        conn.commit()
+        conn.close()
+
+        plan_dict = {
+            "title": "Active Check and Probe Plan",
+            "concept": "super-keyword",
+            "steps": [
+                {"position": 1, "concept": "super-keyword", "kind": "check", "status": "pending", "difficulty": "Easy"},
+                {"position": 2, "concept": "method-overriding", "kind": "probe", "status": "pending"},
+                {"position": 3, "concept": "all-plan-concepts", "kind": "reevaluation", "status": "pending"},
+            ],
+            "coverage": {"ok": True, "violations": []},
+            "deferred": [],
+        }
+        saved = create_study_plan(student_id=33, plan_dict=plan_dict)
+        save_student_journey(student_id=33, state=STATE_PLAN_ACTIVE, plan_id=saved["id"])
+        check_step_id = saved["steps"][0]["id"]
+        probe_step_id = saved["steps"][1]["id"]
+
+        coord = self.app.extensions["edugen"]["coordinator"]
+
+        # 1. Submit check quiz (100% score)
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO quiz_results (id, student_id, topic, concept, difficulty, score, total_questions, duration_ms, source)
+               VALUES (701, 33, 'OOP Basics', 'super-keyword', 'Easy', 3, 3, 10000, 'pool')"""
+        )
+        for i in range(3):
+            cur.execute(
+                """INSERT INTO question_attempts (id, quiz_result_id, question_index, concept_tags, is_correct, student_answer, correct_answer)
+                   VALUES (?, 701, ?, '["super-keyword"]', 1, 0, 0)""",
+                (7000 + i, i),
+            )
+        cur.execute(
+            """INSERT INTO quiz_sessions (id, student_id, concept, difficulty, source, payload_json)
+               VALUES (701, 33, 'super-keyword', 'Easy', 'pool', ?)""",
+            (json.dumps({"kind": "practice", "plan_step_id": check_step_id}),),
+        )
+        conn.commit()
+        conn.close()
+
+        res_check = coord.on_quiz_submitted(student_id=33, quiz_result_id=701, quiz_session_id=701)
+        step1_after = get_study_plan_step(check_step_id)
+        self.assertEqual(step1_after["status"], "done")
+
+        # 2. Submit probe quiz (100% score)
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO quiz_results (id, student_id, topic, concept, difficulty, score, total_questions, duration_ms, source)
+               VALUES (702, 33, 'Polymorphism', 'method-overriding', 'Medium', 4, 4, 15000, 'pool')"""
+        )
+        for i in range(4):
+            cur.execute(
+                """INSERT INTO question_attempts (id, quiz_result_id, question_index, concept_tags, is_correct, student_answer, correct_answer)
+                   VALUES (?, 702, ?, '["method-overriding"]', 1, 0, 0)""",
+                (7010 + i, i),
+            )
+        cur.execute(
+            """INSERT INTO quiz_sessions (id, student_id, concept, difficulty, source, payload_json)
+               VALUES (702, 33, 'method-overriding', 'Medium', 'pool', ?)""",
+            (json.dumps({"kind": "probe", "plan_step_id": probe_step_id}),),
+        )
+        conn.commit()
+        conn.close()
+
+        res_probe = coord.on_quiz_submitted(student_id=33, quiz_result_id=702, quiz_session_id=702)
+        step2_after = get_study_plan_step(probe_step_id)
+        self.assertEqual(step2_after["status"], "done")
 
 
 if __name__ == "__main__":

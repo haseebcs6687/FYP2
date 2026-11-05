@@ -56,43 +56,13 @@ def compute_next_action(
     """
     state_norm = str(state or STATE_NEW).strip().upper()
 
-    # 1. COMPLETE state
-    if state_norm == STATE_COMPLETE:
+    # 1. Explicit COMPLETE state (when not overridden by a plan with pending steps)
+    if state_norm == STATE_COMPLETE and not (steps and any(str(s.get("status", "pending")).lower().strip() not in ("done", "skipped") for s in steps)):
         return {
             "type": "course_complete",
             "message": "Congratulations! You have mastered all target Java OOP concepts in your personalized study plan.",
             "upcoming": [],
         }
-
-    # Check if a reevaluation step has completed (in memory or in student history)
-    if any(s.get("kind") == "reevaluation" and str(s.get("status", "")).lower().strip() == "done" for s in (steps or [])):
-        return {
-            "type": "course_complete",
-            "message": "Congratulations! You have mastered all target Java OOP concepts in your personalized study plan.",
-            "upcoming": [],
-        }
-
-    sid_val = plan.get("student_id") if plan else None
-    if sid_val:
-        try:
-            from core.db import get_db
-            conn = get_db()
-            row = conn.execute(
-                """SELECT sps.id FROM study_plan_steps sps
-                   JOIN study_plans sp ON sps.plan_id = sp.id
-                   WHERE sp.student_id = ? AND sps.kind = 'reevaluation' AND sps.status = 'done'
-                   LIMIT 1""",
-                (int(sid_val),),
-            ).fetchone()
-            conn.close()
-            if row:
-                return {
-                    "type": "course_complete",
-                    "message": "Congratulations! You have mastered all target Java OOP concepts in your personalized study plan.",
-                    "upcoming": [],
-                }
-        except Exception:
-            pass
 
     # 2. NEW student or missing plan / steps
     if state_norm == STATE_NEW or not plan or not steps:
@@ -100,6 +70,25 @@ def compute_next_action(
             "type": "take_quiz",
             "quiz": {"kind": "diagnostic"},
             "message": "Welcome to EduGen! Take the diagnostic quiz to establish your baseline and generate your personalized study plan.",
+            "upcoming": [],
+        }
+
+    # 3. Completion check on CURRENT plan ONLY:
+    # complete iff the current plan's reevaluation step is 'done', or every step of the current plan is done/skipped.
+    # No other source.
+    reeval_done = any(
+        s.get("kind") == "reevaluation" and str(s.get("status", "")).lower().strip() == "done"
+        for s in (steps or [])
+    )
+    all_done = all(
+        str(s.get("status", "pending")).lower().strip() in ("done", "skipped")
+        for s in (steps or [])
+    )
+
+    if reeval_done or all_done:
+        return {
+            "type": "course_complete",
+            "message": "Congratulations! You have mastered all target Java OOP concepts in your personalized study plan.",
             "upcoming": [],
         }
 

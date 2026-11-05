@@ -234,7 +234,6 @@ def run_demo():
     conn.close()
 
     c2_res = coord.on_quiz_submitted(student_id=1, quiz_result_id=102, quiz_session_id=102)
-    update_study_plan_step_status(check_step_id, "done")
     system_stages += 3  # Check evaluation, plan update, next action resolution
     transitions.append(("Check Quiz Cleared (100%)", coord.get_journey(student_id)["state"], c2_res["next_action"]))
     print(f"  [System Pipeline] Check evaluated -> Mastery confirmed -> Check step cleared.")
