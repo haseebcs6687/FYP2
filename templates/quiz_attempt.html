@@ -25,8 +25,6 @@ function renderHead() {
     '<div class="row" style="margin-bottom:8px">' +
       '<span class="badge badge-signal">' + EG.esc(quiz.difficulty) + '</span>' +
       EG.originBadge(quiz) +
-      (quiz.sources && quiz.sources.length
-        ? '<span class="badge">grounded in ' + quiz.sources.length + ' passage(s)</span>' : '') +
     '</div>' +
     '<h1 style="font-size:1.85rem">' + EG.esc(quiz.concept_title) + '</h1>' +
     '<p>' + quiz.questions.length + ' questions. Your answers are graded on the server when you submit.</p>';

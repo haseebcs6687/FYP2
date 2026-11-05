@@ -64,6 +64,36 @@ def compute_next_action(
             "upcoming": [],
         }
 
+    # Check if a reevaluation step has completed (in memory or in student history)
+    if any(s.get("kind") == "reevaluation" and str(s.get("status", "")).lower().strip() == "done" for s in (steps or [])):
+        return {
+            "type": "course_complete",
+            "message": "Congratulations! You have mastered all target Java OOP concepts in your personalized study plan.",
+            "upcoming": [],
+        }
+
+    sid_val = plan.get("student_id") if plan else None
+    if sid_val:
+        try:
+            from core.db import get_db
+            conn = get_db()
+            row = conn.execute(
+                """SELECT sps.id FROM study_plan_steps sps
+                   JOIN study_plans sp ON sps.plan_id = sp.id
+                   WHERE sp.student_id = ? AND sps.kind = 'reevaluation' AND sps.status = 'done'
+                   LIMIT 1""",
+                (int(sid_val),),
+            ).fetchone()
+            conn.close()
+            if row:
+                return {
+                    "type": "course_complete",
+                    "message": "Congratulations! You have mastered all target Java OOP concepts in your personalized study plan.",
+                    "upcoming": [],
+                }
+        except Exception:
+            pass
+
     # 2. NEW student or missing plan / steps
     if state_norm == STATE_NEW or not plan or not steps:
         return {
@@ -162,6 +192,15 @@ def compute_next_action(
         targeted_concepts = plan_step_concepts(target_step) or [c]
         # Filter out sentinel if any
         targeted_concepts = [tc for tc in targeted_concepts if tc and tc != "all-plan-concepts"]
+        if not targeted_concepts and steps:
+            # Fall back to distinct non-sentinel canonical concepts across plan steps
+            targeted_concepts = [
+                s.get("concept") for s in steps
+                if s.get("concept") and s.get("concept") != "all-plan-concepts"
+            ]
+            # Deduplicate preserving order
+            seen_c = set()
+            targeted_concepts = [x for x in targeted_concepts if not (x in seen_c or seen_c.add(x))]
         if not targeted_concepts:
             targeted_concepts = [c]
 

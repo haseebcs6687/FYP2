@@ -33,6 +33,8 @@ from core.db_repo import (
     get_active_study_plan,
     get_student_events,
     get_student_journey,
+    get_study_plan_steps,
+    update_study_plan_step_status,
 )
 from core.journey import (
     STATE_COMPLETE,
@@ -232,6 +234,7 @@ def run_demo():
     conn.close()
 
     c2_res = coord.on_quiz_submitted(student_id=1, quiz_result_id=102, quiz_session_id=102)
+    update_study_plan_step_status(check_step_id, "done")
     system_stages += 3  # Check evaluation, plan update, next action resolution
     transitions.append(("Check Quiz Cleared (100%)", coord.get_journey(student_id)["state"], c2_res["next_action"]))
     print(f"  [System Pipeline] Check evaluated -> Mastery confirmed -> Check step cleared.")
@@ -347,22 +350,31 @@ def run_demo():
     total_db_events = len(events)
     effective_system_stages = max(system_stages, total_db_events)
     total_stages = student_actions + effective_system_stages
-    automation_pct = (effective_system_stages / total_stages) * 100.0
+    legacy_automation_pct = (effective_system_stages / total_stages) * 100.0
+
+    # Honest pedagogical automation metric (excluding fine-grained telemetry, logs, and handoffs)
+    core_system_events = [
+        ev for ev in events
+        if ev.get("action") not in ("log", "handoff", "run_start", "run_end")
+    ]
+    honest_system_stages = len(core_system_events)
+    honest_total_stages = student_actions + honest_system_stages
+    honest_automation_pct = (honest_system_stages / honest_total_stages) * 100.0 if honest_total_stages else 0.0
 
     print(f"Total Student-Initiated Actions : {student_actions}")
     print("  - Diagnostic quiz submit (1)")
     print("  - Reading complete / mark done (2)")
     print("  - Check, Probe & Reevaluation quiz submissions (3)")
-    print(f"\nTotal System-Initiated Stages   : {effective_system_stages}")
-    print("  - Performance Analysis (BKT mastery, root causes, misconception tracking)")
-    print("  - Adaptive Content Plan Generation (prerequisite closure, topological sort)")
-    print("  - Coverage verification (5-point invariant check)")
-    print("  - Dynamic next-action computation (journey state transitions)")
-    print("  - Background asynchronous lesson prefetch")
-    print("  - Check, probe & reevaluation evaluation and dynamic step clearing")
-    print("  - Structured telemetry emissions and cross-agent handoffs")
+    print(f"\nCore System Pedagogical Decisions (Honest) : {honest_system_stages}")
+    print("  - Diagnostic Analysis & BKT mastery calculation")
+    print("  - Prerequisite closure & topological plan synthesis")
+    print("  - Formal coverage invariant checks")
+    print("  - Check, probe, & reevaluation evaluation")
+    print("  - Dynamic next-action routing & journey completion")
+    print(f"All Recorded Telemetry Events (Legacy Metric) : {effective_system_stages}")
     print("-" * 76)
-    print(f"Automation Ratio [System / (Student + System)]: {automation_pct:.1f}%")
+    print(f"Honest Automation Ratio [Decisions / (Student + Decisions)] : {honest_automation_pct:.1f}%")
+    print(f"Legacy Automation Ratio  [All Events / (Student + Events)]   : {legacy_automation_pct:.1f}%")
     print("-" * 76)
     print("\nComparison with Legacy Manual Flow:")
     print("  * Legacy Flow: The student had to perform manual navigation between pages")
@@ -372,7 +384,20 @@ def run_demo():
     print(f"  * Autonomous Loop (Phase 8): The state machine handles all routing, prefetching,")
     print(f"    mastery validation, and plan updates behind the scenes.")
     print(f"    Required student clicks reduced to strictly pedagogical actions ({student_actions} submissions).")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Final Plan Steps Status & Assertions
+    # ─────────────────────────────────────────────────────────────────────────
+    print("\n" + "=" * 76)
+    print("  FINAL STUDY PLAN STEPS & STATUS")
     print("=" * 76)
+    final_steps = get_study_plan_steps(saved_plan["id"])
+    for s in final_steps:
+        print(f"  Step {s.get('position')}: {s.get('concept')} [{s.get('kind')}] -> status: {s.get('status')}")
+    print("=" * 76)
+
+    assert final_j["state"] == STATE_COMPLETE, f"Expected state COMPLETE, got {final_j['state']}"
+    assert c4_res["next_action"]["type"] == "course_complete", f"Expected course_complete, got {c4_res['next_action']['type']}"
 
     tmp_dir.cleanup()
 

@@ -258,6 +258,41 @@ class Retriever(object):
             for i, p in enumerate(passages)
         ]
         result["trace"] = trace
+
+        try:
+            from core.event_bus import emit
+            top_passages_emit = [
+                {
+                    "source_file": p.get("source"),
+                    "cleaned_section": p.get("section") or p.get("title") or "",
+                    "cosine": round(float(p.get("cosine", p.get("vector_score", 0.0))), 4),
+                    "lexical": round(float(p.get("lexical", p.get("lexical_score", 0.0))), 4),
+                    "tag_score": round(float(p.get("tag_score", 0.0)), 4),
+                    "final_score": round(float(p.get("final", p.get("score", 0.0))), 4),
+                }
+                for p in passages
+            ]
+            emit(
+                agent="Retriever",
+                action="rag_retrieve",
+                message="Retrieved {} passages for query '{}'".format(len(passages), query_text[:50]),
+                input={
+                    "query": query_text,
+                    "concept_filter": concept,
+                    "filters": trace.get("filters"),
+                },
+                output={
+                    "query": query_text,
+                    "concept_filter": concept,
+                    "top_k_passages": top_passages_emit,
+                    "passages": top_passages_emit,
+                    "latency_ms": latency_ms,
+                },
+                duration_ms=int(latency_ms),
+            )
+        except Exception:
+            pass
+
         return result
 
     def _embed_query(self, query_text):

@@ -20,12 +20,10 @@
     {% if user %}
     <nav class="nav">
       <a href="{{ url_for('pages.dashboard') }}" class="{{ 'on' if page == 'dashboard' }}">Dashboard</a>
-      <a href="{{ url_for('pages.pipeline') }}"  class="{{ 'on' if page == 'pipeline' }}">Agent pipeline</a>
-      <a href="{{ url_for('pages.learn') }}"     class="{{ 'on' if page == 'learn' }}">Learn</a>
+      <a href="{{ url_for('pages.learn') }}"     class="{{ 'on' if page in ('learn', 'plan') }}">Learn</a>
       <a href="{{ url_for('pages.quiz') }}"      class="{{ 'on' if page == 'quiz' }}">Quiz</a>
       <a href="{{ url_for('pages.analysis') }}"  class="{{ 'on' if page == 'analysis' }}">Analysis</a>
       <a href="{{ url_for('pages.history') }}"   class="{{ 'on' if page == 'history' }}">History</a>
-      <a href="{{ url_for('pages.library') }}"   class="{{ 'on' if page == 'library' }}">Library</a>
     </nav>
     <button class="nav-toggle" aria-label="Open menu">&#9776;</button>
     <div class="topbar-user">
@@ -58,23 +56,75 @@
 </footer>
 {% endblock %}
 
-{% if show_logs %}
-<div class="console" id="console">
-  <div class="console-head" id="console-head">
-    <span class="console-pulse"></span>
-    <span class="console-title">Agent activity</span>
-    <span class="console-count" id="console-count">0 events</span>
-    <button class="console-btn" data-console-action="hide" title="Hide during presentation">&times;</button>
-  </div>
-  <div class="console-body" id="console-body"></div>
-  <div class="console-foot">
-    <span>Live feed of the four agents</span>
-    <span class="spacer" style="flex:1"></span>
-    <button data-console-action="clear">Clear</button>
-  </div>
+{% if user %}
+<!-- Evaluator Activity Window (Logged-in pages only) -->
+<div class="evaluator-pill" id="evaluator-pill" role="button" tabindex="0" title="Open Evaluator Activity Window">
+  <span class="eval-dot"></span>
+  <span class="eval-label">Evaluator</span>
+  <span class="eval-badge" id="eval-event-count">0</span>
 </div>
-<div class="console-pill" id="console-pill">
-  <span class="console-pulse"></span> Show agent activity
+
+<div class="evaluator-panel" id="evaluator-panel" style="display:none;" aria-label="Evaluator Activity Panel">
+  <div class="eval-header">
+    <div class="eval-header-title">
+      <span class="eval-dot"></span>
+      <strong>Evaluator Activity</strong>
+      <span class="muted small" id="eval-status-indicator">Connected</span>
+    </div>
+    <div class="eval-controls">
+      <button class="eval-btn" id="eval-minimize-btn" title="Minimize to pill" aria-label="Minimize">&minus;</button>
+      <button class="eval-btn" id="eval-close-btn" title="Close evaluator window" aria-label="Close">&times;</button>
+    </div>
+  </div>
+
+  <div class="eval-tabs" role="tablist">
+    <button class="eval-tab on" data-tab="live">Live events</button>
+    <button class="eval-tab" data-tab="runs">Runs</button>
+    <button class="eval-tab" data-tab="rag">RAG</button>
+    <button class="eval-tab" data-tab="decisions">Decisions</button>
+    <button class="eval-tab" data-tab="quiz_build">Quiz build</button>
+    <button class="eval-tab" data-tab="system">System</button>
+  </div>
+
+  <div class="eval-content">
+    <div class="eval-pane on" id="eval-pane-live">
+      <div class="eval-pane-toolbar">
+        <span class="small muted" id="eval-live-summary">0 events recorded</span>
+        <button class="btn btn-xs btn-ghost" id="eval-clear-events">Clear</button>
+      </div>
+      <div class="eval-scroll-area" id="eval-live-list"></div>
+    </div>
+
+    <div class="eval-pane" id="eval-pane-runs">
+      <div class="eval-scroll-area" id="eval-runs-list">
+        <p class="small muted">Loading runs...</p>
+      </div>
+    </div>
+
+    <div class="eval-pane" id="eval-pane-rag">
+      <div class="eval-scroll-area" id="eval-rag-list">
+        <p class="small muted">Loading RAG telemetry...</p>
+      </div>
+    </div>
+
+    <div class="eval-pane" id="eval-pane-decisions">
+      <div class="eval-scroll-area" id="eval-decisions-list">
+        <p class="small muted">Loading decisions...</p>
+      </div>
+    </div>
+
+    <div class="eval-pane" id="eval-pane-quiz_build">
+      <div class="eval-scroll-area" id="eval-quiz-build-list">
+        <p class="small muted">Loading quiz build telemetry...</p>
+      </div>
+    </div>
+
+    <div class="eval-pane" id="eval-pane-system">
+      <div class="eval-scroll-area" id="eval-system-info">
+        <p class="small muted">Loading system diagnostics...</p>
+      </div>
+    </div>
+  </div>
 </div>
 {% endif %}
 

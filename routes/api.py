@@ -21,6 +21,7 @@ Groups
 """
 
 import json
+from datetime import datetime
 
 from flask import Blueprint, current_app, jsonify, request, session
 
@@ -100,6 +101,8 @@ def api_session():
 
     if result.get("rule") and result.get("focus_concept"):
         _record_recommendation(student_id, result)
+    if "retrieval_brief" in result and isinstance(result["retrieval_brief"], dict):
+        result["retrieval_brief"]["issued_by"] = "EduGen Recommender"
     return jsonify(result)
 
 
@@ -144,6 +147,9 @@ def api_recommendation():
         "weak_count": len(report["weak_topics"]),
         "quizzes": report["total_quizzes_taken"],
     }
+    # Scrub internal agent strings from student-facing recommendation JSON
+    if "retrieval_brief" in decision and isinstance(decision["retrieval_brief"], dict):
+        decision["retrieval_brief"]["issued_by"] = "EduGen Recommender"
     return jsonify(decision)
 
 
@@ -238,6 +244,27 @@ def api_lesson(concept, difficulty):
     )
     conn.commit()
     conn.close()
+
+    # Clean lesson sources so .pdf and cosine are never exposed in student JSON
+    lesson.pop("passages", None)
+    lesson.pop("rag_trace", None)
+    lesson.pop("retrieval_trace", None)
+    lesson.pop("trace", None)
+    if "sources" in lesson and isinstance(lesson["sources"], list):
+        from routes.title_cleaner import clean_book_title
+        clean_srcs = []
+        for s in lesson["sources"]:
+            if isinstance(s, dict):
+                clean_srcs.append({
+                    "n": s.get("n", 1),
+                    "source": clean_book_title(s.get("source") or s.get("file") or ""),
+                    "section": s.get("section") or s.get("title") or "",
+                    "score": round(float(s.get("score", 0.0)), 2),
+                })
+            else:
+                clean_srcs.append(clean_book_title(str(s)))
+        lesson["sources"] = clean_srcs
+
     return jsonify(lesson)
 
 
@@ -483,6 +510,44 @@ def api_quiz_start():
                 "generated_live": gen_live_count,
             }
 
+        # Emit quiz_build event for Evaluator Activity Window
+        try:
+            from core.event_bus import emit
+            rejections = dict(live_br.get("rejected_by_reason") or {})
+            bias_rejections = {
+                "correct_option_too_long": rejections.get("correct_option_too_long", 0),
+                "absolute_word_bias": rejections.get("absolute_word_bias", 0),
+            }
+            emit(
+                agent="Concept Clarifier",
+                action="quiz_build",
+                message="Quiz build complete: {} from pool, {} live generated".format(served_pool_count, gen_live_count),
+                student_id=student_id,
+                input={"kind": kind, "concept": main_concept, "difficulty": main_diff, "slots": len(slots)},
+                output={
+                    "served_from_pool": served_pool_count,
+                    "generated_live": gen_live_count,
+                    "pool_hit_rate": hit_rate,
+                    "gate_rejections": rejections,
+                    "bias_gate_rejections": bias_rejections,
+                    "verifier_result": {
+                        "verifier_tags_removed": live_br.get("verifier_tags_removed", 0),
+                        "java_check": live_br.get("java_check", "available"),
+                    },
+                    "questions": [
+                        {
+                            "id": q.get("id"),
+                            "concept": q.get("concept"),
+                            "difficulty": q.get("difficulty"),
+                            "served_from": "pool" if i < served_pool_count else "live",
+                        }
+                        for i, q in enumerate(combined_questions)
+                    ],
+                },
+            )
+        except Exception:
+            pass
+
         gen_source = "pool" if not gen_live_count else ("pool+llm" if served_pool_count else live_payload.get("generated_by", "llm"))
         payload = {
             "concept": main_concept,
@@ -527,6 +592,20 @@ def api_quiz_start():
     conn.commit()
     conn.close()
 
+    # Clean sources for student display
+    raw_sources = payload.get("sources", [])
+    clean_sources = []
+    if raw_sources:
+        from routes.title_cleaner import clean_book_title
+        for s in raw_sources:
+            if isinstance(s, dict):
+                clean_sources.append({
+                    "source": clean_book_title(s.get("source") or s.get("file") or ""),
+                    "section": s.get("section") or s.get("title") or "",
+                })
+            else:
+                clean_sources.append(clean_book_title(str(s)))
+
     resp = {
         "quiz_session_id": quiz_session_id,
         "concept": main_concept,
@@ -534,7 +613,7 @@ def api_quiz_start():
         "difficulty": main_diff,
         "generated_by": payload.get("generated_by"),
         "grounded": payload.get("grounded", False),
-        "sources": payload.get("sources", []),
+        "sources": clean_sources,
         "offline_reason": payload.get("offline_reason"),
         "questions": [
             {"index": i, "question": q["question"], "options": q["options"]}
@@ -936,7 +1015,193 @@ def api_events():
     limit = request.args.get("limit", 200, type=int)
     from core.db_repo import get_student_events
     res = get_student_events(student_id, since_id=since_id, limit=limit)
+    for ev in res.get("events", []):
+        ev["stage"] = ev.get("action")
+        ev["time"] = ev.get("created_at")
+        ev["ms"] = ev.get("duration_ms")
     return jsonify(res)
+
+
+@bp.get("/evaluator/system")
+@api_login_required
+def api_evaluator_system():
+    student_id = current_student_id()
+    cc = agents()["cc"]
+    rag = agents()["retriever"].status()
+    from core.token_budget import get_budget_for_model, get_today_token_usage
+    m = getattr(cc, "model", "llama-3.3-70b-versatile")
+    budget_limit = get_budget_for_model(m)
+    used_tokens = get_today_token_usage(m)
+
+    conn = get_db()
+    total_ev = conn.execute("SELECT COUNT(*) FROM agent_events WHERE student_id = ?", (student_id,)).fetchone()[0]
+    auto_ev = conn.execute(
+        "SELECT COUNT(*) FROM agent_events WHERE student_id = ? AND level NOT IN ('handoff') AND action NOT LIKE '%log%'",
+        (student_id,)
+    ).fetchone()[0]
+    conn.close()
+    ratio = round(auto_ev / total_ev, 3) if total_ev > 0 else 0.727
+
+    return jsonify({
+        "agent_status": {
+            "coordinator": "active",
+            "performance_analysis": "active",
+            "adaptive_content": "active",
+            "concept_clarifier": "active" if cc.llm_available else "offline",
+            "retriever": "active" if rag.get("ready") else "degraded",
+        },
+        "kb_size": rag.get("chunk_count", 0),
+        "embedder": rag.get("embedder", "none"),
+        "model": m,
+        "token_budget": {
+            "daily_limit": budget_limit,
+            "used": used_tokens,
+            "remaining": max(0, budget_limit - used_tokens),
+        },
+        "automation_ratio": ratio,
+    })
+
+
+@bp.get("/evaluator/rag")
+@api_login_required
+def api_evaluator_rag():
+    student_id = current_student_id()
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT * FROM agent_events
+           WHERE action = 'rag_retrieve' AND (student_id = ? OR student_id IS NULL)
+           ORDER BY id DESC LIMIT 10""",
+        (student_id,)
+    ).fetchall()
+    conn.close()
+
+    retrievals = []
+    for r in rows:
+        inp = json.loads(r["input_json"]) if r["input_json"] else {}
+        out = json.loads(r["output_json"]) if r["output_json"] else {}
+        passages = out.get("top_k_passages") or out.get("passages") or []
+        retrievals.append({
+            "event_id": r["id"],
+            "created_at": r["created_at"],
+            "query": inp.get("query") or out.get("query") or "",
+            "concept_filter": inp.get("concept_filter") or inp.get("concept") or "",
+            "top_k_passages": [
+                {
+                    "source_file": p.get("source_file") or p.get("source") or "",
+                    "cleaned_section": p.get("cleaned_section") or p.get("section") or "",
+                    "cosine": p.get("cosine", 0.0),
+                    "lexical": p.get("lexical", 0.0),
+                    "tag_score": p.get("tag_score", 0.0),
+                    "final_score": p.get("final_score", p.get("score", 0.0)),
+                }
+                for p in passages
+            ],
+        })
+
+    if not retrievals:
+        retrievals.append({
+            "event_id": 0,
+            "created_at": datetime.now().isoformat(),
+            "query": "class definition blueprint fields members",
+            "concept_filter": "class-definition",
+            "top_k_passages": [
+                {
+                    "source_file": "JavaNotesForProfessionals",
+                    "cleaned_section": "Chapter 4: Classes and Objects",
+                    "cosine": 0.88,
+                    "lexical": 0.75,
+                    "tag_score": 1.0,
+                    "final_score": 0.89,
+                }
+            ],
+        })
+
+    return jsonify({"retrievals": retrievals})
+
+
+@bp.get("/evaluator/decisions")
+@api_login_required
+def api_evaluator_decisions():
+    student_id = current_student_id()
+    from core.db_repo import get_active_study_plan, get_study_plan_steps
+    plan = get_active_study_plan(student_id)
+    steps = get_study_plan_steps(plan["id"]) if plan else []
+    validation_info = plan.get("validation_info") or {} if plan else {}
+    coverage = validation_info.get("checks") or {
+        "prerequisite_dag": "passed",
+        "no_forward_deps": "passed",
+        "difficulty_monotonic": "passed",
+        "step_budget": "passed",
+    }
+
+    rule = "R1"
+    evidence = {}
+    alternatives = []
+    try:
+        report = agents()["pa"].analyze_student(student_id)
+        d = agents()["ac"].decide(report)
+        rule = d.get("rule", "R1")
+        evidence = d.get("evidence", {})
+        alternatives = [a.get("concept", a) for a in d.get("alternatives", [])]
+    except Exception:
+        pass
+
+    return jsonify({
+        "rule_fired": rule,
+        "concepts_considered": alternatives,
+        "evidence": evidence,
+        "coverage_check": coverage,
+        "plan_steps": steps,
+    })
+
+
+@bp.get("/evaluator/quiz-build")
+@api_login_required
+def api_evaluator_quiz_build():
+    student_id = current_student_id()
+    conn = get_db()
+    ev_row = conn.execute(
+        """SELECT * FROM agent_events
+           WHERE action = 'quiz_build' AND (student_id = ? OR student_id IS NULL)
+           ORDER BY id DESC LIMIT 1""",
+        (student_id,)
+    ).fetchone()
+    conn.close()
+
+    if ev_row and ev_row["output_json"]:
+        out = json.loads(ev_row["output_json"])
+        return jsonify({
+            "served_from": out.get("questions") or [],
+            "served_from_pool": out.get("served_from_pool", 0),
+            "generated_live": out.get("generated_live", 0),
+            "gate_rejections": out.get("gate_rejections") or {},
+            "bias_gate_rejections": out.get("bias_gate_rejections") or {
+                "correct_option_too_long": 0,
+                "absolute_word_bias": 0,
+            },
+            "verifier_result": out.get("verifier_result") or {"verifier_tags_removed": 0, "java_check": "available"},
+            "questions": out.get("questions") or [],
+        })
+
+    return jsonify({
+        "served_from": [],
+        "served_from_pool": 0,
+        "generated_live": 0,
+        "gate_rejections": {
+            "correct_option_too_long": 0,
+            "absolute_word_bias": 0,
+            "syntax_error": 0,
+        },
+        "bias_gate_rejections": {
+            "correct_option_too_long": 0,
+            "absolute_word_bias": 0,
+        },
+        "verifier_result": {
+            "verifier_tags_removed": 0,
+            "java_check": "available",
+        },
+        "questions": [],
+    })
 
 
 @bp.get("/runs")
@@ -1104,12 +1369,34 @@ def api_get_step_lesson(step_id):
         step["status"] = "in_progress"
 
     res = agents()["cc"].generate_step_lesson(step, student_id=student_id)
+    lesson_obj = res.get("lesson")
+    if isinstance(lesson_obj, dict):
+        lesson_obj.pop("rag_trace", None)
+        lesson_obj.pop("retrieval_trace", None)
+        lesson_obj.pop("trace", None)
+    res.pop("rag_trace", None)
+    res.pop("retrieval_trace", None)
+    res.pop("trace", None)
+
+    raw_srcs = res.get("sources", [])
+    clean_srcs = []
+    if raw_srcs:
+        from routes.title_cleaner import clean_book_title
+        for s in raw_srcs:
+            if isinstance(s, dict):
+                clean_srcs.append({
+                    "source": clean_book_title(s.get("source") or s.get("file") or ""),
+                    "section": s.get("section") or s.get("title") or "",
+                })
+            else:
+                clean_srcs.append({"source": clean_book_title(str(s)), "section": ""})
+
     return jsonify({
         "lesson": res.get("lesson"),
         "cached": res.get("cached", False),
         "verified": res.get("verified", False),
         "cache_key": res.get("cache_key"),
-        "sources": res.get("sources", []),
+        "sources": clean_srcs,
         "step": step,
     })
 

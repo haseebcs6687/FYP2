@@ -290,21 +290,17 @@ function renderLesson(resData) {
 
   // Sources
   const srcWrap = document.getElementById('lesson-sources-wrap');
-  const srcList = document.getElementById('lesson-sources-list');
   const sources = resData.sources || lesson.sources || [];
   if (sources.length) {
     srcWrap.style.display = 'block';
-    srcList.innerHTML = '';
+    const lines = [];
     sources.forEach(s => {
-      const pill = document.createElement('span');
-      pill.className = 'badge tiny';
-      pill.style.background = '#f3f4f6';
-      pill.style.color = '#374151';
-      pill.style.border = '1px solid #e5e7eb';
-      const sim = s.cosine !== undefined ? ' (' + (Math.round(s.cosine * 100) / 100) + ')' : '';
-      pill.innerText = (s.source || s.file || 'source') + sim;
-      srcList.appendChild(pill);
+      const b = (typeof s === 'string') ? s : (s.source || s.file || s.book || '');
+      const sec = (typeof s === 'object') ? (s.section || s.title || '') : '';
+      const line = EG.cleanPassageTitle(b, sec);
+      if (line && !lines.includes(line)) lines.push(line);
     });
+    srcWrap.innerHTML = '<span class="small muted"><strong>Sources:</strong> ' + EG.esc(lines.join('; ')) + '</span>';
   } else {
     srcWrap.style.display = 'none';
   }

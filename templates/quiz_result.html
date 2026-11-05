@@ -58,13 +58,12 @@ function reviewHtml(review) {
 async function loadNext() {
   const slot = EG.$('#next');
   slot.innerHTML = '<div class="card card-agent">' +
-    EG.loading('The agents are deciding what comes next...') + '</div>';
+    EG.loading('Preparing next recommendation...') + '</div>';
   try {
     const d = await EG.get('/api/recommendation');
     slot.innerHTML = '<div class="card card-agent">' +
       '<div class="row" style="margin-bottom:8px">' +
-        '<span class="badge badge-agent badge-dot">What to do next</span>' +
-        '<span class="badge">Rule ' + EG.esc(d.rule) + '</span></div>' +
+        '<span class="badge badge-signal">Recommended</span></div>' +
       '<h3 style="margin-bottom:6px">' + EG.esc(d.focus_title) + ' at ' +
         EG.esc(d.recommended_difficulty) + '</h3>' +
       '<p style="color:var(--ink-2)">' + EG.esc(d.reasoning) + '</p>' +

@@ -49,7 +49,7 @@ _OPTION_LABEL_RE = re.compile(
 # ─────────────────────────────────────────────────────────────
 # 1.1 Normalization & Validation
 # ─────────────────────────────────────────────────────────────
-def normalize_question(raw, concept, difficulty):
+def normalize_question(raw, concept, difficulty, is_live=False):
     """
     Validate and normalize a raw question record into canonical shape:
     {
@@ -61,10 +61,19 @@ def normalize_question(raw, concept, difficulty):
       meta: {...}
     }
 
+    When is_live is True (or raw['is_live'] / raw['origin'] == 'live'):
+      Enforces Phase 9 live generation bias guard gates:
+        - len(correct option) > 1.10 x len(longest wrong option) -> 'correct_option_too_long'
+        - >=2 wrong options contain an absolute word while correct does not -> 'absolute_word_bias'
+    Otherwise (standard structural normalization):
+        - len(correct option) > 1.50 x len(longest wrong option) -> 'correct_option_too_long'
+
     Returns (record, None) or (None, reject_reason).
     """
     if not isinstance(raw, dict):
         return None, "raw_not_a_dict"
+
+    live_flag = bool(is_live or raw.get("is_live") or raw.get("origin") in ("live", "generated"))
 
     question_text = str(raw.get("question") or "").strip()
     if not question_text:
@@ -130,12 +139,21 @@ def normalize_question(raw, concept, difficulty):
     if correct < 0 or correct > 3:
         return None, "correct_out_of_range"
 
-    # Gate: Reject if len(correct option) > 1.5 x len(longest wrong option)
+    # Length ratio gate
     len_correct = len(cleaned_options[correct])
     wrong_lens = [len(cleaned_options[i]) for i in range(4) if i != correct]
     max_wrong = max(wrong_lens) if wrong_lens else 0
-    if max_wrong > 0 and len_correct > 1.5 * max_wrong:
+    ratio_threshold = 1.10 if live_flag else 1.50
+    if max_wrong > 0 and len_correct > ratio_threshold * max_wrong:
         return None, "correct_option_too_long"
+
+    # Phase 9 live generation bias gate: absolute words
+    if live_flag:
+        abs_pattern = re.compile(r"\b(always|never|only|automatically|all|every|any)\b", re.IGNORECASE)
+        wrong_abs_count = sum(1 for i in range(4) if i != correct and abs_pattern.search(cleaned_options[i]))
+        correct_has_abs = bool(abs_pattern.search(cleaned_options[correct]))
+        if wrong_abs_count >= 2 and not correct_has_abs:
+            return None, "absolute_word_bias"
 
     # Misconception IDs validation
     # Must exist in core.misconceptions for THIS concept, otherwise set to None

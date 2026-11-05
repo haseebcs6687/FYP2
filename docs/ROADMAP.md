@@ -6,7 +6,7 @@
 - **Question bank**: 600 verified Java questions (`rag/corpus/questions/raw/`).
 - **RAG subsystem**: Hybrid vector + BM25 + tag ranking, Ollama embeddings (`nomic-embed-text`), 7,333 chunks, blind evaluation hit@3 95.8%.
 - **Misconception-first quiz engine**: Live generation with independent verifier, deterministic JDK compiler/runner gate (`core/java_check.py`), semantic and hash deduplication.
-- **Verified question pool**: 441 active verified questions with 3-way tag voting consensus (`data/bank_work/raw_before_2Ec`, raw bank, independent verifier).
+- **Verified question pool**: 431 active verified questions with 3-way tag voting consensus (`data/bank_work/raw_before_2Ec`, raw bank, independent verifier).
 - **Token budget management**: Daily limit enforcement, automatic model fallback, reasoning effort tuning (`core/token_budget.py`).
 - **Prebuilt diagnostic sets**: Instant zero-latency diagnostic evaluation sets (`rag/corpus/diagnostic/`).
 - **Unified test runner**: `scripts/run_all_tests.py` executing all 13 repository test suites with isolated subprocesses and timeout protection.

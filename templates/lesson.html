@@ -83,7 +83,7 @@ function lessonHtml(l) {
     html += '<div class="notice" style="margin-top:18px"><strong>Served offline.</strong> ' +
       EG.esc(l.offline_reason) + '. Content is from the built-in concept notes.</div>';
   }
-  html += EG.sourcesHtml(l.sources, 'Passages this lesson was grounded in');
+  html += EG.sourcesHtml(l.sources);
   html += '</article>';
   return html;
 }
@@ -91,7 +91,7 @@ function lessonHtml(l) {
 async function load() {
   const slot = EG.$('#lesson');
   slot.innerHTML = '<div class="card">' +
-    EG.loading('Concept Clarifier is retrieving sources and writing your lesson...') + '</div>';
+    EG.loading('Preparing your lesson...') + '</div>';
   EG.$('#origin').innerHTML = '';
   try {
     const l = await EG.get('/api/lesson/' + CONCEPT + '/' + difficulty);

@@ -302,4 +302,52 @@ To eliminate exposure bottlenecks in misconception detection, Phase 5C introduce
   - Rejects within-quiz duplicates (embedding cosine $\ge 0.88$ or token Jaccard $\ge 0.80$).
   - Unfilled slots are returned with their still-uncovered targets preserved, allowing the hybrid generation pipeline in `routes/api.py` to prompt the LLM specifically for the missing misconceptions.
 
+---
+
+## 13. Quiz Bias Guard & Heuristic Vulnerability Audit (Phase 9)
+
+### 1. Motivation & Surface-Heuristic Vulnerability
+Analysis of the question bank and LLM generations revealed test-wise gaming vulnerabilities:
+- Correct options tend to be longer than distractors as authors inadvertently add qualifiers to ensure accuracy.
+- Distractors disproportionately contain absolute words (`always`, `never`, `only`, `automatically`, `all`, `every`, `any`).
+
+### 2. Live Generation Quality Gates (`normalize_question`)
+In Phase 9, `core/quiz_engine.py` enforces two deterministic heuristic-bias gates during live generation:
+1. **Length Disparity Gate**:
+   - Rejects the question with `correct_option_too_long` if:
+     $$\text{len}(\text{correct option}) > 1.10 \times \max_{w \in \text{distractors}}(\text{len}(w))$$
+2. **Absolute Word Asymmetry Gate**:
+   - Rejects the question with `absolute_word_bias` if $\ge 2$ distractors contain absolute terms while the correct option does not:
+     $$\sum_{w \in \text{distractors}} \mathbf{1}[\text{has\_abs}(w)] \ge 2 \quad \text{and} \quad \neg \text{has\_abs}(\text{correct})$$
+
+### 3. Empirical Audit Numbers (`scripts/bias_audit.py`)
+
+Baseline chance accuracy for random guessing across 4 options is **25.0%**.
+
+#### A. Active Verified Pool (466 Questions)
+| Difficulty | Total Questions | Strategy 1 (Pick Longest) | Strategy 2 (Drop Absolute Words + Longest) |
+|---|---|---|---|
+| **Easy** | 214 | 86 / 214 (**40.2%**) | 81 / 214 (**37.9%**) |
+| **Medium** | 180 | 63 / 180 (**35.0%**) | 57 / 180 (**31.7%**) |
+| **Hard** | 72 | 11 / 72 (**15.3%**) | 10 / 72 (**13.9%**) |
+| **Overall** | **466** | **160 / 466 (34.3%)** | **148 / 466 (31.8%)** |
+
+*Key finding*: Easy questions in the historical bank had the highest length bias (40.2%), while Hard questions inverted the bias (15.3%), actively penalizing length-based heuristics.
+
+#### B. Live Generated Questions (Before Phase 9 Gate) (36 Questions)
+| Difficulty | Total Questions | Strategy 1 (Pick Longest) | Strategy 2 (Drop Absolute Words + Longest) |
+|---|---|---|---|
+| **Easy** | 1 | 1 / 1 (**100.0%**) | 1 / 1 (**100.0%**) |
+| **Medium** | 35 | 28 / 35 (**80.0%**) | 26 / 35 (**74.3%**) |
+| **Overall** | **36** | **29 / 36 (80.6%)** | **27 / 36 (75.0%)** |
+
+*Key finding*: Without bias gating, live LLM generation is severely biased toward over-explaining the correct option (80.6% gameability), proving the necessity of the Phase 9 length and absolute-word gates.
+
+#### C. Top Biased Question IDs
+The 20 most heuristic-vulnerable pool questions identified by `scripts/bias_audit.py` are:
+`416, 152, 117, 178, 71, 332, 155, 31, 462, 61, 52, 44, 297, 112, 214, 443, 213, 118, 58, 261`.
+
+#### D. Easy Pool Capacity
+The active pool holds **214 Easy questions** distributed across canonical concepts, providing an average capacity of **~1.6 quizzes (3 questions/quiz)** per concept before exhaustion.
+
 
