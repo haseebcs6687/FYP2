@@ -68,7 +68,7 @@ def record_generated_questions(concept, difficulty, questions, model=None, sourc
             q_origin = q.get("origin") or origin or "generated"
             q_pool_status = q.get("pool_status") or pool_status or "active"
 
-            # Phase 9B: Ensure live questions are admitted to active pool only if passing live bias gates
+            # Phase 9C: Ensure live questions are admitted to active pool only if passing live bias gates (1.03x ratio)
             if q_pool_status == "active" and (q_origin in ("live", "generated") or source == "llm_rag"):
                 len_corr = len(str(options_clean[correct_idx]).strip()) if 0 <= correct_idx < len(options_clean) else 0
                 wrong_lens = [len(str(options_clean[i]).strip()) for i in range(len(options_clean)) if i != correct_idx]
@@ -76,7 +76,7 @@ def record_generated_questions(concept, difficulty, questions, model=None, sourc
                 abs_pat = re.compile(r"\b(always|never|only|automatically|all|every|any)\b", re.IGNORECASE)
                 wrong_abs = sum(1 for i in range(len(options_clean)) if i != correct_idx and abs_pat.search(str(options_clean[i])))
                 corr_abs = bool(abs_pat.search(str(options_clean[correct_idx]))) if 0 <= correct_idx < len(options_clean) else False
-                if (max_w > 0 and len_corr > 1.10 * max_w) or (wrong_abs >= 2 and not corr_abs):
+                if (max_w > 0 and len_corr > max_w and len_corr > 1.03 * max_w) or (wrong_abs >= 2 and not corr_abs):
                     q_pool_status = "quarantined"
             diff_ver = q.get("difficulty_verified")
             v_labels = q.get("verifier_labels")

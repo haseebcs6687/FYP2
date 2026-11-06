@@ -63,7 +63,7 @@ def normalize_question(raw, concept, difficulty, is_live=False):
 
     When is_live is True (or raw['is_live'] / raw['origin'] == 'live'):
       Enforces Phase 9 live generation bias guard gates:
-        - len(correct option) > 1.10 x len(longest wrong option) -> 'correct_option_too_long'
+        - len(correct option) > 1.03 x len(longest wrong option) and strictly longest -> 'correct_option_too_long'
         - >=2 wrong options contain an absolute word while correct does not -> 'absolute_word_bias'
     Otherwise (standard structural normalization):
         - len(correct option) > 1.50 x len(longest wrong option) -> 'correct_option_too_long'
@@ -143,9 +143,12 @@ def normalize_question(raw, concept, difficulty, is_live=False):
     len_correct = len(cleaned_options[correct])
     wrong_lens = [len(cleaned_options[i]) for i in range(4) if i != correct]
     max_wrong = max(wrong_lens) if wrong_lens else 0
-    ratio_threshold = 1.10 if live_flag else 1.50
-    if max_wrong > 0 and len_correct > ratio_threshold * max_wrong:
-        return None, "correct_option_too_long"
+    if live_flag:
+        if max_wrong > 0 and len_correct > max_wrong and len_correct > 1.03 * max_wrong:
+            return None, "correct_option_too_long"
+    else:
+        if max_wrong > 0 and len_correct > 1.50 * max_wrong:
+            return None, "correct_option_too_long"
 
     # Phase 9 live generation bias gate: absolute words
     if live_flag:

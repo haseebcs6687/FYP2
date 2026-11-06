@@ -199,7 +199,7 @@ class TestEvaluatorActivityWindow(unittest.TestCase):
 
     def test_pill_absent_on_public_pages(self):
         self._logout()
-        for endpoint in ["/", "/login"]:
+        for endpoint in ["/", "/login", "/about"]:
             res = self.client.get(endpoint)
             html = res.get_data(as_text=True)
             self.assertNotIn('id="evaluator-pill"', html, f"Evaluator pill found on public page {endpoint}")
@@ -207,18 +207,28 @@ class TestEvaluatorActivityWindow(unittest.TestCase):
 
     def test_pill_and_panel_controls_present_when_logged_in(self):
         self._login()
-        res = self.client.get("/dashboard")
-        html = res.get_data(as_text=True)
-        self.assertIn('id="evaluator-pill"', html)
-        self.assertIn('id="evaluator-panel"', html)
-        self.assertIn('id="eval-minimize-btn"', html)
-        self.assertIn('id="eval-close-btn"', html)
-        self.assertIn('data-tab="live"', html)
-        self.assertIn('data-tab="runs"', html)
-        self.assertIn('data-tab="rag"', html)
-        self.assertIn('data-tab="decisions"', html)
-        self.assertIn('data-tab="quiz_build"', html)
-        self.assertIn('data-tab="system"', html)
+        logged_in_pages = [
+            "/dashboard",
+            "/learn",
+            "/quiz",
+            "/analysis",
+            "/history",
+            "/plan",
+        ]
+        for endpoint in logged_in_pages:
+            res = self.client.get(endpoint)
+            self.assertEqual(res.status_code, 200, f"Page {endpoint} failed")
+            html = res.get_data(as_text=True)
+            self.assertIn('id="evaluator-pill"', html, f"Missing pill on {endpoint}")
+            self.assertIn('id="evaluator-panel"', html, f"Missing panel on {endpoint}")
+            self.assertIn('id="eval-minimize-btn"', html, f"Missing minimize button on {endpoint}")
+            self.assertNotIn('id="eval-close-btn"', html, f"Found close button on {endpoint}")
+            self.assertIn('data-tab="live"', html)
+            self.assertIn('data-tab="runs"', html)
+            self.assertIn('data-tab="rag"', html)
+            self.assertIn('data-tab="decisions"', html)
+            self.assertIn('data-tab="quiz_build"', html)
+            self.assertIn('data-tab="system"', html)
 
     def test_polling_code_present_in_js(self):
         js_path = os.path.join(self.app.root_path, "static", "js", "edugen.js")
@@ -228,6 +238,22 @@ class TestEvaluatorActivityWindow(unittest.TestCase):
         self.assertIn("EvaluatorWindow", content)
         self.assertIn("pollEvents", content)
         self.assertIn("eval_state", content)
+        self.assertIn("isPolling", content)
+
+        # Assert static/js/edugen.js contains no reference to state 'closed'
+        self.assertNotIn("'closed'", content, "Found state 'closed' in edugen.js")
+        self.assertNotIn('"closed"', content, 'Found state "closed" in edugen.js')
+
+        # Static check that a stored state other than 'open' or 'minimized' normalizes to 'minimized'
+        # The normalization pattern ensures only 'open' is kept as 'open'; everything else defaults to 'minimized'
+        self.assertTrue(
+            "savedState === 'open'" in content and "this.state = 'minimized'" in content,
+            "State normalization to 'minimized' missing in edugen.js init()",
+        )
+        self.assertTrue(
+            "if (st !== 'open')" in content or "st = 'minimized'" in content,
+            "State normalization missing in edugen.js setState()",
+        )
 
     def test_evaluator_endpoints_return_required_fields(self):
         self._login()
@@ -322,7 +348,7 @@ class TestQuizBiasGate(unittest.TestCase):
         q = {
             "question": "What is the primary role of a class in Java?",
             "options": [
-                "It serves as a blueprint defining the structure and behavior of objects.",
+                "It acts as a blueprint defining the structure and behavior of objects.",
                 "It directly holds the runtime data for every object instance created.",
                 "It allows multiple public top-level classes in a single source file.",
                 "It compiles source code directly into native machine instructions.",

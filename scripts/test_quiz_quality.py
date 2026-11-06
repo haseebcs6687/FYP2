@@ -123,6 +123,83 @@ class TestDeterministicGates(unittest.TestCase):
         self.assertIsNotNone(rec)
         self.assertIsNone(reason)
 
+    def test_live_length_ratio_gate_rejects_above_1_03x(self):
+        # Longest wrong option is 50 chars. Correct option is 53 chars (> 1.03 * 50 = 51.5)
+        raw = {
+            "question": "What is an abstract class in Java?",
+            "qtype": "concept",
+            "options": [
+                {"text": "A class definition providing signatures and baseline", "misconception_id": None}, # 53 chars
+                {"text": "A class that cannot ever hold concrete implementations", "misconception_id": "abstract-classes/cannot-have-concrete-methods"}, # 50 chars (truncated to 50: "A class that cannot ever hold concrete implementat")
+                {"text": "A pure interface construct without instance variables", "misconception_id": "abstract-classes/must-have-abstract-methods"}, # 50 chars
+                {"text": "A final class structure that disables inheritance use", "misconception_id": None}, # 50 chars
+            ],
+            "correct": 0,
+            "explanation": "Abstract classes cannot be instantiated directly.",
+        }
+        # Format exact lengths:
+        raw["options"][0]["text"] = "X" * 53
+        raw["options"][1]["text"] = "A" * 50
+        raw["options"][2]["text"] = "B" * 50
+        raw["options"][3]["text"] = "C" * 50
+        rec, reason = normalize_question(raw, "abstract-classes", "Easy", is_live=True)
+        self.assertIsNone(rec)
+        self.assertEqual(reason, "correct_option_too_long")
+
+    def test_live_length_ratio_gate_accepts_under_1_03x(self):
+        # Longest wrong option is 100 chars. Correct option is 102 chars (<= 1.03 * 100 = 103)
+        raw = {
+            "question": "What is an abstract class in Java?",
+            "qtype": "concept",
+            "options": [
+                {"text": "X" * 102, "misconception_id": None},
+                {"text": "A" * 100, "misconception_id": "abstract-classes/cannot-have-concrete-methods"},
+                {"text": "B" * 98, "misconception_id": "abstract-classes/must-have-abstract-methods"},
+                {"text": "C" * 95, "misconception_id": None},
+            ],
+            "correct": 0,
+            "explanation": "Abstract classes cannot be instantiated directly.",
+        }
+        rec, reason = normalize_question(raw, "abstract-classes", "Easy", is_live=True)
+        self.assertIsNotNone(rec)
+        self.assertIsNone(reason)
+
+    def test_live_absolute_word_bias_rejects(self):
+        # 2 wrong options have absolute words, correct does not
+        raw = {
+            "question": "Which statement about abstract methods in Java is correct?",
+            "qtype": "concept",
+            "options": [
+                {"text": "Abstract methods define a signature without body.", "misconception_id": None},
+                {"text": "Abstract methods always execute static routines here.", "misconception_id": "abstract-classes/cannot-have-concrete-methods"},
+                {"text": "Abstract methods never require subclass override code.", "misconception_id": "abstract-classes/must-have-abstract-methods"},
+                {"text": "Abstract methods are defined as private variables now.", "misconception_id": None},
+            ],
+            "correct": 0,
+            "explanation": "Abstract methods define signatures without bodies.",
+        }
+        rec, reason = normalize_question(raw, "abstract-classes", "Easy", is_live=True)
+        self.assertIsNone(rec)
+        self.assertEqual(reason, "absolute_word_bias")
+
+    def test_live_absolute_word_bias_accepts_balanced(self):
+        # Only 1 wrong option has an absolute word
+        raw = {
+            "question": "Which statement about abstract methods in Java is correct?",
+            "qtype": "concept",
+            "options": [
+                {"text": "Abstract methods define a signature without body.", "misconception_id": None},
+                {"text": "Abstract methods always execute static routines here.", "misconception_id": "abstract-classes/cannot-have-concrete-methods"},
+                {"text": "Abstract methods specify contract behavior in Java.", "misconception_id": "abstract-classes/must-have-abstract-methods"},
+                {"text": "Abstract methods are defined as private variables now.", "misconception_id": None},
+            ],
+            "correct": 0,
+            "explanation": "Abstract methods define signatures without bodies.",
+        }
+        rec, reason = normalize_question(raw, "abstract-classes", "Easy", is_live=True)
+        self.assertIsNotNone(rec)
+        self.assertIsNone(reason)
+
 
 class TestIndependentVerifier(unittest.TestCase):
     """Test 3: Independent Verifier gate in ConceptClarifierAgent."""

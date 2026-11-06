@@ -174,7 +174,7 @@ const EvaluatorWindow = {
   isPolling: false,
   totalEvents: 0,
   activeTab: 'live',
-  state: 'minimized', // 'open' | 'minimized' | 'closed'
+  state: 'minimized', // 'open' | 'minimized'
 
   init() {
     const pill = document.getElementById('evaluator-pill');
@@ -183,10 +183,13 @@ const EvaluatorWindow = {
 
     try {
       const savedState = localStorage.getItem('eg:eval_state');
-      if (savedState === 'open' || savedState === 'minimized' || savedState === 'closed') {
-        this.state = savedState;
+      if (savedState === 'open') {
+        this.state = 'open';
       } else {
         this.state = 'minimized';
+        try {
+          localStorage.setItem('eg:eval_state', 'minimized');
+        } catch (_) {}
       }
       const savedTab = localStorage.getItem('eg:eval_tab');
       if (savedTab) this.activeTab = savedTab;
@@ -209,15 +212,6 @@ const EvaluatorWindow = {
       });
     }
 
-    const closeBtn = document.getElementById('eval-close-btn');
-    if (closeBtn) {
-      closeBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        this.stopPolling();
-        this.setState('closed');
-      });
-    }
-
     document.querySelectorAll('.eval-tab').forEach(tabBtn => {
       tabBtn.addEventListener('click', () => {
         const tab = tabBtn.dataset.tab;
@@ -235,23 +229,19 @@ const EvaluatorWindow = {
       });
     }
 
-    if (this.state !== 'closed') {
-      this.startPolling();
-    }
+    this.startPolling();
   },
 
   setState(st) {
+    if (st !== 'open') {
+      st = 'minimized';
+    }
     this.state = st;
     try {
       localStorage.setItem('eg:eval_state', st);
     } catch (_) {}
     this.applyState();
-
-    if (st === 'closed') {
-      this.stopPolling();
-    } else {
-      if (!this.pollTimer) this.startPolling();
-    }
+    if (!this.pollTimer) this.startPolling();
   },
 
   applyState() {
@@ -264,45 +254,34 @@ const EvaluatorWindow = {
       pill.style.display = 'none';
       document.body.classList.add('has-evaluator');
       this.switchTab(this.activeTab);
-    } else if (this.state === 'minimized') {
+    } else {
       panel.style.display = 'none';
       pill.style.display = 'flex';
       document.body.classList.add('has-evaluator');
-    } else {
-      panel.style.display = 'none';
-      pill.style.display = 'none';
-      document.body.classList.remove('has-evaluator');
     }
   },
 
   startPolling() {
-    this.stopPolling();
+    if (this.pollTimer) return;
     this.pollEvents();
     this.pollTimer = setInterval(() => this.pollEvents(), 2000);
   },
 
-  stopPolling() {
-    if (this.pollTimer) {
-      clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
-  },
-
   async pollEvents() {
-    if (this.state === 'closed') {
-      this.stopPolling();
-      return;
-    }
     if (this.isPolling) return;
     this.isPolling = true;
     try {
       const data = await EG.get('/api/events?since_id=' + this.lastId);
-      if (this.state === 'closed') return;
       if (data && data.events && data.events.length) {
         this.lastId = data.last_id || this.lastId;
         this.appendEvents(data.events);
       }
     } catch (_) {
+      // Polling is best-effort
+    } finally {
+      this.isPolling = false;
+    }
+  },
       // Polling is best-effort
     } finally {
       this.isPolling = false;

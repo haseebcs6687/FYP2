@@ -4,7 +4,7 @@ EduGen - Quarantine Biased Live Pool Questions (scripts/quarantine_biased.py)
 =============================================================================
 Runs the Phase 9 live validation gates against active questions in the pool
 that originated from live generation (origin in ('live', 'generated') or source='llm_rag'):
-  1. Length disparity gate: len(correct) > 1.10 * max(wrong_lengths)
+  1. Length disparity gate: len(correct) > 1.03 * max(wrong_lengths) and strictly longest
   2. Absolute word asymmetry: >=2 wrong options contain absolute words while correct does not
 
 Usage:
@@ -43,8 +43,8 @@ def check_live_gates(options, correct_index):
 
     failing_gates = []
 
-    # Gate 1: Length Disparity (1.10x threshold)
-    if max_wrong > 0 and len_correct > 1.10 * max_wrong:
+    # Gate 1: Length Disparity (1.03x threshold)
+    if max_wrong > 0 and len_correct > max_wrong and len_correct > 1.03 * max_wrong:
         failing_gates.append("correct_option_too_long")
 
     # Gate 2: Absolute Word Bias (>= 2 wrong options have absolute word, correct does not)
@@ -114,7 +114,7 @@ def main():
     print(f"Questions Passing : {checked - failing}")
     print(f"Questions Failing : {failing}\n")
     print("Failing Breakdown by Gate:")
-    print(f"  - correct_option_too_long (>1.10x ratio) : {gate_counts['correct_option_too_long']}")
+    print(f"  - correct_option_too_long (>1.03x ratio) : {gate_counts['correct_option_too_long']}")
     print(f"  - absolute_word_bias (>=2 wrong abs)     : {gate_counts['absolute_word_bias']}")
     print(f"  - Failing both gates                     : {gate_counts['both_gates']}")
     if gate_counts.get("malformed_options", 0) > 0:
@@ -146,3 +146,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -530,6 +530,57 @@ class TestJourney(unittest.TestCase):
         step2_after = get_study_plan_step(probe_step_id)
         self.assertEqual(step2_after["status"], "done")
 
+    # 13. Phase 9C: Check quiz scoring 60% (< PASS_ACCURACY=70.0%) keeps step pending
+    def test_check_step_below_pass_threshold_remains_pending(self):
+        conn = get_db()
+        conn.execute("INSERT INTO users (id, name, email, password_hash) VALUES (34, 'Student Frank', 'frank@edugen.edu', 'hash34')")
+        conn.execute("INSERT INTO students (id, user_id, name) VALUES (34, 34, 'Student Frank')")
+        conn.commit()
+        conn.close()
+
+        plan_dict = {
+            "title": "Check Step Threshold Plan",
+            "concept": "super-keyword",
+            "steps": [
+                {"position": 1, "concept": "super-keyword", "kind": "check", "status": "pending", "difficulty": "Easy"},
+                {"position": 2, "concept": "method-overriding", "kind": "weak", "status": "pending"},
+            ],
+            "coverage": {"ok": True, "violations": []},
+            "deferred": [],
+        }
+        saved = create_study_plan(student_id=34, plan_dict=plan_dict)
+        save_student_journey(student_id=34, state=STATE_PLAN_ACTIVE, plan_id=saved["id"])
+        check_step_id = saved["steps"][0]["id"]
+
+        coord = self.app.extensions["edugen"]["coordinator"]
+
+        # Submit check quiz with 60% accuracy (3 out of 5 questions correct)
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO quiz_results (id, student_id, topic, concept, difficulty, score, total_questions, duration_ms, source)
+               VALUES (801, 34, 'OOP Basics', 'super-keyword', 'Easy', 3, 5, 12000, 'pool')"""
+        )
+        for i in range(5):
+            is_corr = 1 if i < 3 else 0
+            cur.execute(
+                """INSERT INTO question_attempts (id, quiz_result_id, question_index, concept_tags, is_correct, student_answer, correct_answer)
+                   VALUES (?, 801, ?, '["super-keyword"]', ?, 0, ?)""",
+                (8000 + i, i, is_corr, 0 if is_corr else 1),
+            )
+        cur.execute(
+            """INSERT INTO quiz_sessions (id, student_id, concept, difficulty, source, payload_json)
+               VALUES (801, 34, 'super-keyword', 'Easy', 'pool', ?)""",
+            (json.dumps({"kind": "practice", "plan_step_id": check_step_id, "questions": [{}] * 5}),),
+        )
+        conn.commit()
+        conn.close()
+
+        res = coord.on_quiz_submitted(student_id=34, quiz_result_id=801, quiz_session_id=801)
+        step_after = get_study_plan_step(check_step_id)
+        # Because accuracy is 60.0% (< PASS_ACCURACY 70.0%), status remains pending
+        self.assertEqual(step_after["status"], "pending")
+
 
 if __name__ == "__main__":
     unittest.main()

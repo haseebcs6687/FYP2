@@ -37,9 +37,11 @@ from core.db_repo import (
     save_student_journey,
     get_active_study_plan,
     get_study_plan_steps,
+    update_study_plan_step,
     update_study_plan_step_status,
 )
 from core.journey import (
+    PASS_ACCURACY,
     STATE_NEW,
     STATE_PLAN_ACTIVE,
     STATE_COMPLETE,
@@ -316,14 +318,15 @@ class CoordinatorAgent(object):
                     tot = q_res["total_questions"] if q_res and q_res["total_questions"] else len(sess_payload.get("questions", [])) or 1
                     sc = q_res["score"] if q_res else 0
                     accuracy = (sc / tot) * 100.0
-                    if accuracy >= 50.0:
+                    if accuracy >= PASS_ACCURACY:
                         update_study_plan_step_status(plan_step_id, "done")
                     updated_plan = plan_after_check(active_plan, target_concept, accuracy, report=analysis)
                     for s in updated_plan.get("steps", []):
                         if s.get("id") == plan_step_id:
-                            if accuracy >= 50.0:
+                            if accuracy >= PASS_ACCURACY:
                                 s["status"] = "done"
                             else:
+                                s["status"] = "pending"
                                 update_study_plan_step(step_id=plan_step_id, status="pending", prompt_text=s.get("prompt_text"))
                     if hasattr(self.ac, "save_plan"):
                         self.ac.save_plan(student_id, updated_plan)
@@ -391,7 +394,7 @@ class CoordinatorAgent(object):
                     sc = q_res["score"] if q_res else 0
                     accuracy = (sc / tot) * 100.0
 
-                    if accuracy >= 50.0:
+                    if accuracy >= PASS_ACCURACY:
                         state = STATE_COMPLETE
                         stage_summaries.append({
                             "stage": "reevaluation",

@@ -312,10 +312,10 @@ Analysis of the question bank and LLM generations revealed test-wise gaming vuln
 - Distractors disproportionately contain absolute words (`always`, `never`, `only`, `automatically`, `all`, `every`, `any`).
 
 ### 2. Live Generation Quality Gates (`normalize_question`)
-In Phase 9, `core/quiz_engine.py` enforces two deterministic heuristic-bias gates during live generation:
+In Phase 9 (tightened in Phase 9C), `core/quiz_engine.py` enforces two deterministic heuristic-bias gates during live generation:
 1. **Length Disparity Gate**:
-   - Rejects the question with `correct_option_too_long` if:
-     $$\text{len}(\text{correct option}) > 1.10 \times \max_{w \in \text{distractors}}(\text{len}(w))$$
+   - Rejects the question with `correct_option_too_long` if correct is strictly longest and:
+     $$\text{len}(\text{correct option}) > 1.03 \times \max_{w \in \text{distractors}}(\text{len}(w))$$
 2. **Absolute Word Asymmetry Gate**:
    - Rejects the question with `absolute_word_bias` if $\ge 2$ distractors contain absolute terms while the correct option does not:
      $$\sum_{w \in \text{distractors}} \mathbf{1}[\text{has\_abs}(w)] \ge 2 \quad \text{and} \quad \neg \text{has\_abs}(\text{correct})$$

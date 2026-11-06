@@ -19,15 +19,18 @@
 - **Phase 7 — Concept Clarifier Agent**: Plan-driven interactive lessons per study plan step (simplified <= 400w and detailed 400-900w styles), SHA-1 lesson cache with index signature invalidation, deterministic Java compilation gate (`javac`), independent pedagogical verifier gate (`states_wrong_belief_as_true`), injection-safe student notes, fallback ladder, and `/lesson-step/<id>` interactive UI (`core/lesson_engine.py`, `docs/LESSON_ENGINE.md`).
 - **Phase 8 — Coordinator Agent**: Autonomous learning loop orchestration (quiz -> analysis -> plan -> lessons -> "I'm ready" -> closing quizzes -> completion), state machine (`core/journey.py`), centralized structured event bus (`core/event_bus.py`) with contextvars-driven pipeline runs, background thread context propagation, in-memory ring buffer, non-blocking lesson prefetching, fail-safe SQLite persistence, 91.7% automation ratio, and 100% test coverage across all 17 test suites (`docs/COORDINATOR.md`, `docs/EVENT_BUS.md`).
 
+- **Phase 9 — UI Cleanup & Evaluator Activity Window**: Clean student experience + Evaluator Activity window (capsule on click, minimize button top-right, continuous background polling, displays live agent events, pipeline runs, RAG retrieval passages with cosine scores, agent decisions with coverage invariants, and quiz build telemetry).
+- **Phase 9B — Journey Real-Path Submission & Quarantine**: Current-plan completion invariant, Coordinator marks check and probe steps done on passing, quarantine tool for biased live questions, test registry.
+- **Phase 9C — Permanent Evaluator Capsule, Tighter Bias Gate & Pass Threshold**: Removed Close (x) button and closed state (2-state model: open/minimized, persistent polling, stored state normalization), tightened live question length bias gate from 1.10x to 1.03x with strictly longest condition, standardized passing accuracy threshold (`PASS_ACCURACY = 70.0%`).
+
 ---
 
 ## In Progress
-- **Phase 9 (Next) — UI Cleanup & Evaluator Activity Window**: Clean student experience (student sees only lesson/quiz/plan/progress; unreadable lesson text/backgrounds fixed) + Evaluator Activity window (opens on click, minimize button top-right, keeps updating while minimized, displays live agent events, RAG retrieval passages with cosine scores and chunks).
+- **Phase 10 (Next) — Demo Seed Student, PDF Report & Security**: Seed student profile, downloadable PDF performance summary report, CSRF protection, login rate limiting, final integration verification.
 
 ---
 
 ## Pending (by Phase)
-- **Phase 9 — UI Cleanup & Evaluator Activity Window**: Clean student experience (student sees only lesson/quiz/plan/progress; unreadable lesson text/backgrounds fixed) + Evaluator Activity window (opens on click, minimize button top-right, keeps updating while minimized, displays live agent events, RAG retrieval passages with cosine scores and chunks).
 - **Phase 10 — Demo Seed Student, PDF Report & Security**: Seed student profile, downloadable PDF performance summary report, CSRF protection, login rate limiting, final integration verification.
 - **End / Submission**: Ethics section with supervisor, comprehensive review of chat requirements, optional question pool top-up, Llama offline lesson generation fallback, Groq key rotation.
 
