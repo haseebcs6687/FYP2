@@ -25,8 +25,20 @@
 - **Relaxed Null Misconception Rule:** Wrong options may have `misconception_id: null` (0 to 3 per question), denoting "no verified catalog match". Non-null tags must strictly belong to the concept's catalog.
 - **Validator Traversal Fix:** Fixed double-traversal bug in `scripts/validate_questions.py` by resolving input file paths into a unique set.
 
+## Phase 11a Gap Generation & Pool Top-up
+- **Gap-Driven Generation:** Created `tools/question_bank/gen_gap_plan.py` which inspects `data/edugen.db` (read-only mode) to compute active question deficits per `(concept, difficulty)` cell against targets (Easy >= 4, Medium >= 3, Hard >= 3).
+- **Dynamic Difficulty Mix:** Extended `tools/question_bank/gen_save.py` and `gen_next.py` with `--plan` support to enforce batch-specific mixes `{"Easy": a, "Medium": b, "Hard": c}` summing to 12 rather than rigid 4/4/4 splits.
+- **Top-up Execution:** Generated 24 new batches (G01 through G24) across the highest-deficit concepts (`default-constructor`, `access-modifiers`, `checked-vs-unchecked`, `default-values`, `constructor-basics`, `inheritance-hierarchy`, `dynamic-method-dispatch`, `abstraction-basics`, `null-pointer-exception`, `object-instantiation`, `data-hiding`, `reference-semantics`, `constructor-overloading`, `copy-constructor`, `getters-setters`, `javabeans`).
+- **Catalog Misconception Targeting:** Addressed missing misconceptions in distractors, notably covering `null-pointer-exception/calling-static-on-null-throws-npe`, `null-pointer-exception/null-string-concatenation-throws`, and `null-pointer-exception/null-instanceof-check-throws`.
+- **Quality Gates:** All 16 validation gates enforced (zero syntax errors, Jaccard token overlap < 0.70 against all installed questions, option length balance, code fences with valid Java snippets, deterministic option shuffle).
+
 ## Generation Status
-- **Batches Completed:** 50 of 50 (P01 through P50)
-- **Total Installed Questions:** 600 MCQs in `rag/corpus/questions/raw/`
-- **Validation Status:** 600 of 600 accepted (0 rejected)
+- **Batches Completed:** 74 of 74 (P01 through P50 + G01 through G24)
+- **Total Installed Questions:** 888 MCQs in `rag/corpus/questions/raw/`
+  - Pilot Batches (P01–P50): 600 MCQs (Easy=200, Medium=200, Hard=200)
+  - Top-up Batches (G01–G24): 288 MCQs (Easy=85, Medium=86, Hard=117)
+  - Overall Bank: 888 MCQs (Easy=285, Medium=286, Hard=317)
+  - PDF Distribution: JavaNotesForProfessionals=420, javanotes9=276, thinkjava2=192
+- **Validation Status:** 888 of 888 accepted (0 rejected)
+
 
