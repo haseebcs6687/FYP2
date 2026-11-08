@@ -282,11 +282,6 @@ const EvaluatorWindow = {
       this.isPolling = false;
     }
   },
-      // Polling is best-effort
-    } finally {
-      this.isPolling = false;
-    }
-  },
 
   appendEvents(events) {
     const container = document.getElementById('eval-live-list');

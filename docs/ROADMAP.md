@@ -22,6 +22,7 @@
 - **Phase 9 — UI Cleanup & Evaluator Activity Window**: Clean student experience + Evaluator Activity window (capsule on click, minimize button top-right, continuous background polling, displays live agent events, pipeline runs, RAG retrieval passages with cosine scores, agent decisions with coverage invariants, and quiz build telemetry).
 - **Phase 9B — Journey Real-Path Submission & Quarantine**: Current-plan completion invariant, Coordinator marks check and probe steps done on passing, quarantine tool for biased live questions, test registry.
 - **Phase 9C — Permanent Evaluator Capsule, Tighter Bias Gate & Pass Threshold**: Removed Close (x) button and closed state (2-state model: open/minimized, persistent polling, stored state normalization), tightened live question length bias gate from 1.10x to 1.03x with strictly longest condition, standardized passing accuracy threshold (`PASS_ACCURACY = 70.0%`).
+- **Phase 9D — JS Syntax Fix & Browser Smoke Tests**: Removed duplicated block in `static/js/edugen.js`, added syntax checker test suite (`scripts/test_js.py`) with injection proof, added full Playwright browser smoke test suite (`scripts/test_browser.py`) covering all 6 student pages with screenshot captures (`docs/ui_check/`), expanded unified test runner to 20 test suites.
 
 ---
 
