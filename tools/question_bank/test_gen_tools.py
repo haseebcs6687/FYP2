@@ -303,6 +303,52 @@ class TestGenSaveGates(unittest.TestCase):
             lines = [json.loads(l) for l in f]
         self.assertTrue(any(l["plan_id"] == pid and l["rule"] == "record_count" for l in lines))
 
+    # Dynamic Mix Support (Phase 11a)
+    def test_dynamic_mix_supported_and_enforced(self):
+        records = make_valid_batch()
+        # make_valid_batch has 4 Easy, 4 Medium, 4 Hard
+        # Set entry mix to 5 Easy, 2 Medium, 5 Hard -> should fail mismatch
+        self.entry["mix"] = {"Easy": 5, "Medium": 2, "Hard": 5}
+        ok, errors = validate_batch(records, self.entry, raw_dir=self.temp_dir)
+        self.assertFalse(ok)
+        self.assertTrue(any("difficulty_split" in e for e in errors))
+
+        # Adjust records to match 5 Easy, 2 Medium, 5 Hard
+        # Currently: 4 Easy, 4 Medium, 4 Hard.
+        # Change records[4] (Medium) to Easy -> 5 Easy, 3 Medium, 4 Hard
+        records[4]["difficulty"] = "Easy"
+        # Change records[5] (Medium) to Hard -> 5 Easy, 2 Medium, 5 Hard
+        records[5]["difficulty"] = "Hard"
+        ok, errors = validate_batch(records, self.entry, raw_dir=self.temp_dir)
+        self.assertTrue(ok, f"Expected dynamic mix batch to pass, got: {errors}")
+
+
+class TestGenGapPlan(unittest.TestCase):
+    def test_gap_plan_file_exists_and_valid(self):
+        gap_plan_file = BASE_DIR / "data" / "bank_work" / "gap_plan.json"
+        self.assertTrue(gap_plan_file.exists(), "gap_plan.json should exist")
+        with open(gap_plan_file, "r", encoding="utf-8") as f:
+            plan = json.load(f)
+
+        self.assertEqual(len(plan), 24, "gap_plan should contain exactly 24 batches")
+        plan_ids = [e["plan_id"] for e in plan]
+        self.assertEqual(plan_ids, [f"G{i:02d}" for i in range(1, 25)])
+
+        # Verify all entries have mix summing to 12
+        for e in plan:
+            self.assertIn("mix", e)
+            mix = e["mix"]
+            self.assertEqual(sum(mix.values()), 12)
+            self.assertIn("focus", e)
+            self.assertIn("pdf", e)
+            self.assertIn("batch_idx", e)
+
+        # Check null-pointer-exception unused misconceptions in focus
+        g17 = next(e for e in plan if e["concept"] == "null-pointer-exception")
+        self.assertIn("calling-static-on-null-throws-npe", g17["focus"])
+        self.assertIn("null-string-concatenation-throws", g17["focus"])
+        self.assertIn("null-instanceof-check-throws", g17["focus"])
+
 
 if __name__ == "__main__":
     unittest.main()

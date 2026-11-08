@@ -307,9 +307,10 @@ def validate_batch(
                     f"(token-Jaccard {sim:.2f} >= 0.70)"
                 )
 
-    # Rule 3: Difficulty split 4 Easy / 4 Medium / 4 Hard
-    expected_diff = {"Easy": 4, "Medium": 4, "Hard": 4}
-    for d, expected_cnt in expected_diff.items():
+    # Rule 3: Difficulty split (respect dynamic mix from plan entry if provided, else 4/4/4)
+    expected_diff = entry.get("mix") or {"Easy": 4, "Medium": 4, "Hard": 4}
+    for d in ("Easy", "Medium", "Hard"):
+        expected_cnt = expected_diff.get(d, 0)
         actual_cnt = diff_counts.get(d, 0)
         if actual_cnt != expected_cnt:
             errors.append(f"[difficulty_split] Difficulty split mismatch: expected {expected_cnt} {d}, got {actual_cnt}")
@@ -488,12 +489,13 @@ def install_batch(
 
 def main():
     parser = argparse.ArgumentParser(description="Validate and install generated question batch.")
-    parser.add_argument("plan_id", help="Plan ID from gen_plan.json (e.g. P01).")
+    parser.add_argument("plan_id", help="Plan ID from gen_plan.json or gap_plan.json (e.g. P01 or G01).")
     parser.add_argument("jsonl_file", help="Path to generated candidate JSONL file.")
+    parser.add_argument("--plan", type=Path, default=None, help="Path to plan JSON file (default: gen_plan.json).")
     parser.add_argument("--force", action="store_true", help="Overwrite already installed batch.")
     args = parser.parse_args()
 
-    success = install_batch(args.plan_id, Path(args.jsonl_file), force=args.force)
+    success = install_batch(args.plan_id, Path(args.jsonl_file), force=args.force, plan_path=args.plan)
     sys.exit(0 if success else 1)
 
 

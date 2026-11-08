@@ -74,6 +74,9 @@ def format_brief(entry: dict) -> str:
     title = c_meta.get("title", concept)
     summary = c_meta.get("summary", "")
 
+    mix = entry.get("mix", {"Easy": 4, "Medium": 4, "Hard": 4})
+    mix_str = f"Easy={mix.get('Easy', 0)}, Medium={mix.get('Medium', 0)}, Hard={mix.get('Hard', 0)}"
+
     misconceptions = misconceptions_for(concept)
     pack = build_pack(pdf, pack_concept, batch_idx=batch_idx, max_words=2200)
 
@@ -85,6 +88,7 @@ def format_brief(entry: dict) -> str:
     lines.append(f"Concept Tag        : {concept}")
     lines.append(f"Concept Title      : {title}")
     lines.append(f"Concept Summary    : {summary}")
+    lines.append(f"Difficulty Mix     : {mix_str}")
     if focus:
         lines.append(f"Specific Focus     : {focus}")
     lines.append("")
@@ -128,9 +132,10 @@ def get_next_pending_entries(n: int = 1, plan_path: Path = None) -> list[dict]:
 def main():
     parser = argparse.ArgumentParser(description="Display generation brief for next pending plan batches.")
     parser.add_argument("--n", type=int, default=1, help="Number of pending briefs to display (default: 1).")
+    parser.add_argument("--plan", type=Path, default=None, help="Path to plan JSON file (default: gen_plan.json).")
     args = parser.parse_args()
 
-    pending = get_next_pending_entries(args.n)
+    pending = get_next_pending_entries(args.n, plan_path=args.plan)
     if not pending:
         print("No pending generation plan entries found. All batches complete!")
         return
