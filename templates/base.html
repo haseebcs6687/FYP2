@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}EduGen{% endblock %}</title>
   <meta name="description" content="EduGen - an agentic AI learning system for Java and object-oriented programming.">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/edugen.css') }}">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%231F4FE0'/><path d='M12 9v14h10' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/></svg>">
   {% block head %}{% endblock %}

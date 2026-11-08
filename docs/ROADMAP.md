@@ -23,15 +23,15 @@
 - **Phase 9B — Journey Real-Path Submission & Quarantine**: Current-plan completion invariant, Coordinator marks check and probe steps done on passing, quarantine tool for biased live questions, test registry.
 - **Phase 9C — Permanent Evaluator Capsule, Tighter Bias Gate & Pass Threshold**: Removed Close (x) button and closed state (2-state model: open/minimized, persistent polling, stored state normalization), tightened live question length bias gate from 1.10x to 1.03x with strictly longest condition, standardized passing accuracy threshold (`PASS_ACCURACY = 70.0%`).
 - **Phase 9D — JS Syntax Fix & Browser Smoke Tests**: Removed duplicated block in `static/js/edugen.js`, added syntax checker test suite (`scripts/test_js.py`) with injection proof, added full Playwright browser smoke test suite (`scripts/test_browser.py`) covering all 6 student pages with screenshot captures (`docs/ui_check/`), expanded unified test runner to 20 test suites.
+- **Phase 10 — Demo Seed Student, PDF Report & Security**: Seed student profile (`demo@edugen.local` / `demo-pass`), downloadable PDF performance summary report (`/report.pdf`, ReportLab, publication quality, zero technical jargon), per-session CSRF protection (`hmac.compare_digest`, token rotation on login/logout, zero bypass), thread-safe in-memory login & signup rate limiting with injectable clock, production security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`), sanitized generic 500 error handler, updated browser test suite with real quiz attempt submission, 22 test suites passing (404/404 tests).
 
 ---
 
 ## In Progress
-- **Phase 10 (Next) — Demo Seed Student, PDF Report & Security**: Seed student profile, downloadable PDF performance summary report, CSRF protection, login rate limiting, final integration verification.
+- **Project Completion & Final Verification**: Comprehensive review of system requirements, documentation alignment, final integration.
 
 ---
 
 ## Pending (by Phase)
-- **Phase 10 — Demo Seed Student, PDF Report & Security**: Seed student profile, downloadable PDF performance summary report, CSRF protection, login rate limiting, final integration verification.
 - **End / Submission**: Ethics section with supervisor, comprehensive review of chat requirements, optional question pool top-up, Llama offline lesson generation fallback, Groq key rotation.
 

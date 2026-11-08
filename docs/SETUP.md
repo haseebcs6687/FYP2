@@ -38,6 +38,13 @@ unavailable.
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
+**`EDUGEN_DEBUG`** — defaults to `0` (production hardening mode with generic 500 error sanitization).
+Set `EDUGEN_DEBUG=1` in `.env` for local development to enable Flask's interactive debugger, automatic code reloader, and detailed tracebacks:
+
+```bash
+EDUGEN_DEBUG=1
+```
+
 ## 3. Build the knowledge base
 
 ```bash

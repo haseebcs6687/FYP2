@@ -42,6 +42,14 @@ from core.db_repo import (
     record_generated_questions,
     record_submission_history,
 )
+from core.security import (
+    check_login_rate_limit,
+    check_signup_rate_limit,
+    get_csrf_token,
+    record_login_failure,
+    record_login_success,
+    record_signup,
+)
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -53,11 +61,25 @@ def agents():
 # ═════════════════════════════════════════════════════════════
 # Auth
 # ═════════════════════════════════════════════════════════════
+@bp.get("/csrf-token")
+def api_csrf_token():
+    return jsonify({"csrf_token": get_csrf_token()}), 200
+
+
 @bp.post("/auth/signup")
 def api_signup():
+    client_ip = request.remote_addr or "127.0.0.1"
+    allowed, retry_after = check_signup_rate_limit(client_ip)
+    if not allowed:
+        return (
+            jsonify({"error": "Too many signup attempts. Please try again later."}),
+            429,
+            {"Retry-After": str(retry_after)},
+        )
     data = request.get_json(silent=True) or {}
     try:
         user = auth.signup(data.get("name"), data.get("email"), data.get("password"))
+        record_signup(client_ip)
     except AuthError as err:
         return jsonify({"error": err.message}), err.status
     return jsonify(user), 201
@@ -66,9 +88,20 @@ def api_signup():
 @bp.post("/auth/login")
 def api_login():
     data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    client_ip = request.remote_addr or "127.0.0.1"
+    allowed, retry_after = check_login_rate_limit(client_ip, email)
+    if not allowed:
+        return (
+            jsonify({"error": "Too many failed login attempts. Please try again later."}),
+            429,
+            {"Retry-After": str(retry_after)},
+        )
     try:
         user = auth.login(data.get("email"), data.get("password"))
+        record_login_success(client_ip, email)
     except AuthError as err:
+        record_login_failure(client_ip, email)
         return jsonify({"error": err.message}), err.status
     return jsonify(user), 200
 

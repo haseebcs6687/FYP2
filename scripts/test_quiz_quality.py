@@ -31,6 +31,7 @@ sys.path.insert(0, str(BASE_DIR))
 
 from agents.concept_clarifier_agent import ConceptClarifierAgent
 from app import create_app
+from scripts.test_csrf_helper import csrf_post
 from core.db import get_db, init_db
 from core.db_repo import (
     compute_question_hash,
@@ -699,7 +700,7 @@ class TestDiagnosticSetSelection(unittest.TestCase):
                 return orig_glob(path_self, pattern)
 
             with patch.object(Path, "glob", side_effect=mock_glob, autospec=True):
-                resp = client.post("/api/quiz/start", json={"kind": "diagnostic"})
+                resp = csrf_post(client, "/api/quiz/start", json={"kind": "diagnostic"})
             self.assertEqual(resp.status_code, 200)
             data = resp.get_json()
             self.assertEqual(data.get("kind"), "diagnostic")

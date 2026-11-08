@@ -7,6 +7,13 @@ const EG = {
   /* ── fetch wrapper ──────────────────────────────────────── */
   async api(path, options = {}) {
     const opts = Object.assign({ headers: {} }, options);
+    const method = (opts.method || 'GET').toUpperCase();
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+      const meta = document.querySelector('meta[name="csrf-token"]');
+      if (meta && meta.content) {
+        opts.headers['X-CSRF-Token'] = meta.content;
+      }
+    }
     if (opts.body && typeof opts.body !== 'string') {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(opts.body);
@@ -521,7 +528,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const logoutBtn = document.querySelector('[data-action="logout"]');
   if (logoutBtn) logoutBtn.addEventListener('click', async (evt) => {
     evt.preventDefault();
-    await fetch('/api/auth/logout', { method: 'POST' });
+    try {
+      await EG.post('/api/auth/logout');
+    } catch (_) {}
     window.location.href = '/';
   });
 });

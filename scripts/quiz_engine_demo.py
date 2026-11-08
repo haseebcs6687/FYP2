@@ -67,9 +67,10 @@ def run_demo(args):
 
     app = create_app()
     client = app.test_client()
+    from scripts.test_csrf_helper import csrf_post
 
     # Create temporary student for demo
-    signup_resp = client.post("/api/auth/signup", json={
+    signup_resp = csrf_post(client, "/api/auth/signup", json={
         "name": "Phase 4E Demo Student",
         "email": f"demo_p4e_{os.getpid()}@example.com",
         "password": "demopassword123",

@@ -247,12 +247,14 @@ class TestRAGRetrievalLogging(unittest.TestCase):
         db.DB_PATH = temp_db
         os.environ["EDUGEN_DB_PATH"] = temp_db
         try:
+            from scripts.test_csrf_helper import csrf_post
+
             app = create_app()
             app.config["TESTING"] = True
             client = app.test_client()
 
             # Sign up student
-            resp = client.post("/api/auth/signup", json={
+            resp = csrf_post(client, "/api/auth/signup", json={
                 "name": "Audit Student", "email": "audit@example.com", "password": "password123"
             })
             self.assertEqual(resp.status_code, 201)

@@ -29,6 +29,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
 from app import create_app
+from scripts.test_csrf_helper import csrf_post
 from core.db import get_db, init_db
 from core.db_repo import (
     create_study_plan,
@@ -277,7 +278,7 @@ class TestJourney(unittest.TestCase):
         conn.close()
 
         # Request quiz start with plan_step_id
-        res = self.client.post("/api/quiz/start", json={"plan_step_id": check_step_id})
+        res = csrf_post(self.client, "/api/quiz/start", json={"plan_step_id": check_step_id})
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
         self.assertIn("quiz_session_id", data)

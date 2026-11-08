@@ -29,6 +29,10 @@ from agents.performance_analysis_agent import PerformanceAnalysisAgent  # noqa: 
 from core.agent_log import add_log                                  # noqa: E402
 from core.concepts import CONCEPTS                                  # noqa: E402
 from core.db import DB_PATH, init_db                                # noqa: E402
+from core.security import (                                         # noqa: E402
+    csrf_protect_before_request,
+    get_csrf_token,
+)
 from rag.retriever import get_retriever                             # noqa: E402
 from routes.api import bp as api_bp                                 # noqa: E402
 from routes.pages import bp as pages_bp                             # noqa: E402
@@ -73,6 +77,17 @@ def create_app():
     app.register_blueprint(pages_bp)
     app.register_blueprint(api_bp)
 
+    @app.before_request
+    def enforce_csrf():
+        return csrf_protect_before_request()
+
+    @app.after_request
+    def apply_security_headers(response):
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "same-origin"
+        return response
+
     @app.errorhandler(404)
     def not_found(_err):
         if request.path.startswith("/api/"):
@@ -83,15 +98,24 @@ def create_app():
 
     @app.errorhandler(500)
     def server_error(err):
+        import logging
+        import traceback
+        logging.getLogger("edugen").error("Unhandled 500 error: %s\n%s", err, traceback.format_exc())
         if request.path.startswith("/api/"):
-            return jsonify({"error": "Something failed on the server", "detail": str(err)}), 500
+            if app.debug:
+                return jsonify({"error": "internal", "detail": str(err)}), 500
+            return jsonify({"error": "internal"}), 500
         return render_template("error.html", code=500,
                                message="Something failed on the server.",
-                               show_logs=app.config["SHOW_LOGS"]), 500
+                               show_logs=app.config["SHOW_LOGS"] if app.debug else False), 500
 
     @app.context_processor
     def inject_globals():
-        return {"app_name": "EduGen", "concept_count": len(CONCEPTS)}
+        return {
+            "app_name": "EduGen",
+            "concept_count": len(CONCEPTS),
+            "csrf_token": get_csrf_token,
+        }
 
     startup_report(cc, retriever)
     add_log("System", "EduGen started - four agents online", "success")
@@ -136,4 +160,4 @@ def startup_report(cc, retriever):
 app = create_app()
 
 if __name__ == "__main__":
-    app.run(debug=os.environ.get("EDUGEN_DEBUG", "1") == "1", port=5000)
+    app.run(debug=os.environ.get("EDUGEN_DEBUG", "0") == "1", port=5000)

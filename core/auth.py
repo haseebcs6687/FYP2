@@ -26,6 +26,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from core.agent_log import add_log
 from core.db import get_db
 from core.db_repo import record_user_login
+from core.security import rotate_csrf_token
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
 MIN_PASSWORD_LENGTH = 8
@@ -159,6 +160,7 @@ def login(email, password):
 def logout():
     user = current_user()
     session.clear()
+    rotate_csrf_token()
     if user:
         add_log("Coordinator", "{} signed out".format(user["name"]))
 
@@ -169,3 +171,4 @@ def _start_session(user_id, name, student_id):
     session["student_id"] = student_id
     session["name"] = name
     session.permanent = True
+    rotate_csrf_token()

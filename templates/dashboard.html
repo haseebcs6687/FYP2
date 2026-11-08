@@ -4,9 +4,12 @@
 {% block content %}
 <div class="wrap page">
 
-  <div class="page-head">
-    <h1>Hello, {{ user.name.split()[0] }}</h1>
-    <p>Here is your personalized progress and what to work on next.</p>
+  <div class="page-head" style="display:flex;justify-content:space-between;align-items:flex-start">
+    <div>
+      <h1>Hello, {{ user.name.split()[0] }}</h1>
+      <p>Here is your personalized progress and what to work on next.</p>
+    </div>
+    <a href="{{ url_for('pages.report_pdf') }}" class="btn btn-ghost" id="btn-download-report">Download report</a>
   </div>
 
   <!-- Recommendation -->

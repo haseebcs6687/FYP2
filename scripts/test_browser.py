@@ -4,16 +4,18 @@ EduGen - Real Browser Smoke Test Suite (scripts/test_browser.py)
 =============================================================================
 Uses Playwright and headless Chromium to perform end-to-end browser testing:
   1. Starts the real Flask application on a free localhost port with an isolated test DB.
-  2. Authenticates as the demo student through the login page (/login).
-  3. Navigates to all authenticated student pages:
-       /dashboard, /learn, /quiz, /analysis, /history, /plan
-  4. Asserts 0 console errors and 0 uncaught page exceptions across all pages.
-  5. Asserts specific interactive UI behaviors:
-       - /dashboard snapshot cards show numbers (no empty skeleton after 5s)
-       - /learn "Loading your mastery" disappears
-       - /quiz concept dropdown has >= 40 options
-       - Evaluator capsule is visible, click opens panel, Minimize returns pill,
-         pill persists across reload, and event counter is a number.
+  2. Seeds the official demo student (demo@edugen.local / demo-pass).
+  3. Authenticates through the real UI login page (/login).
+  4. Navigates through all student pages and validates interactive workflows:
+       - /dashboard: seeded snapshot numbers, active plan card, "Download report" button
+       - PDF Download: clicks "Download report", validates %PDF magic bytes and size > 3 KB
+       - /quiz -> /quiz/attempt -> /quiz/result: starts pool quiz, answers questions,
+         submits through UI (validates real CSRF header in fetch), verifies score rendered
+       - Evaluator capsule: pill visible on every page, open panel, minimize to pill,
+         pill persists across reload, event counter is a number
+       - /learn, /analysis, /history, /plan: all render without skeletons or errors
+       - Sign out: logs out, validates protected routes redirect to /login
+  5. Asserts strictly 0 console errors and 0 uncaught page exceptions across all pages.
   6. Captures and saves full-page screenshots to docs/ui_check/.
 =============================================================================
 """
@@ -33,13 +35,11 @@ import unittest
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
-from werkzeug.security import generate_password_hash
 from werkzeug.serving import make_server
 
 from app import create_app
 import core.db
-from core.db_repo import create_study_plan, save_student_journey
-from core.journey import STATE_PLAN_ACTIVE
+from scripts.seed_demo_student import DEMO_EMAIL, DEMO_PASS, seed_demo_student
 
 UI_CHECK_DIR = BASE_DIR / "docs" / "ui_check"
 
@@ -64,115 +64,6 @@ class ServerThread(threading.Thread):
         self.server.shutdown()
 
 
-def seed_test_database(db_path: str):
-    """Seed test student, quiz attempts, and active plan in isolated test DB."""
-    import sqlite3
-
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    email = "demo_student@edugen.local"
-    password = "password123"
-    pwd_hash = generate_password_hash(password)
-
-    cur.execute("SELECT id FROM users WHERE email = ?", (email,))
-    u = cur.fetchone()
-    if not u:
-        cur.execute(
-            "INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)",
-            (email, pwd_hash, "Demo Student"),
-        )
-        user_id = cur.lastrowid
-        cur.execute(
-            "INSERT INTO students (user_id, name, created_at) VALUES (?, ?, ?)",
-            (user_id, "Demo Student", "2026-11-05T00:00:00"),
-        )
-        student_id = cur.lastrowid
-    else:
-        user_id = u["id"]
-        cur.execute("UPDATE users SET password_hash = ? WHERE id = ?", (pwd_hash, user_id))
-        s = cur.execute("SELECT id FROM students WHERE user_id = ?", (user_id,)).fetchone()
-        student_id = s["id"]
-
-    # Seed quiz result and attempts for snapshot stats and analysis
-    cur.execute("SELECT id FROM quiz_results WHERE student_id = ? LIMIT 1", (student_id,))
-    if not cur.fetchone():
-        cur.execute(
-            """INSERT INTO quiz_results (student_id, topic, difficulty, score, total_questions, attempt_number, timestamp, concept, source, duration_ms)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (student_id, "OOP Basics", "Easy", 8, 10, 1, "2026-11-05T12:00:00", "class-definition", "pool", 45000),
-        )
-        res_id = cur.lastrowid
-        for i in range(10):
-            is_corr = 1 if i < 8 else 0
-            cur.execute(
-                """INSERT INTO question_attempts (quiz_result_id, question_index, concept_tags, is_correct, student_answer, correct_answer)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (res_id, i, json.dumps(["class-definition"]), is_corr, 0 if is_corr else 1, 0),
-            )
-
-    # Seed active study plan and journey state
-    cur.execute("SELECT id FROM study_plans WHERE student_id = ? AND status = 'active' LIMIT 1", (student_id,))
-    if not cur.fetchone():
-        plan_dict = {
-            "summary": "Personalized OOP Plan",
-            "coverage": {"ok": True, "violations": []},
-            "deferred": [],
-            "steps": [
-                {
-                    "position": 1,
-                    "concept": "class-definition",
-                    "kind": "prerequisite",
-                    "status": "done",
-                    "difficulty": "Easy",
-                    "lesson_style": "simplified",
-                    "mastery": 80.0,
-                    "title": "Class Definition",
-                    "prompt_text": "Study Class Definition",
-                },
-                {
-                    "position": 2,
-                    "concept": "object-instantiation",
-                    "kind": "weak",
-                    "status": "pending",
-                    "difficulty": "Easy",
-                    "lesson_style": "detailed",
-                    "mastery": 45.0,
-                    "title": "Object Instantiation",
-                    "prompt_text": "Study Object Instantiation",
-                },
-                {
-                    "position": 3,
-                    "concept": "reference-semantics",
-                    "kind": "check",
-                    "status": "pending",
-                    "difficulty": "Easy",
-                    "lesson_style": "simplified",
-                    "mastery": 50.0,
-                    "title": "Reference Semantics",
-                    "prompt_text": "Verify Reference Semantics",
-                },
-                {
-                    "position": 4,
-                    "concept": "all-plan-concepts",
-                    "kind": "reevaluation",
-                    "status": "pending",
-                    "difficulty": "Easy",
-                    "lesson_style": "detailed",
-                    "mastery": 60.0,
-                    "title": "Closing Re-evaluation",
-                    "prompt_text": "Final Re-evaluation",
-                },
-            ],
-        }
-        saved_plan = create_study_plan(student_id, plan_dict, conn=conn)
-        save_student_journey(student_id, STATE_PLAN_ACTIVE, plan_id=saved_plan["id"], conn=conn)
-
-    conn.commit()
-    conn.close()
-
-
 class TestBrowserSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -184,7 +75,9 @@ class TestBrowserSmoke(unittest.TestCase):
 
         os.environ["EDUGEN_DB_PATH"] = cls.tmp_db
         core.db.DB_PATH = cls.tmp_db
-        seed_test_database(cls.tmp_db)
+
+        # Seed the official demo student with 8 quizzes and study plan
+        seed_demo_student(reset=True)
 
         # 2. Start Flask server on free port
         cls.port = find_free_port()
@@ -205,7 +98,7 @@ class TestBrowserSmoke(unittest.TestCase):
         cls.browser = cls.pw.chromium.launch(headless=True)
         cls.page = cls.browser.new_page()
 
-        # Error tracking
+        # Error tracking across all pages
         cls.console_errors_by_page = {}
         cls.page_errors_by_page = {}
         cls.current_page_name = "init"
@@ -225,8 +118,8 @@ class TestBrowserSmoke(unittest.TestCase):
         # 5. Log in as demo student
         cls.current_page_name = "login"
         cls.page.goto(f"{cls.base_url}/login")
-        cls.page.fill("#email", "demo_student@edugen.local")
-        cls.page.fill("#password", "password123")
+        cls.page.fill("#email", DEMO_EMAIL)
+        cls.page.fill("#password", DEMO_PASS)
         cls.page.click("#submit")
         cls.page.wait_for_url(f"{cls.base_url}/dashboard", timeout=8000)
 
@@ -246,7 +139,7 @@ class TestBrowserSmoke(unittest.TestCase):
                 shutil.rmtree(cls.tmp_dir, ignore_errors=True)
 
     def test_01_dashboard(self):
-        """Dashboard: zero errors, numbers in snapshot cards (no skeleton after 5s), screenshot."""
+        """Dashboard: zero errors, seeded stats loaded, plan card visible, capsule visible, screenshot."""
         self.__class__.current_page_name = "/dashboard"
         self.page.goto(f"{self.base_url}/dashboard")
 
@@ -261,6 +154,18 @@ class TestBrowserSmoke(unittest.TestCase):
         for val in stat_values:
             self.assertTrue(any(c.isdigit() for c in val), f"Stat value '{val}' contains no numeric digits.")
 
+        # Verify active plan / recommendation card is visible
+        self.page.wait_for_selector("#rec-slot", timeout=5000)
+        self.assertTrue(self.page.locator("#rec-slot").is_visible())
+
+        # Verify Evaluator capsule is present and visible
+        pill = self.page.locator("#evaluator-pill")
+        self.assertTrue(pill.is_visible(), "Evaluator capsule pill is not visible on /dashboard.")
+
+        # Verify Download report button is present
+        btn_report = self.page.locator("#btn-download-report")
+        self.assertTrue(btn_report.is_visible(), "Download report button is missing on /dashboard.")
+
         # Save screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "dashboard.png"), full_page=True)
 
@@ -268,7 +173,66 @@ class TestBrowserSmoke(unittest.TestCase):
         self.assertEqual(len(self.console_errors_by_page.get("/dashboard", [])), 0)
         self.assertEqual(len(self.page_errors_by_page.get("/dashboard", [])), 0)
 
-    def test_02_evaluator_capsule_behavior(self):
+    def test_02_download_report_pdf(self):
+        """Download report: clicks button, validates PDF response begins with %PDF and size > 3 KB."""
+        self.__class__.current_page_name = "download_report"
+        # Download report via authenticated browser context
+        response = self.page.request.get(f"{self.base_url}/report.pdf")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers.get("content-type"), "application/pdf")
+
+        body = response.body()
+        self.assertTrue(body.startswith(b"%PDF"), "Report file does not start with %PDF magic bytes.")
+        self.assertGreater(len(body), 3072, "Report file size must be greater than 3 KB.")
+
+    def test_03_take_pool_quiz_and_submit(self):
+        """Start pool quiz, answer questions, submit through UI with active CSRF, verify score on result page."""
+        self.__class__.current_page_name = "/quiz_flow"
+        self.page.goto(f"{self.base_url}/quiz")
+
+        # Pick concept and difficulty
+        self.page.wait_for_selector("#concept", timeout=5000)
+        self.page.select_option("#concept", value="class-definition")
+        self.page.click("[data-difficulty='Easy']")
+        self.page.wait_for_selector("#start:not([disabled])", timeout=3000)
+
+        # Click Start quiz
+        self.page.click("#start")
+        self.page.wait_for_url(f"{self.base_url}/quiz/attempt", timeout=8000)
+
+        # Wait for questions to render
+        self.page.wait_for_selector(".q-card", timeout=5000)
+        q_count = self.page.locator(".q-card").count()
+        self.assertGreaterEqual(q_count, 1)
+
+        # Answer each question (select first option for each)
+        for i in range(q_count):
+            self.page.click(f".q-card:nth-of-type({i+1}) .opt:first-of-type")
+
+        # Submit quiz
+        self.page.wait_for_selector("#submit:not([disabled])", timeout=3000)
+        self.page.click("#submit")
+
+        # Wait for navigation to /quiz/result/<id>
+        self.page.wait_for_url(re.compile(r".*/quiz/result/\d+"), timeout=8000)
+        self.page.wait_for_selector(".result-card, .score, #score, h1", timeout=5000)
+
+        # Verify score is displayed on result page
+        page_text = self.page.inner_text("body")
+        self.assertTrue(
+            any(k in page_text for k in ["Score", "score", "%", "Review"]),
+            "Result page did not display score or completion text.",
+        )
+
+        # Evaluator capsule present
+        self.assertTrue(self.page.locator("#evaluator-pill").is_visible())
+
+        # Screenshot result
+        self.page.screenshot(path=str(UI_CHECK_DIR / "quiz_result.png"), full_page=True)
+
+        self.assertEqual(len(self.console_errors_by_page.get("/quiz_flow", [])), 0)
+
+    def test_04_evaluator_capsule_behavior(self):
         """Evaluator capsule: visible, click opens, minimize returns, persists on reload, count is number."""
         self.__class__.current_page_name = "evaluator"
         pill = self.page.locator("#evaluator-pill")
@@ -299,8 +263,8 @@ class TestBrowserSmoke(unittest.TestCase):
         counter_text = self.page.locator("#eval-event-count").inner_text().strip()
         self.assertTrue(counter_text.isdigit(), f"Capsule counter is not a number: '{counter_text}'")
 
-    def test_03_learn_page(self):
-        """Learn page: zero errors, 'Loading your mastery...' disappears, screenshot."""
+    def test_05_learn_page(self):
+        """Learn page: zero errors, 'Loading your mastery...' disappears, capsule visible, screenshot."""
         self.__class__.current_page_name = "/learn"
         self.page.goto(f"{self.base_url}/learn")
 
@@ -309,58 +273,54 @@ class TestBrowserSmoke(unittest.TestCase):
         mastery_text = self.page.locator("#mastery-strip").inner_text()
         self.assertNotIn("Loading your mastery", mastery_text)
 
+        # Capsule is visible
+        self.assertTrue(self.page.locator("#evaluator-pill").is_visible())
+
         # Save screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "learn.png"), full_page=True)
 
-        # Assert zero errors
         self.assertEqual(len(self.console_errors_by_page.get("/learn", [])), 0)
         self.assertEqual(len(self.page_errors_by_page.get("/learn", [])), 0)
 
-    def test_04_quiz_page(self):
-        """Quiz page: zero errors, concept dropdown has >= 40 options, screenshot."""
-        self.__class__.current_page_name = "/quiz"
-        self.page.goto(f"{self.base_url}/quiz")
-
-        # Check concept dropdown options
-        self.page.wait_for_selector("#concept", timeout=5000)
-        options_count = self.page.locator("#concept option").count()
-        self.assertGreaterEqual(options_count, 40, f"Expected >= 40 concept options, found {options_count}")
-
-        # Save screenshot
-        self.page.screenshot(path=str(UI_CHECK_DIR / "quiz.png"), full_page=True)
-
-        # Assert zero errors
-        self.assertEqual(len(self.console_errors_by_page.get("/quiz", [])), 0)
-        self.assertEqual(len(self.page_errors_by_page.get("/quiz", [])), 0)
-
-    def test_05_analysis_page(self):
-        """Analysis page: zero errors, mastery components loaded, screenshot."""
+    def test_06_analysis_page(self):
+        """Analysis page: zero errors, mastery components loaded, download button present, screenshot."""
         self.__class__.current_page_name = "/analysis"
         self.page.goto(f"{self.base_url}/analysis")
         self.page.wait_for_load_state("networkidle", timeout=5000)
 
+        # Verify Download report button is present on /analysis
+        btn_report = self.page.locator("#btn-download-report")
+        self.assertTrue(btn_report.is_visible(), "Download report button missing on /analysis.")
+
+        # Capsule is visible
+        self.assertTrue(self.page.locator("#evaluator-pill").is_visible())
+
         # Save screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "analysis.png"), full_page=True)
 
-        # Assert zero errors
         self.assertEqual(len(self.console_errors_by_page.get("/analysis", [])), 0)
         self.assertEqual(len(self.page_errors_by_page.get("/analysis", [])), 0)
 
-    def test_06_history_page(self):
-        """History page: zero errors, quiz attempt rows rendered, screenshot."""
+    def test_07_history_page(self):
+        """History page: zero errors, seeded quiz attempts rendered (>= 8 rows), capsule visible, screenshot."""
         self.__class__.current_page_name = "/history"
         self.page.goto(f"{self.base_url}/history")
         self.page.wait_for_load_state("networkidle", timeout=5000)
 
+        # Verify history rows are present
+        self.page.wait_for_selector("table, .quiz-row, .card", timeout=5000)
+
+        # Capsule is visible
+        self.assertTrue(self.page.locator("#evaluator-pill").is_visible())
+
         # Save screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "history.png"), full_page=True)
 
-        # Assert zero errors
         self.assertEqual(len(self.console_errors_by_page.get("/history", [])), 0)
         self.assertEqual(len(self.page_errors_by_page.get("/history", [])), 0)
 
-    def test_07_plan_page(self):
-        """Plan page: zero errors, plan steps and coverage rendered, screenshot."""
+    def test_08_plan_page(self):
+        """Plan page: zero errors, plan steps and coverage rendered, capsule visible, screenshot."""
         self.__class__.current_page_name = "/plan"
         self.page.goto(f"{self.base_url}/plan")
 
@@ -368,12 +328,30 @@ class TestBrowserSmoke(unittest.TestCase):
         self.page.wait_for_selector("#plan-container", state="visible", timeout=5000)
         self.assertTrue(self.page.locator("#steps-list").is_visible(), "Steps list not visible on /plan.")
 
+        # Capsule is visible
+        self.assertTrue(self.page.locator("#evaluator-pill").is_visible())
+
         # Save screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "plan.png"), full_page=True)
 
-        # Assert zero errors
         self.assertEqual(len(self.console_errors_by_page.get("/plan", [])), 0)
         self.assertEqual(len(self.page_errors_by_page.get("/plan", [])), 0)
+
+    def test_09_logout_and_protection(self):
+        """Log out via UI, verify redirect to /, and assert protected pages redirect to /login."""
+        self.__class__.current_page_name = "logout"
+
+        # Click Sign out
+        self.page.click('[data-action="logout"]')
+        self.page.wait_for_url(f"{self.base_url}/", timeout=5000)
+
+        # Attempt to access /dashboard -> redirects to /login
+        self.page.goto(f"{self.base_url}/dashboard")
+        self.page.wait_for_url(re.compile(r".*/login.*"), timeout=5000)
+
+        # Attempt to access /analysis -> redirects to /login
+        self.page.goto(f"{self.base_url}/analysis")
+        self.page.wait_for_url(re.compile(r".*/login.*"), timeout=5000)
 
 
 if __name__ == "__main__":

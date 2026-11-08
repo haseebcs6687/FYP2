@@ -144,6 +144,28 @@ def plan():
     return render_template("plan.html", **_ctx(page="plan"))
 
 
+@bp.route("/report.pdf")
+@login_required
+def report_pdf():
+    from flask import Response
+    from core.auth import current_student_id
+    from core.report import generate_student_report_pdf
+
+    student_id = current_student_id()
+    if not student_id:
+        return redirect(url_for("pages.login"))
+
+    pdf_bytes = generate_student_report_pdf(student_id)
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={
+            "Content-Disposition": 'attachment; filename="edugen_performance_report.pdf"',
+            "Content-Type": "application/pdf",
+        },
+    )
+
+
 @bp.route("/lesson-step/<int:step_id>")
 @login_required
 def lesson_step(step_id):

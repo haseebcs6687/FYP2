@@ -20,6 +20,7 @@ import core.db as db                                       # noqa: E402
 db.DB_PATH = os.environ["EDUGEN_DB_PATH"]
 
 from app import app                                        # noqa: E402
+from scripts.test_csrf_helper import csrf_post               # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -34,6 +35,9 @@ def main():
     app.config["TESTING"] = True
     client = app.test_client()
 
+    def post(url, **kwargs):
+        return csrf_post(client, url, **kwargs)
+
     print("\n1. Public pages")
     check("landing renders", client.get("/").status_code == 200)
     check("about renders", client.get("/about").status_code == 200)
@@ -45,16 +49,16 @@ def main():
     check("analysis API returns 401 when signed out", r.status_code == 401, r.data)
 
     print("\n3. Signup and session")
-    r = client.post("/api/auth/signup", json={
+    r = post("/api/auth/signup", json={
         "name": "Test Student", "email": "test@example.com", "password": "password123"})
     check("signup succeeds", r.status_code == 201, r.data)
     check("dashboard now loads", client.get("/dashboard").status_code == 200)
 
-    r = client.post("/api/auth/signup", json={
+    r = post("/api/auth/signup", json={
         "name": "X", "email": "test@example.com", "password": "password123"})
     check("duplicate email rejected", r.status_code == 400)
 
-    r = client.post("/api/auth/login", json={"email": "test@example.com", "password": "wrong"})
+    r = post("/api/auth/login", json={"email": "test@example.com", "password": "wrong"})
     check("wrong password rejected", r.status_code == 401)
 
     print("\n4. Coordinator pipeline (first visit)")
@@ -94,7 +98,7 @@ def main():
     print("     -> served by: {}".format(lesson.get("generated_by")))
 
     print("\n7. Quiz flow")
-    r = client.post("/api/quiz/start", json={
+    r = post("/api/quiz/start", json={
         "concept": concept, "difficulty": difficulty, "count": 5})
     quiz = r.get_json()
 
@@ -120,7 +124,7 @@ def main():
     if quiz:
         answers = {str(i): 0 for i in range(len(quiz["questions"]))}
         timings = {str(i): 4000 for i in range(len(quiz["questions"]))}
-        r = client.post("/api/quiz/submit", json={
+        r = post("/api/quiz/submit", json={
             "quiz_session_id": quiz["quiz_session_id"],
             "answers": answers, "timings": timings, "duration_ms": 30000})
         result = r.get_json()
@@ -150,7 +154,7 @@ def main():
     print("     -> rule {} chose '{}' at {}".format(
         rec.get("rule"), rec.get("focus_concept"), rec.get("recommended_difficulty")))
 
-    r = client.post("/api/recommendation/respond", json={
+    r = post("/api/recommendation/respond", json={
         "accepted": False, "concept": "inheritance-basics", "difficulty": "Easy"})
     check("override recorded", r.status_code == 200, r.data)
     r = client.get("/api/recommendation/stats")
@@ -167,7 +171,7 @@ def main():
     check("history returns records", r.get_json().get("total", 0) >= 1)
 
     other = app.test_client()
-    other.post("/api/auth/signup", json={
+    csrf_post(other, "/api/auth/signup", json={
         "name": "Second Student", "email": "other@example.com", "password": "password123"})
     h = other.get("/api/history").get_json()
     check("other student sees no records", h.get("total") == 0, h)

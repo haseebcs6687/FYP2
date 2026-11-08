@@ -152,6 +152,16 @@ TEST_SUITES = [
         "timeout": 90,
     },
     {
+        "name": "test_security",
+        "cmd": [sys.executable, str(BASE_DIR / "scripts" / "test_security.py")],
+        "timeout": 60,
+    },
+    {
+        "name": "test_report",
+        "cmd": [sys.executable, str(BASE_DIR / "scripts" / "test_report.py")],
+        "timeout": 60,
+    },
+    {
         "name": "test_bank_tools",
         "cmd": [sys.executable, str(BASE_DIR / "tools" / "question_bank" / "test_bank_tools.py")],
         "timeout": 60,

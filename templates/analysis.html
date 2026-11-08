@@ -3,12 +3,15 @@
 
 {% block content %}
 <div class="wrap page">
-  <div class="page-head">
-    <h1>Performance analysis</h1>
-    <p>
-      What the Performance Analysis Agent measured, concept by concept. Mastery is
-      recency-weighted, so your recent answers count more than your first attempt.
-    </p>
+  <div class="page-head" style="display:flex;justify-content:space-between;align-items:flex-start">
+    <div>
+      <h1>Performance analysis</h1>
+      <p>
+        What the Performance Analysis Agent measured, concept by concept. Mastery is
+        recency-weighted, so your recent answers count more than your first attempt.
+      </p>
+    </div>
+    <a href="{{ url_for('pages.report_pdf') }}" class="btn btn-ghost" id="btn-download-report">Download report</a>
   </div>
 
   <div id="body">{{ '' }}</div>

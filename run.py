@@ -18,5 +18,5 @@ if __name__ == "__main__":
     app.run(
         host=os.environ.get("HOST", "127.0.0.1"),
         port=port,
-        debug=os.environ.get("EDUGEN_DEBUG", "1") == "1",
+        debug=os.environ.get("EDUGEN_DEBUG", "0") == "1",
     )

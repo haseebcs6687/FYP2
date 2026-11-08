@@ -28,6 +28,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
 import core.db as db
+from scripts.test_csrf_helper import csrf_post
 from core.concepts import CONCEPTS
 from core.misconceptions import MISCONCEPTIONS, misconceptions_for
 from core.quiz_engine import (
@@ -350,7 +351,7 @@ class TestClarifierAndSubmitWiring(unittest.TestCase):
         self.client = self.app.test_client()
 
         # Seed student
-        resp = self.client.post("/api/auth/signup", json={
+        resp = csrf_post(self.client, "/api/auth/signup", json={
             "name": "Quiz Student", "email": "quiz_student@example.com", "password": "password123"
         })
         self.assertEqual(resp.status_code, 201)
@@ -418,7 +419,7 @@ class TestClarifierAndSubmitWiring(unittest.TestCase):
         clarifier._call_llm = fake_call_llm
         try:
             # 1. Start quiz
-            start_resp = self.client.post("/api/quiz/start", json={
+            start_resp = csrf_post(self.client, "/api/quiz/start", json={
                 "kind": "practice",
                 "concept": "class-definition",
                 "difficulty": "Easy",
@@ -449,7 +450,7 @@ class TestClarifierAndSubmitWiring(unittest.TestCase):
             self.assertNotEqual(distractor_idx, -1)
 
             # 3. Submit quiz with wrong answer
-            submit_resp = self.client.post("/api/quiz/submit", json={
+            submit_resp = csrf_post(self.client, "/api/quiz/submit", json={
                 "quiz_session_id": session_id,
                 "answers": {"0": distractor_idx},
                 "timings": {"0": 5000},
@@ -644,7 +645,7 @@ class TestProbeQuizEngine(unittest.TestCase):
             sess["user_id"] = 1
             sess["name"] = "ProbeTester"
 
-        resp = self.client.post("/api/quiz/start", json={
+        resp = csrf_post(self.client, "/api/quiz/start", json={
             "kind": "probe",
             "concept": "class-definition",
             "n": 1,

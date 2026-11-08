@@ -31,6 +31,7 @@ sys.path.insert(0, str(BASE_DIR))
 
 from agents.concept_clarifier_agent import ConceptClarifierAgent
 from core.db import get_db, init_db
+from scripts.test_csrf_helper import csrf_post
 from core.db_repo import (
     count_step_regenerations_today,
     create_study_plan,
@@ -500,15 +501,16 @@ class TestLessonEngine(unittest.TestCase):
             sess["student_id"] = 1
 
         for i in range(3):
-            r = client.post(f"/api/plan/step/{step_id}/lesson/regenerate")
+            r = csrf_post(client, f"/api/plan/step/{step_id}/lesson/regenerate")
             self.assertEqual(r.status_code, 200)
 
         # 4th regeneration attempt -> 429
-        r4 = client.post(f"/api/plan/step/{step_id}/lesson/regenerate")
+        r4 = csrf_post(client, f"/api/plan/step/{step_id}/lesson/regenerate")
         self.assertEqual(r4.status_code, 429)
 
         # 8.4 Feedback row written
-        fb_resp = client.post(
+        fb_resp = csrf_post(
+            client,
             f"/api/plan/step/{step_id}/lesson/feedback",
             json={"rating": 1, "comment": "Great lesson!"},
         )

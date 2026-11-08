@@ -576,6 +576,7 @@ class TestStudyPlanIntegrationAndSecurity(unittest.TestCase):
     def test_route_ownership_security(self):
         """API forbids student A from modifying or reading student B's plan steps."""
         from app import create_app
+        from scripts.test_csrf_helper import csrf_post
         app = create_app()
         app.config["TESTING"] = True
 
@@ -596,7 +597,8 @@ class TestStudyPlanIntegrationAndSecurity(unittest.TestCase):
                 sess["student_id"] = 2
 
             # Student 2 tries to update Student 1's step status
-            res = client.post(
+            res = csrf_post(
+                client,
                 f"/api/plan/step/{step_s1}/status",
                 data=json.dumps({"status": "done"}),
                 content_type="application/json",
@@ -605,7 +607,8 @@ class TestStudyPlanIntegrationAndSecurity(unittest.TestCase):
             self.assertIn("Forbidden", res.get_json().get("error", ""))
 
             # Student 2 tries to update Student 1's step note
-            res_note = client.post(
+            res_note = csrf_post(
+                client,
                 f"/api/plan/step/{step_s1}/note",
                 data=json.dumps({"note": "Malicious edit"}),
                 content_type="application/json",
