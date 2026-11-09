@@ -1,0 +1,8 @@
+metric_key,value,unit,description
+student_initiated_actions,6,count,"Required student pedagogical interactions (diagnostic, 2 lesson completions, 3 quizzes)"
+core_pedagogical_decisions,13,count,"Independent autonomous agent decisions (BKT, planning, routing, validation)"
+all_telemetry_events,57,count,Total agent events logged to SQLite event bus throughout the journey
+honest_automation_ratio,68.4,percent,Ratio of core pedagogical decisions over total cycle interactions
+legacy_automation_ratio,90.5,percent,Ratio of all telemetry events over total student interactions
+study_plan_steps_completed,5,count,All synthesized study plan steps completed and validated
+legacy_manual_clicks_avoided,24,count,Manual topic and page navigation clicks eliminated by autonomous state machine

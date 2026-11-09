@@ -78,8 +78,12 @@ class Retriever(object):
             try:
                 ok = self.store.load()
                 if ok and self.store.chunks:
-                    self._embedder = get_embedder(self._backend, quiet=True)
-                    self._verify_signature()
+                    try:
+                        self._embedder = get_embedder(self._backend, quiet=True)
+                        self._verify_signature()
+                    except Exception as emb_exc:
+                        self._embedder = None
+                        _log_degraded_warning("Embedder unavailable during load ({}). Lexical ranking active.".format(emb_exc))
                 self._loaded = True
                 return ok and bool(self.store.chunks)
             except Exception as exc:                       # noqa: BLE001
@@ -185,7 +189,7 @@ class Retriever(object):
         level_map = {"Easy": "basic", "Medium": "standard", "Hard": "advanced"}
         target_level = level_map.get(difficulty, "standard") if mode == "lesson" else None
 
-        query_text = brief.get("query", "")
+        query_text = brief.get("query") or (concept_title(concept) if concept else "")
 
         try:
             query_vector, query_cache_hit = self._embed_query(query_text)

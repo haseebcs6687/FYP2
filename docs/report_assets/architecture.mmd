@@ -1,0 +1,62 @@
+graph TD
+    %% EduGen Multi-Agent Architecture (FYP-2)
+
+    subgraph ClientLayer ["Client & Interface Layer"]
+        UI["Student Web UI (12 Jinja2 Server-Rendered Pages)"]
+        CAPSULE["Evaluator Activity Capsule & Polling Panel"]
+        REPORT["PDF Performance Summary Report (/report.pdf)"]
+    end
+
+    subgraph ControlLayer ["Autonomous Control Layer"]
+        COORD["Coordinator Agent (Router & Orchestration State Machine)"]
+        BUS["Structured Event Bus & Telemetry Ring Buffer (core/event_bus.py)"]
+    end
+
+    subgraph AnalysisPlanning ["Analysis & Planning Agents (Offline Logic)"]
+        PA["Performance Analysis Agent (BKT Mastery, Trend & Prerequisite Root-Cause)"]
+        AC["Adaptive Content Agent (Deterministic 6-Rule Policy & Graph Planner)"]
+    end
+
+    subgraph GenerationLayer ["Content & Generation Agent"]
+        CC["Concept Clarifier Agent (Only Agent Permitted to Make LLM Calls)"]
+        CHECK["Deterministic Java Compiler Gate (javac / core/java_check.py)"]
+    end
+
+    subgraph KnowledgeRetrieval ["Knowledge Base & Retrieval Subsystem"]
+        RAG["Retriever (Hybrid Dense Cosine + BM25 Lexical + Tag Boosting)"]
+        CHUNKS[("Indexed Knowledge Base: 7,333 Chunks from 3 Textbooks")]
+    end
+
+    subgraph PersistenceLayer ["Database & Pool Storage"]
+        DB[("SQLite Database: data/edugen.db")]
+        POOL[("Verified Question Pool: 703 Active Questions across 44 Concepts")]
+    end
+
+    subgraph ExternalServices ["External AI & Inference Providers"]
+        OLLAMA["Local Ollama Service (nomic-embed-text:768 Vector Embeddings)"]
+        GROQ["Groq API (openai/gpt-oss-120b Generator & qwen3.8-27b Verifier)"]
+    end
+
+    %% Interactions
+    UI -->|HTTP Requests / Sessions| COORD
+    CAPSULE -->|Polling GET /api/events| BUS
+    REPORT -->|Read Student Data| DB
+
+    COORD -->|Record Telemetry| BUS
+    COORD -->|Orchestrate Learning Loop| PA
+    PA -->|Student Evidence Dict| AC
+    AC -->|Retrieval Brief Contract| CC
+    COORD -->|Serve Cached / Note Content| UI
+
+    PA -->|Read Question Attempts| DB
+    AC -->|Topological Sort & Prereq Closure| DB
+
+    CC -->|1. Query Grounding Passages| RAG
+    RAG -->|Vector Embedding Request| OLLAMA
+    RAG -->|Read Passages| CHUNKS
+    CC -->|2. Generate / Verify via LLM| GROQ
+    CC -->|3. Compile Code Snippets| CHECK
+    CC -->|4. Store Verified Content| POOL
+
+    COORD -->|Instant Sub-Second Quiz Serving| POOL
+    COORD -->|Log Execution Trace| DB

@@ -4,7 +4,39 @@ This document provides credentials, setup steps, and a structured 5-minute click
 
 ---
 
-## 1. Demo Student Credentials & Seed Script
+## 1. "Before the Demo" Pre-Flight Checklist
+
+Complete these 7 checks prior to starting the viva demonstration:
+
+1. **Ollama Service Running & Embedding Model Available**:
+   - Ensure the Ollama local daemon is active.
+   - Confirm the embedding model is downloaded: `ollama list` (should list `nomic-embed-text`).
+   - If not running, start Ollama; note that even if Ollama is offline, EduGen automatically falls back to memory-cached BM25 lexical retrieval.
+2. **Virtual Environment Python**:
+   - Always run commands and launch the application using `venv\Scripts\python.exe` to ensure pinned dependencies (`flask`, `reportlab`, `matplotlib`, `playwright`) are loaded.
+3. **Groq API Key in `.env`**:
+   - Confirm `.env` exists in the project root containing a valid, active `GROQ_API_KEY=<your_api_key>`.
+4. **Internet Connectivity Active**:
+   - Verify network connectivity so the Concept Clarifier agent can reach the Groq API endpoint (`api.groq.com`).
+5. **Reset Demo Student to Known Baseline**:
+   - Re-initialize the demonstration student to the canonical 5/6 completed state:
+     ```bash
+     venv\Scripts\python.exe scripts/seed_demo_student.py --reset
+     ```
+6. **Verify System Health Endpoint**:
+   - Start the application: `venv\Scripts\python.exe run.py`
+   - In a browser or terminal, verify `GET http://localhost:5000/api/health`.
+   - Ensure response confirms `"status": "ok"`, `"database": "ok"`, and `703` active pool questions.
+7. **Reset Browser Evaluator Capsule State**:
+   - If the browser previously retained a stale UI state, open Developer Tools Console and run:
+     ```javascript
+     localStorage.setItem('edugen_evaluator_capsule_state', 'minimized');
+     ```
+   - This ensures the floating Evaluator capsule pill is neatly displayed in the bottom-right corner without blocking the screen.
+
+---
+
+## 2. Demo Student Credentials & Seed Script
 
 | Field | Value |
 |---|---|
@@ -23,7 +55,7 @@ venv\Scripts\python.exe scripts/seed_demo_student.py --reset
 
 ---
 
-## 2. 5-Minute Click-by-Click Viva Script
+## 3. 5-Minute Click-by-Click Viva Script
 
 ### Step 1: Sign In & Dashboard (0:00 – 0:45)
 1. Navigate to `http://localhost:5000/login`.

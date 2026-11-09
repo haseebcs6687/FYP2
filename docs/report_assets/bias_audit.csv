@@ -1,0 +1,8 @@
+strategy,old_count,old_total,old_pct,new_count,new_total,new_pct,target_pct,baseline_pct,status
+always-longest,120,403,29.8,59,239,24.7,35.0,25.0,PASS
+always-shortest,116,403,28.8,57,239,23.8,35.0,25.0,PASS
+avoid-absolute-words,113,403,28.0,59,239,24.7,35.0,25.0,PASS
+always option 0,108,403,26.8,58,239,24.3,35.0,25.0,PASS
+always option 1,104,403,25.8,57,239,23.8,35.0,25.0,PASS
+always option 2,90,403,22.3,65,239,27.2,35.0,25.0,PASS
+always option 3,101,403,25.1,59,239,24.7,35.0,25.0,PASS

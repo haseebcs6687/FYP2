@@ -1,0 +1,4 @@
+pdf_key,textbook_title,raw_batches,raw_questions,accepted,relabeled,rejected,acceptance_rate_pct
+JavaNotesForProfessionals,Java Notes for Professionals,35,420,311,33,73,74.0
+javanotes9,Introduction to Programming in Java (Eck),23,276,174,23,18,63.0
+thinkjava2,Think Java 2 (Downey & Mayfield),16,192,125,17,31,65.1

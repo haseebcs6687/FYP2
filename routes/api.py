@@ -54,6 +54,74 @@ from core.security import (
 bp = Blueprint("api", __name__, url_prefix="/api")
 
 
+@bp.get("/health")
+def api_health():
+    """System health check (no secrets exposed)."""
+    import os
+    import requests
+    from core.db import get_db
+
+    db_ok = False
+    try:
+        conn = get_db()
+        conn.execute("SELECT 1").fetchone()
+        db_ok = True
+        conn.close()
+    except Exception:
+        db_ok = False
+
+    ollama_host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+    ollama_ok = False
+    try:
+        r = requests.get(f"{ollama_host}/api/tags", timeout=3)
+        ollama_ok = (r.status_code == 200)
+    except Exception:
+        ollama_ok = False
+
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    key_present = bool(groq_key and groq_key.strip())
+    groq_ok = False
+    if key_present:
+        try:
+            r = requests.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {groq_key}"},
+                timeout=3,
+            )
+            groq_ok = (r.status_code == 200)
+        except Exception:
+            groq_ok = False
+
+    pool_counts = {"total": 0, "Easy": 0, "Medium": 0, "Hard": 0}
+    try:
+        conn = get_db()
+        for diff in ("Easy", "Medium", "Hard"):
+            cnt = conn.execute(
+                "SELECT count(*) FROM questions WHERE pool_status = 'active' AND difficulty = ?",
+                (diff,),
+            ).fetchone()[0]
+            pool_counts[diff] = cnt
+        pool_counts["total"] = sum(pool_counts[d] for d in ("Easy", "Medium", "Hard"))
+        conn.close()
+    except Exception:
+        pass
+
+    status = 200 if db_ok else 503
+    return jsonify({
+        "status": "healthy" if (db_ok and ollama_ok and groq_ok) else "degraded",
+        "database": "ok" if db_ok else "error",
+        "ollama": {
+            "reachable": ollama_ok,
+            "host": ollama_host,
+        },
+        "groq": {
+            "key_present": key_present,
+            "reachable": groq_ok,
+        },
+        "pool": pool_counts,
+    }), status
+
+
 def agents():
     return current_app.extensions["edugen"]
 
@@ -267,8 +335,22 @@ def api_lesson(concept, difficulty):
 
     student_id = current_student_id()
     focus_notes = _focus_notes_for(student_id, concept)
-    lesson = agents()["coordinator"].request_lesson(
-        concept, difficulty, student_id=student_id, focus_notes=focus_notes)
+    try:
+        lesson = agents()["coordinator"].request_lesson(
+            concept, difficulty, student_id=student_id, focus_notes=focus_notes)
+    except Exception as exc:
+        try:
+            from core.event_bus import emit
+            emit("Coordinator", "service_unavailable",
+                 "Lesson generation service unavailable: {}".format(exc),
+                 level="warn", student_id=student_id,
+                 output={"service": "groq", "error": str(exc)})
+        except Exception:
+            pass
+        lesson = agents()["cc"]._note_step_lesson(
+            {"concept": concept, "difficulty": difficulty, "lesson_style": "detailed"},
+            {}, error_reason="Offline fallback: {}".format(exc),
+        )
 
     conn = get_db()
     conn.execute(
@@ -477,14 +559,30 @@ def api_quiz_start():
                 }), 503
 
             # 2. Live generation ONLY for unfilled slots
-            live_payload = clarifier.generate_quiz_from_blueprint(
-                unfilled_slots,
-                student_id=student_id,
-                focus_notes=_focus_notes_for(student_id, main_concept) if main_concept else [],
-                prior_questions=pool_served,
-                allow_partial=True,
-            )
-            live_questions = live_payload.get("questions") or []
+            try:
+                live_payload = clarifier.generate_quiz_from_blueprint(
+                    unfilled_slots,
+                    student_id=student_id,
+                    focus_notes=_focus_notes_for(student_id, main_concept) if main_concept else [],
+                    prior_questions=pool_served,
+                    allow_partial=True,
+                )
+                live_questions = live_payload.get("questions") or []
+            except Exception as exc:
+                try:
+                    from core.event_bus import emit
+                    emit("Coordinator", "service_unavailable",
+                         "Live question generation unavailable: {}".format(exc),
+                         level="warn", student_id=student_id,
+                         output={"service": "groq", "error": str(exc)})
+                except Exception:
+                    pass
+                live_payload = {
+                    "error": "AI question generation service is currently unavailable. Please try again shortly or take a practice quiz from the pool.",
+                    "code": "service_unavailable",
+                    "questions": [],
+                }
+                live_questions = []
 
             # Stash verified live questions into pool
             if live_questions:
@@ -1401,7 +1499,25 @@ def api_get_step_lesson(step_id):
         update_study_plan_step(step_id, status="in_progress")
         step["status"] = "in_progress"
 
-    res = agents()["cc"].generate_step_lesson(step, student_id=student_id)
+    try:
+        res = agents()["cc"].generate_step_lesson(step, student_id=student_id)
+    except Exception as exc:
+        try:
+            from core.event_bus import emit
+            emit("Coordinator", "service_unavailable",
+                 "Plan step lesson generation unavailable: {}".format(exc),
+                 level="warn", student_id=student_id,
+                 output={"service": "groq", "error": str(exc)})
+        except Exception:
+            pass
+        fallback_lesson = agents()["cc"]._note_step_lesson(step, {}, error_reason=str(exc))
+        res = {
+            "lesson": fallback_lesson,
+            "cached": False,
+            "verified": False,
+            "cache_key": "offline_fallback",
+            "sources": [],
+        }
     lesson_obj = res.get("lesson")
     if isinstance(lesson_obj, dict):
         lesson_obj.pop("rag_trace", None)

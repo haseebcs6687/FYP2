@@ -1,0 +1,10 @@
+collection,ranking_variant,hit_at_1_pct,hit_at_3_pct,hit_at_5_pct,mrr,queries_evaluated
+Lessons (book+note),Lexical-only,25.8,52.3,68.2,0.4085,132
+Lessons (book+note),Cosine-only,87.9,97.0,98.5,0.9217,132
+Lessons (book+note),Hybrid (0.7 Cosine + 0.3 Lexical),88.6,97.7,98.5,0.9274,132
+Questions (MCQ),Lexical-only,9.8,15.9,23.5,0.1432,132
+Questions (MCQ),Cosine-only,77.3,93.2,97.0,0.85,132
+Questions (MCQ),Hybrid (0.7 Cosine + 0.3 Lexical),78.0,93.9,98.5,0.8604,132
+Combined Overall,Lexical-only,17.8,34.1,45.8,0.2758,264
+Combined Overall,Cosine-only,82.6,95.1,97.7,0.8859,264
+Combined Overall,Hybrid (0.7 Cosine + 0.3 Lexical),83.3,95.8,98.5,0.8939,264

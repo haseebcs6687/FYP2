@@ -1,0 +1,45 @@
+concept,concept_title,active_pool_questions,questions_with_tagged_distractors,total_tagged_distractor_options,tagged_question_rate_pct
+class-definition,Defining a Class,26,14,23,53.8
+object-instantiation,Creating Objects,20,11,14,55.0
+static-members,Static Fields and Methods,12,11,14,91.7
+this-keyword,The this Reference,12,7,11,58.3
+reference-semantics,References vs Values,23,9,10,39.1
+object-composition,Composition (has-a),11,8,13,72.7
+garbage-collection,Garbage Collection,12,9,12,75.0
+local-vs-instance-variables,Local vs Instance Variables,11,7,12,63.6
+default-values,Default Field Values,27,9,14,33.3
+constructor-basics,Constructor Basics,23,18,34,78.3
+constructor-overloading,Overloading Constructors,19,8,11,42.1
+constructor-chaining,Constructor Chaining,11,6,9,54.5
+default-constructor,The Default Constructor,19,8,12,42.1
+super-keyword,The super Keyword,10,7,10,70.0
+copy-constructor,Copy Constructors,15,7,11,46.7
+inheritance-basics,Inheritance Basics,37,17,41,45.9
+inheritance-hierarchy,Class Hierarchies,25,4,4,16.0
+multiple-inheritance,Multiple Inheritance,10,5,6,50.0
+method-overriding,Method Overriding,10,7,9,70.0
+method-overloading,Method Overloading,14,11,14,78.6
+dynamic-method-dispatch,Dynamic Method Dispatch,26,4,6,15.4
+runtime-polymorphism,Runtime Polymorphism,9,3,7,33.3
+access-modifiers,Access Modifiers,22,5,8,22.7
+data-hiding,Data Hiding,19,7,7,36.8
+getters-setters,Getters and Setters,21,13,24,61.9
+defensive-copying,Defensive Copying,12,11,13,91.7
+immutability,Immutable Objects,11,6,7,54.5
+javabeans,The JavaBeans Convention,21,14,16,66.7
+abstraction-basics,What Abstraction Is,27,18,26,66.7
+abstract-classes,Abstract Classes,12,8,9,66.7
+abstract-methods,Abstract Methods,12,11,13,91.7
+abstract-class-vs-interface,Abstract Class vs Interface,11,6,7,54.5
+design-patterns,Design Patterns,12,8,11,66.7
+interface-basics,Interface Basics,11,10,22,90.9
+default-methods,Default and Static Methods,11,5,10,45.5
+functional-interface,Functional Interfaces,11,9,17,81.8
+try-catch,try / catch,12,8,17,66.7
+finally-block,The finally Block,12,9,11,75.0
+checked-vs-unchecked,Checked vs Unchecked,26,14,18,53.8
+exception-throwing,Throwing Exceptions,11,8,11,72.7
+try-with-resources,try-with-resources,12,10,16,83.3
+exception-chaining,Exception Chaining,7,7,13,100.0
+custom-exceptions,Custom Exceptions,11,11,26,100.0
+null-pointer-exception,NullPointerException,16,4,4,25.0

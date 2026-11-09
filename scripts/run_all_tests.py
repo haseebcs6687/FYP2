@@ -171,6 +171,11 @@ TEST_SUITES = [
         "cmd": [sys.executable, str(BASE_DIR / "tools" / "question_bank" / "test_gen_tools.py")],
         "timeout": 60,
     },
+    {
+        "name": "test_resilience",
+        "cmd": [sys.executable, str(BASE_DIR / "tests" / "test_resilience.py")],
+        "timeout": 60,
+    },
 ]
 
 
