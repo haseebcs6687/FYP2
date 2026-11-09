@@ -395,7 +395,7 @@ def generate_bias_audit_assets():
 # ─────────────────────────────────────────────────────────────
 
 def generate_tag_coverage_assets():
-    print("-> Generating tag coverage assets (Part A)...")
+    print("-> Generating tag coverage assets (Part A - tags_json only)...")
     conn = get_db()
     cur = conn.cursor()
 
@@ -403,14 +403,17 @@ def generate_tag_coverage_assets():
         "SELECT id, concept, tags_json, verifier_labels_json, correct_index FROM questions WHERE pool_status = 'active'"
     ).fetchall()
 
-    stats = {c: {"total": 0, "tagged_q": 0, "total_tags": 0} for c in CONCEPTS}
+    stats = {c: {"total": 0, "tj_q": 0, "tj_tags": 0, "vj_q": 0} for c in CONCEPTS}
+    tot_active_count = len(rows)
 
     for r in rows:
         c = r["concept"]
         if c not in stats:
             continue
         stats[c]["total"] += 1
+        corr = int(r["correct_index"] or 0)
 
+        # 1. tags_json ONLY (used by Quiz Engine and Performance Analysis Agent)
         mis_ids = []
         if r["tags_json"]:
             try:
@@ -422,57 +425,97 @@ def generate_tag_coverage_assets():
             except Exception:
                 mis_ids = []
 
-        if not any(mis_ids) and r["verifier_labels_json"]:
-            try:
-                v_labels = json.loads(r["verifier_labels_json"])
-                if isinstance(v_labels, list):
-                    mis_ids = v_labels
-            except Exception:
-                pass
-
-        corr = int(r["correct_index"] or 0)
         wrong_tags = 0
         for idx, tag in enumerate(mis_ids):
             if idx != corr and tag and isinstance(tag, str) and tag.strip() and tag.lower() != "null":
                 wrong_tags += 1
-                stats[c]["total_tags"] += 1
+                stats[c]["tj_tags"] += 1
 
         if wrong_tags > 0:
-            stats[c]["tagged_q"] += 1
+            stats[c]["tj_q"] += 1
 
+        # 2. verifier_labels_json SEPARATELY (unverified verifier guesses, never merged)
+        v_ids = []
+        if r["verifier_labels_json"]:
+            try:
+                v_data = json.loads(r["verifier_labels_json"])
+                if isinstance(v_data, list):
+                    v_ids = v_data
+            except Exception:
+                v_ids = []
+
+        wrong_v_tags = 0
+        for idx, v_tag in enumerate(v_ids):
+            if idx != corr and v_tag and isinstance(v_tag, str) and v_tag.strip() and v_tag.lower() != "null":
+                wrong_v_tags += 1
+
+        if wrong_v_tags > 0:
+            stats[c]["vj_q"] += 1
+
+    tot_tj_q = sum(stats[c]["tj_q"] for c in CONCEPTS)
+    tot_tj_tags = sum(stats[c]["tj_tags"] for c in CONCEPTS)
+    tot_vj_q = sum(stats[c]["vj_q"] for c in CONCEPTS)
+
+    # Print required Phase 12b statistics
+    print(f"\n[Phase 12b] Question Pool Misconception Distractor Tag Coverage (tags_json only):")
+    print(f"  Total Active Pool Questions           : {tot_active_count}")
+    print(f"  Questions with >=1 Tagged Distractor  : {tot_tj_q} / {tot_active_count} ({tot_tj_q / tot_active_count * 100.0:.1f}%)")
+    print(f"  Total Tagged Distractor Options       : {tot_tj_tags}")
+    print(f"  Verifier Guess Tagged Questions (vj)  : {tot_vj_q} / {tot_active_count} ({tot_vj_q / tot_active_count * 100.0:.1f}%)")
+
+    below_3 = [c for c in CONCEPTS if stats[c]["tj_q"] < 3]
+    print(f"\n[Phase 12b] Concepts with fewer than 3 tagged questions ({len(below_3)}):")
+    for c in below_3:
+        print(f"  - {c} ({concept_title(c)}): {stats[c]['tj_q']} tagged questions (active: {stats[c]['total']}, tags: {stats[c]['tj_tags']})")
+
+    print(f"\n[Phase 12b] Specific Target Concepts:")
+    for spec in ["null-pointer-exception", "inheritance-hierarchy"]:
+        s = stats.get(spec, {})
+        print(f"  - {spec}: active={s.get('total')}, tags_json_q={s.get('tj_q')}, total_tags={s.get('tj_tags')}, verifier_guess_q={s.get('vj_q')}")
+
+    # Write tag_coverage.csv
     csv_path = ASSETS_DIR / "tag_coverage.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as fp:
         writer = csv.writer(fp)
-        writer.writerow(["concept", "concept_title", "active_pool_questions", "questions_with_tagged_distractors", "total_tagged_distractor_options", "tagged_question_rate_pct"])
+        writer.writerow([
+            "concept",
+            "concept_title",
+            "active_pool_questions",
+            "questions_with_tagged_distractors",
+            "total_tagged_distractor_options",
+            "tagged_question_rate_pct",
+            "verifier_guess_tagged_questions",
+        ])
         for c in CONCEPTS:
             tot = stats[c]["total"]
-            tq = stats[c]["tagged_q"]
-            tt = stats[c]["total_tags"]
+            tq = stats[c]["tj_q"]
+            tt = stats[c]["tj_tags"]
+            vq = stats[c]["vj_q"]
             rate = round(tq / tot * 100.0, 1) if tot else 0.0
-            writer.writerow([c, concept_title(c), tot, tq, tt, rate])
+            writer.writerow([c, concept_title(c), tot, tq, tt, rate, vq])
 
     record_manifest(
         "tag_coverage.csv",
-        "Granular misconception distractor tag coverage across all 44 canonical concepts in active pool.",
+        "Granular misconception distractor tag coverage across all 44 canonical concepts in active pool computed strictly from questions.tags_json, with a separate column for unverified verifier_labels_json guesses.",
         "Database Query",
         "SELECT id, concept, tags_json, verifier_labels_json FROM questions WHERE pool_status = 'active'",
     )
 
-    # Plot tag coverage rate chart
+    # Plot tag coverage chart (horizontal bar chart)
     fig, ax = plt.subplots(figsize=(12, 16), dpi=150)
     concepts_rev = list(reversed(CONCEPTS))
     labels = [concept_title(c) for c in concepts_rev]
     tot_vals = [stats[c]["total"] for c in concepts_rev]
-    tagged_vals = [stats[c]["tagged_q"] for c in concepts_rev]
+    tagged_vals = [stats[c]["tj_q"] for c in concepts_rev]
 
     y = range(len(concepts_rev))
     ax.barh(y, tot_vals, color="#e2e8f0", label="Total Active Pool Questions", height=0.7)
-    ax.barh(y, tagged_vals, color="#8b5cf6", label="Questions with >=1 Valid Misconception Tag", height=0.7)
+    ax.barh(y, tagged_vals, color="#8b5cf6", label="Questions with >=1 Tagged Distractor (tags_json)", height=0.7)
 
     ax.set_yticks(y)
     ax.set_yticklabels(labels, fontsize=8)
     ax.set_xlabel("Question Count", fontsize=11, fontweight="bold")
-    ax.set_title("Question Pool Misconception Distractor Tag Coverage (Part A)", fontsize=13, fontweight="bold", pad=12)
+    ax.set_title("Question Pool Misconception Distractor Tag Coverage (tags_json)", fontsize=13, fontweight="bold", pad=12)
     ax.legend(loc="lower right", framealpha=0.95, fontsize=10)
     ax.grid(axis="x", linestyle="--", alpha=0.5)
 
@@ -483,7 +526,7 @@ def generate_tag_coverage_assets():
 
     record_manifest(
         "tag_coverage.png",
-        "150 DPI horizontal bar chart contrasting total active pool questions vs questions with validated misconception distractor tags.",
+        "150 DPI horizontal bar chart contrasting total active pool questions vs questions with misconception distractor tags (tags_json).",
         "Generated Chart",
         "Rendered from tag_coverage.csv using matplotlib",
     )
@@ -513,9 +556,9 @@ def generate_test_summary_assets():
             in_summary = True
             continue
         if in_summary:
-            if "TOTAL" in line:
+            if "==================" in line:
                 break
-            if "|" in line and "Suite" not in line and "---" not in line and "===" not in line:
+            if "|" in line and "Suite" not in line and "TOTAL" not in line and "---" not in line:
                 parts = [p.strip() for p in line.split("|")]
                 if len(parts) == 4:
                     table_lines.append(parts)
@@ -610,31 +653,34 @@ def generate_journey_metrics_assets():
     with open(csv_path, "w", newline="", encoding="utf-8") as fp:
         writer = csv.writer(fp)
         writer.writerow(["metric_key", "value", "unit", "description"])
+        writer.writerow(["honest_automation_ratio", honest_ratio, "percent", "HEADLINE AUTONOMY METRIC: core pedagogical decisions / (core pedagogical decisions + student actions)"])
         writer.writerow(["student_initiated_actions", student_actions, "count", "Required student pedagogical interactions (diagnostic, 2 lesson completions, 3 quizzes)"])
         writer.writerow(["core_pedagogical_decisions", pedagogical_decisions, "count", "Independent autonomous agent decisions (BKT, planning, routing, validation)"])
-        writer.writerow(["all_telemetry_events", telemetry_events, "count", "Total agent events logged to SQLite event bus throughout the journey"])
-        writer.writerow(["honest_automation_ratio", honest_ratio, "percent", "Ratio of core pedagogical decisions over total cycle interactions"])
-        writer.writerow(["legacy_automation_ratio", legacy_ratio, "percent", "Ratio of all telemetry events over total student interactions"])
         writer.writerow(["study_plan_steps_completed", 5, "count", "All synthesized study plan steps completed and validated"])
         writer.writerow(["legacy_manual_clicks_avoided", 24, "count", "Manual topic and page navigation clicks eliminated by autonomous state machine"])
+        writer.writerow(["all_telemetry_events", telemetry_events, "count", "Total agent events logged to SQLite event bus throughout the journey (telemetry volume, not an autonomy metric - do not cite)"])
+        writer.writerow(["legacy_automation_ratio", legacy_ratio, "percent", "telemetry volume, not an autonomy metric - do not cite"])
 
     record_manifest(
         "journey_metrics.csv",
-        "Autonomous learning loop automation metrics, interaction counts, and state machine transition efficiency.",
+        "Autonomous learning loop automation metrics highlighting the headline honest automation ratio (68.4%) with legacy telemetry ratio marked as 'telemetry volume, not an autonomy metric - do not cite'.",
         "Script Execution",
         "scripts/journey_demo.py execution output",
     )
 
-    # Plot comparison bar chart
-    fig, ax = plt.subplots(figsize=(7, 4.5), dpi=150)
-    cats = ["Honest Ratio\n(Decisions / All)", "Legacy Ratio\n(Telemetry / All)"]
+    # Plot comparison bar chart - Honest Ratio is the only headline
+    fig, ax = plt.subplots(figsize=(8, 5.2), dpi=150)
+    cats = [
+        "Honest Automation Ratio\n(HEADLINE METRIC:\nDecisions / (Decisions + Actions))",
+        "Legacy Telemetry Ratio\n(telemetry volume, not an\nautonomy metric - do not cite)",
+    ]
     vals = [honest_ratio, legacy_ratio]
-    colors = ["#2563eb", "#6366f1"]
+    colors = ["#2563eb", "#94a3b8"]
     bars = ax.bar(cats, vals, color=colors, width=0.45)
 
     ax.set_ylabel("Automation Efficiency (%)", fontsize=10, fontweight="bold")
-    ax.set_title("Autonomous Learning Loop Efficiency (scripts/journey_demo.py)", fontsize=11, fontweight="bold")
-    ax.set_ylim(0, 105)
+    ax.set_title("EduGen Autonomous Learning Loop Efficiency\nHeadline Metric: Honest Automation Ratio (68.4%)", fontsize=11, fontweight="bold")
+    ax.set_ylim(0, 110)
     ax.grid(axis="y", linestyle="--", alpha=0.5)
 
     for bar in bars:
@@ -645,6 +691,13 @@ def generate_journey_metrics_assets():
     plt.tight_layout()
     plt.savefig(png_path)
     plt.close()
+
+    record_manifest(
+        "journey_metrics.png",
+        "150 DPI bar chart highlighting the headline Honest Automation Ratio (68.4%) alongside legacy telemetry ratio marked as 'telemetry volume, not an autonomy metric - do not cite'.",
+        "Generated Chart",
+        "Rendered from journey_metrics.csv using matplotlib",
+    )
 
     record_manifest(
         "journey_metrics.png",
@@ -913,9 +966,17 @@ def write_manifest_file():
         fp.write("1. **Question Pool Grounding (`pool_by_concept.csv`, `pool_by_origin.csv`)**: Derived directly from SQLite queries on `questions WHERE pool_status = 'active'`. Covers 44 canonical concepts and 3 difficulty tiers (350 Easy, 217 Medium, 105 Hard; 642 textbook bank, 61 live/diagnostic).\n")
         fp.write("2. **Textbook Bank Ingestion (`question_bank_by_pdf.csv`)**: Extracted from 74 batch files in `rag/corpus/questions/raw/` and cumulative verifier records in `data/bank_work/pool_seed_progress.json`.\n")
         fp.write("3. **Bias & Gameability Audit (`bias_audit.csv`)**: Generated by evaluating 7 test-wise blind heuristics using `scripts/bias_audit.py` over 403 old bank questions and 239 new top-up bank questions, confirming $\\le 27.2\\%$ gameability against a $35.0\\%$ threshold.\n")
-        fp.write("4. **Misconception Tag Coverage (`tag_coverage.csv`)**: Audited across all 703 active pool questions, confirming 100% of concepts (44/44) possess validated misconception distractor tags.\n")
-        fp.write("5. **Test Suite Integrity (`test_summary.csv`)**: Captured from a fresh execution of `scripts/run_all_tests.py`, recording 100% pass rates across all 23 test suites.\n")
-        fp.write("6. **Autonomous Loop Efficiency (`journey_metrics.csv`)**: Measured via `scripts/journey_demo.py`, reporting 68.4% honest pedagogical automation ratio (13 agent decisions vs 6 student interactions).\n")
+        fp.write("4. **Misconception Tag Coverage (`tag_coverage.csv`, `tag_coverage.png`)**: Audited across all 703 active pool questions computed strictly from `questions.tags_json` (the actual tags consumed by the Quiz Engine and Performance Analysis Agent). 373 of 703 questions (53.1%) have >= 1 tagged distractor, with 584 total distractor misconception tags across 44 concepts. Only 2 concepts (`inheritance-hierarchy` and `null-pointer-exception`) have fewer than 3 tagged questions (both have 2). Unverified verifier labels from `verifier_labels_json` are kept strictly in a separate column (`verifier_guess_tagged_questions`, 291 questions) and never merged.\n")
+        fp.write("5. **Test Suite Integrity (`test_summary.csv`, `test_summary.png`)**: Captured from a fresh execution of `scripts/run_all_tests.py`, recording 100% pass rates across all 23 test suites.\n")
+        fp.write("6. **Autonomous Loop Efficiency (`journey_metrics.csv`, `journey_metrics.png`)**: Measured via `scripts/journey_demo.py`. The only headline autonomy metric is the **Honest Automation Ratio: 68.4%**.\n")
+        fp.write("   - **Exact Formula**: `honest_automation_ratio = core_pedagogical_decisions / (core_pedagogical_decisions + student_initiated_actions)`\n")
+        fp.write("   - **The 5 Core Inputs**:\n")
+        fp.write("     1. `student_initiated_actions` = 6 (1 diagnostic quiz submit + 2 lesson completions + 3 quiz submits: check, probe, reevaluation)\n")
+        fp.write("     2. `core_pedagogical_decisions` = 13 (diagnostic analysis, prerequisite closure & topological plan synthesis, coverage invariant verification, dynamic lesson step progression routing, check quiz evaluation, dynamic plan frontier progression, step progression routing, probe quiz misconception sweep evaluation, advance progression routing, reevaluation grading, reevaluation clearance, journey state transition to COMPLETE, course completion lock)\n")
+        fp.write("     3. `all_telemetry_events` = 57 (event bus domain events: telemetry volume, not an autonomy metric - do not cite)\n")
+        fp.write("     4. `study_plan_steps_completed` = 5 (all synthesized study plan steps completed and validated)\n")
+        fp.write("     5. `legacy_manual_clicks_avoided` = 24 (manual navigation clicks between /quiz, /recommendations, /lesson eliminated)\n")
+        fp.write("   - **Calculation**: 13 / (13 + 6) = 13 / 19 = 68.42% (68.4%). Note: `legacy_automation_ratio` (57 / (57 + 6) = 90.5%) measures raw telemetry event bus volume, not autonomy, and must NOT be cited as an autonomy metric.\n")
         fp.write("7. **RAG & Simulation Benchmark (`rag_eval.csv`, `performance_eval.csv`)**: Extracted directly from empirical benchmark logs in `docs/RAG_EVAL.md` and `docs/PA_EVAL.md`.\n")
         fp.write("8. **Architecture (`architecture.mmd`)**: Standard Mermaid diagram specification. Because `mmdc` is not installed on this system, the `.mmd` file serves as the definitive specification for diagram rendering in GitHub/Markdown viewers.\n")
 
@@ -943,4 +1004,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -51,6 +51,14 @@ and 3 difficulty tiers (Easy, Medium, Hard), alongside catalog misconception cov
 | `try-with-resources` | 4 | 4 | 4 | **12** | 4/4 |
 | **TOTAL** | **349** | **217** | **105** | **671** | - |
 
+*Note on Active Question Pool Totals:*
+The table above counts the 671 concept/difficulty-tier questions. The total active pool in `data/edugen.db` comprises **703 active questions** (671 standard tier questions + 31 prebuilt diagnostic set questions + 1 practice question).
+Misconception distractor tag coverage (computed strictly from `questions.tags_json`, which is consumed by the Quiz Engine and Performance Analysis Agent):
+- **373 of 703 active questions (53.1%)** carry $\ge 1$ tagged distractor.
+- **584 total distractor misconception tags** are distributed across all 44 canonical concepts.
+- 42 of 44 concepts have $\ge 3$ tagged questions; only `inheritance-hierarchy` (2) and `null-pointer-exception` (2) have fewer than 3.
+- Unverified labels in `verifier_labels_json` are kept strictly separate as non-authoritative guesses and are never merged into tag coverage figures.
+
 ## Top 10 Emptiest Concept/Difficulty Cells
 
 The following cells have the lowest coverage and should be prioritized for generation:

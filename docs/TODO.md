@@ -48,7 +48,7 @@ This document reflects the real, verified implementation state of the EduGen mul
 - **Verified Active Question Pool (`data/edugen.db`)**:
   - 703 verified active questions across all 44 canonical concepts and 3 difficulty tiers (350 Easy, 217 Medium, 105 Hard).
   - Zero concepts with Easy deficits (all 44 concepts have $\ge 4$ Easy questions, meeting target).
-  - 100% of concepts (44/44) possess questions with validated misconception distractor tags.
+  - Question pool misconception distractor tags (computed strictly from `questions.tags_json`): 373 of 703 active questions (53.1%) carry $\ge 1$ tagged distractor, with 584 total distractor misconception tags across all 44 concepts (42 of 44 concepts have $\ge 3$ tagged questions; only `inheritance-hierarchy` and `null-pointer-exception` have 2; unverified verifier label guesses are kept separate).
   - Seeded from verified textbook question banks (642 questions from 74 batches) and vetted live additions (61 questions).
   - Dual-layer bias audit: All 7 blind test-wise heuristic strategies score $\le 27.2\%$ accuracy on newly seeded questions (target $\le 35.0\%$, random baseline $25.0\%$), with zero questions requiring bias quarantine.
   - Strict length and letter bias admission gates during generation.
