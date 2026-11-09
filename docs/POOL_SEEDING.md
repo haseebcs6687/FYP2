@@ -158,34 +158,59 @@ python scripts/seed_pool_from_bank.py --no-resume
 
 ---
 
-## 7. Seeding Results & Cumulative Metrics
+## 7. Seeding Results & Cumulative Metrics (Phase 4D + Phase 11b)
 
 ```
 ========================================================================================
-BANK POOL SEEDING SUMMARY
+BANK POOL SEEDING SUMMARY (CUMULATIVE: 74 BATCHES)
 ========================================================================================
-Metric                                 | Cumulative
+Metric                                 | Phase 4D (Initial)   | Phase 11b (Top-Up)   | Cumulative (Total)  
 ----------------------------------------------------------------------------------------
-Batches processed                      | 50 / 50
-Questions processed                    | 600
-Questions accepted                     | 403
-  - Relabeled (2-level diff)           | 51
-Questions rejected                     | 41
-  - bug_find_compiles                  | 9
-  - bug_find_error_count_2             | 2
-  - bug_find_error_count_4             | 1
-  - bug_find_explanation_mismatch      | 6
-  - code_output_mismatch               | 4
-  - verifier_difficulty_mismatch       | 0 (all 2-level diffs relabeled)
-  - verifier_missing_result            | 14
-  - verifier_wrong_answer              | 6
-Tags kept (3-of-3 agreement)           | 170
-Tags kept (2-of-3 agreement)           | 290
-Tags nulled                            | 872
-Java unverified (no javac)             | 0 (100% JDK verified)
-Verifier retries                       | 2
-Total Active Verified Pool Size        | 431 questions
+Batches processed                      | 50                   | 24                   | 74                  
+Questions processed                    | 600                  | 288                  | 888                 
+Questions accepted                     | 403 (67.2%)          | 239 (83.0%)          | 642 (72.3%)         
+  - Relabeled (2-level diff)           | 51                   | 54                   | 105                 
+Questions rejected                     | 41                   | 49                   | 90                  
+  - bug_find_compiles                  | 9                    | 21                   | 30                  
+  - bug_find_error_count_2             | 2                    | 4                    | 6                   
+  - bug_find_error_count_4             | 1                    | 0                    | 1                   
+  - bug_find_explanation_mismatch      | 6                    | 5                    | 11                  
+  - code_output_mismatch               | 4                    | 1                    | 5                   
+  - code_output_runtime_error          | 0                    | 1                    | 1                   
+  - verifier_difficulty_mismatch       | 0                    | 0                    | 0                   
+  - verifier_missing_result            | 14                   | 9                    | 23                  
+  - verifier_wrong_answer              | 6                    | 8                    | 14                  
+Tags kept (3-of-3 agreement)           | 170                  | 0                    | 170                 
+Tags kept (2-of-3 agreement)           | 290                  | 0                    | 396                 
+Tags nulled                            | 872                  | 758                  | 1630                
+Java unverified (no javac)             | 0                    | 0                    | 0 (100% verified)   
+Verifier retries                       | 2                    | 10                   | 14                  
+Verifier Tokens Consumed (Qwen 27B)    | -                    | 42,548 tokens        | 42,548 tokens       
+========================================================================================
+Active Pool Total                      | 464 questions        | +239 bank questions  | 703 questions       
+  - Easy                               | 215 questions        | +135 questions       | 350 questions       
+  - Medium                             | 146 questions        | +71 questions        | 217 questions       
+  - Hard                               | 72 questions         | +33 questions        | 105 questions       
 ========================================================================================
 ```
+
+---
+
+## 8. Blind Bias Audit Summary (Old Bank vs New Top-Up)
+
+Audited via `scripts/bias_audit.py` across all active bank questions:
+
+| Heuristic Strategy | Old Bank (N = 403) | New Top-Up Bank (N = 239) | Target | Result |
+| :--- | :---: | :---: | :---: | :---: |
+| **always-longest** | 120/403 (29.8%) | 59/239 (24.7%) | $\le 35.0\%$ | **PASS** |
+| **always-shortest** | 116/403 (28.8%) | 57/239 (23.8%) | $\le 35.0\%$ | **PASS** |
+| **avoid-absolute-words** | 113/403 (28.0%) | 59/239 (24.7%) | $\le 35.0\%$ | **PASS** |
+| **always option 0** | 108/403 (26.8%) | 58/239 (24.3%) | $\le 35.0\%$ | **PASS** |
+| **always option 1** | 104/403 (25.8%) | 57/239 (23.8%) | $\le 35.0\%$ | **PASS** |
+| **always option 2** | 90/403 (22.3%) | 65/239 (27.2%) | $\le 35.0\%$ | **PASS** |
+| **always option 3** | 101/403 (25.1%) | 59/239 (24.7%) | $\le 35.0\%$ | **PASS** |
+
+*Note: Uniform random guessing baseline is 25.0%. All 7 blind heuristics operate at baseline levels ($\le 27.2\%$), with 0 new bank questions requiring quarantine.*
+
 
 

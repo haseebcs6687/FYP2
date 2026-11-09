@@ -5,6 +5,7 @@ venv/
 .venv/
 .env
 data/*.db
+data/*.bak*
 data/backups/
 data/rag_index/
 data/rag_cache/

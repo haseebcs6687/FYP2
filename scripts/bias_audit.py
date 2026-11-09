@@ -33,7 +33,11 @@ ABS_PATTERN = re.compile(r"\b(always|never|only|automatically|all|every|any)\b",
 
 def audit_question(q):
     """
-    Evaluate a question against the two test-wise heuristics.
+    Evaluate a question against the test-wise heuristics:
+      - always-longest
+      - always-shortest
+      - avoid-absolute-words (drop absolute words, then pick longest candidate)
+      - always option 0 / 1 / 2 / 3
     Returns (strat1_correct, strat2_correct, bias_score, details_dict)
     """
     try:
@@ -51,6 +55,10 @@ def audit_question(q):
     # Strategy 1: Pick longest
     strat1_choice = max(range(4), key=lambda i: lengths[i])
     strat1_correct = (strat1_choice == correct)
+
+    # Strategy: Pick shortest
+    shortest_choice = min(range(4), key=lambda i: lengths[i])
+    strat_shortest_correct = (shortest_choice == correct)
 
     # Strategy 2: Drop absolute words, then pick longest
     abs_flags = [bool(ABS_PATTERN.search(c)) for c in cleaned]
@@ -81,8 +89,68 @@ def audit_question(q):
         "bias_score": round(bias_score, 2),
         "len_correct": len_correct,
         "max_wrong": max_wrong,
+        "correct_index": correct,
+        "strat1_longest": strat1_correct,
+        "strat_shortest": strat_shortest_correct,
+        "strat2_avoid_abs": strat2_correct,
+        "opt0": (correct == 0),
+        "opt1": (correct == 1),
+        "opt2": (correct == 2),
+        "opt3": (correct == 3),
     }
     return strat1_correct, strat2_correct, bias_score, details
+
+
+def run_blind_strategies_audit(title, rows, target_pct=35.0):
+    n = len(rows)
+    print("\n" + "=" * 76)
+    print(f"  BLIND HEURISTIC STRATEGIES AUDIT: {title.upper()} (N = {n})")
+    print("=" * 76)
+    if n == 0:
+        print("  No questions in cohort.")
+        return {}
+
+    counts = {
+        "always-longest": 0,
+        "always-shortest": 0,
+        "avoid-absolute-words": 0,
+        "always option 0": 0,
+        "always option 1": 0,
+        "always option 2": 0,
+        "always option 3": 0,
+    }
+
+    for r in rows:
+        _, _, _, d = audit_question(r)
+        if not d:
+            continue
+        if d.get("strat1_longest"):
+            counts["always-longest"] += 1
+        if d.get("strat_shortest"):
+            counts["always-shortest"] += 1
+        if d.get("strat2_avoid_abs"):
+            counts["avoid-absolute-words"] += 1
+        if d.get("opt0"):
+            counts["always option 0"] += 1
+        if d.get("opt1"):
+            counts["always option 1"] += 1
+        if d.get("opt2"):
+            counts["always option 2"] += 1
+        if d.get("opt3"):
+            counts["always option 3"] += 1
+
+    print(f"{'STRATEGY':<26} | {'ACCURACY':<14} | {'PERCENT':<10} | {'TARGET (<=35%)':<16} | STATUS")
+    print("-" * 76)
+    results = {}
+    for strat, cnt in counts.items():
+        pct = (cnt / n) * 100.0
+        passed = pct <= target_pct
+        status = "PASS" if passed else "EXCEEDS (BIAS)"
+        results[strat] = {"count": cnt, "total": n, "pct": round(pct, 1), "passed": passed}
+        print(f"{strat:<26} | {cnt:>5}/{n:<7} | {pct:>6.1f}%    | {'<= 35.0%':<16} | {status}")
+    print("-" * 76)
+    print("Note: Random guessing baseline is 25.0%.")
+    return results
 
 
 def run_cohort_audit(title, rows):
@@ -135,16 +203,33 @@ def run_cohort_audit(title, rows):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="EduGen Quiz Bias & Test-Wise Gameability Audit")
+    parser.add_argument("--db-path", default=None, help="Path to database")
+    parser.add_argument("--bank-only", action="store_true", help="Audit only bank questions")
+    args = parser.parse_args()
+
     print("=" * 76)
-    print("  EduGen Quiz Bias & Test-Wise Gameability Audit (Phase 9)")
+    print("  EduGen Quiz Bias & Test-Wise Gameability Audit (Phase 9 / Phase 11b)")
     print("=" * 76)
 
-    conn = get_db()
+    conn = get_db(args.db_path)
     cur = conn.cursor()
 
-    # Cohort 1: Active Verified Pool
+    # Cohort 1: Active Verified Pool (all active)
     pool_rows = cur.execute("SELECT * FROM questions WHERE pool_status = 'active' ORDER BY id ASC").fetchall()
     run_cohort_audit("Active Verified Pool (pool_status = 'active')", pool_rows)
+
+    # Cohort: Active Bank Questions (Old vs New Top-Up)
+    old_bank_rows = cur.execute(
+        "SELECT * FROM questions WHERE pool_status = 'active' AND origin = 'bank' AND id <= 513 ORDER BY id ASC"
+    ).fetchall()
+    new_bank_rows = cur.execute(
+        "SELECT * FROM questions WHERE pool_status = 'active' AND origin = 'bank' AND id > 513 ORDER BY id ASC"
+    ).fetchall()
+
+    run_blind_strategies_audit("Old Bank Questions (id <= 513)", old_bank_rows)
+    run_blind_strategies_audit("New Top-Up Bank Questions (id > 513)", new_bank_rows)
 
     # Cohort 2: Live Generated Questions
     live_rows = cur.execute(

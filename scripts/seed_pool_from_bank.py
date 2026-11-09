@@ -42,6 +42,8 @@ try:
 except Exception:
     pass
 
+os.environ.setdefault("OLLAMA_HOST", "http://127.0.0.1:11434")
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
 except Exception:
@@ -424,7 +426,11 @@ def process_bank_file(
                 if sha1 in hit:
                     current_emb = hit[sha1]
                 else:
-                    current_emb = embedder.embed(stem_and_answer)
+                    if isinstance(stem_and_answer, str):
+                        _res = embedder.embed([stem_and_answer])
+                        current_emb = _res[0] if _res else None
+                    else:
+                        current_emb = embedder.embed(stem_and_answer)
                     if cache and current_emb:
                         cache.put_many(sig, {sha1: current_emb})
             except Exception:
@@ -758,6 +764,40 @@ def main():
 
     # Setup clarifier agent, embedder, and java checker
     clarifier = ConceptClarifierAgent()
+
+    # Robust wrapper for verifier items parsing (guards against LLM returning strings in items)
+    _orig_invoke = clarifier._invoke_llm
+    def _safe_invoke(*args, **kwargs):
+        resp = _orig_invoke(*args, **kwargs)
+        if isinstance(resp, dict):
+            for k in ("verifications", "questions", "items"):
+                if k in resp and isinstance(resp[k], list):
+                    new_list = []
+                    for elem in resp[k]:
+                        if isinstance(elem, str):
+                            try:
+                                elem = json.loads(elem)
+                            except Exception:
+                                elem = {"index": None, "note": elem}
+                        new_list.append(elem)
+                    resp[k] = new_list
+        return resp
+    clarifier._invoke_llm = _safe_invoke
+
+    _orig_verify_batch = clarifier.verify_bank_batch
+    def _safe_verify_batch(batch_questions, concept, max_tokens=1500):
+        for attempt in range(2):
+            try:
+                return _orig_verify_batch(batch_questions, concept, max_tokens=max_tokens)
+            except AttributeError:
+                if attempt == 1:
+                    return None, "qwen/qwen3.8-27b", "verifier_returned_malformed_items"
+            except Exception as exc:
+                if attempt == 1:
+                    return None, "qwen/qwen3.8-27b", str(exc)
+        return None, "qwen/qwen3.8-27b", "verifier_failed"
+    clarifier.verify_bank_batch = _safe_verify_batch
+
     java_checker = JavaChecker()
 
     active_embedder = None
@@ -846,8 +886,8 @@ def main():
     print("========================================================================================")
 
     if args.dry_run:
-        print("\nDry run plan (First 10 files in queue):")
-        for i, f in enumerate(ordered_files[:10]):
+        print(f"\nDry run plan ({len(ordered_files)} files in queue):")
+        for i, f in enumerate(ordered_files):
             print(f"  {i + 1:2d}. {f.name}")
         return
 
@@ -870,7 +910,7 @@ def main():
     stop_reason = None
 
     for b_idx, f in enumerate(ordered_files):
-        if args.max_batches and (len(progress.get("done_batches", [])) >= args.max_batches or run_stats["batches_processed"] >= args.max_batches):
+        if args.max_batches and run_stats["batches_processed"] >= args.max_batches:
             break
 
         # Check token budget before batch
