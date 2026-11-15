@@ -99,7 +99,9 @@ function render(r) {
   const moderateCount = (r.moderate_topics || []).length;
   const weakCount = (r.weak_topics || []).length;
   const assessedCount = strongCount + moderateCount + weakCount;
-  const unassessedCount = Math.max(0, 44 - assessedCount);
+  const unassessedCount = (r.insufficient_data && Array.isArray(r.insufficient_data))
+    ? r.insufficient_data.length
+    : Math.max(0, 44 - assessedCount);
 
   // Top snapshot cards
   let html = '<div class="grid grid-4" style="margin-bottom:28px">' +
@@ -117,7 +119,7 @@ function render(r) {
     { label: 'Mastered', value: strongCount, color: 'var(--good)' },
     { label: 'Progressing', value: moderateCount, color: 'var(--signal)' },
     { label: 'Weak', value: weakCount, color: 'var(--attn)' },
-    { label: 'Not assessed yet', value: unassessedCount, color: 'var(--ink-4)' }
+    { label: 'Not enough data yet', value: unassessedCount, color: 'var(--ink-4)' }
   ];
 
   const allModules = [

@@ -13,9 +13,9 @@ EduGen replaces third-party external charting libraries (e.g. Chart.js, D3.js) w
 ### Available Chart Types:
 - **`EGCharts.ring(value, total, options)`**: Circular progress meter showing percentage or fraction with smooth stroke-dasharray and centered label.
 - **`EGCharts.spark(data, options)`**: Minimal inline sparkline tracking score trajectories and trend directions without axes.
-- **`EGCharts.line(data, options)`**: Full multi-point trend graph with Cartesian axes, dot markers, grid lines, and a 70% mastery benchmark guide line.
+- **`EGCharts.line(data, options)`**: Full multi-point trend graph with Cartesian axes, dot markers, grid lines, and a 70% mastery benchmark guide line. Accepts both arrays of numeric scores and point objects (`{x, y, label}`), rendering un-distorted SVG geometry.
 - **`EGCharts.bar(items, options)`**: Horizontal labeled progress bars comparing discrete concepts or module masteries.
-- **`EGCharts.stacked(segments, options)`**: Multi-segment proportional stacked bar showing distribution across categories (e.g. Mastered, Progressing, Weak, Not assessed).
+- **`EGCharts.stacked(segments, options)`**: Multi-segment proportional stacked bar showing distribution across categories (e.g. Mastered, Progressing, Weak, Not enough data yet).
 - **`EGCharts.strip(outcomes, options)`**: Compact horizontal question outcome sequence (correct/incorrect) with tooltip inspection.
 
 ---
@@ -30,7 +30,7 @@ All visualization colors adhere strictly to the EduGen design system tokens:
 | **Agent / System** | `--agent` | `#7c3aed` (Violet) | AI agent decisions, study plan milestones, coordinator telemetry |
 | **Attention / Weak** | `--attn` | `#d97706` (Amber) | Scores < 70%, weak topics, review decayed concepts, attention alerts |
 | **Mastered / Good** | `--good` | `#059669` (Green) | Scores >= 70%, mastered concepts, completed milestones |
-| **Neutral / Unassessed** | `--ink-4` | `#94a3b8` (Grey) | Concepts not yet assessed, unattempted plan steps, background tracks |
+| **Neutral / Insufficient Data** | `--ink-4` | `#94a3b8` (Grey) | Concepts with not enough attempt data yet, background tracks |
 | **Error / Wrong Answer** | `--crit` | `#dc2626` (Red) | Incorrect question choices on quiz review only (never applied to low aggregate scores) |
 
 ---

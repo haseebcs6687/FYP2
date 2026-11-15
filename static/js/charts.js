@@ -142,31 +142,46 @@
     /* ── 3. Chronological Line Chart with Reference Line ─────── */
     line(points, options = {}) {
       if (!Array.isArray(points) || points.length === 0) {
-        return '<div class="ch-empty"><p class="small muted" style="margin:0">No quiz attempts yet</p></div>';
+        const emptyMsg = options.emptyText || 'No quiz attempts recorded yet';
+        return '<div class="ch-empty"><p class="small muted" style="margin:0">' + esc(emptyMsg) + '</p></div>';
       }
 
       const yMin = typeof options.yMin === 'number' ? options.yMin : 0;
       const yMax = typeof options.yMax === 'number' ? options.yMax : 100;
       const yRange = Math.max(1, yMax - yMin);
-      const toneColor = resolveTone(options.tone, TONES.student);
+      const strokeColor = options.stroke || resolveTone(options.tone, TONES.student);
 
       const w = 360;
-      const h = 130;
-      const padL = 32;
+      const h = typeof options.height === 'number' && options.height > 0 ? options.height : 140;
+      const padL = 34;
       const padR = 20;
       const padT = 16;
       const padB = 26;
       const plotW = w - padL - padR;
       const plotH = h - padT - padB;
 
+      // Extract raw numeric value from item (number or object {y, label})
+      const getVal = (p) => {
+        if (p === null || p === undefined) return 0;
+        if (typeof p === 'object') {
+          return Number(p.y !== undefined ? p.y : p.value) || 0;
+        }
+        return Number(p) || 0;
+      };
+
       // Y-axis helper
-      const getY = (val) => {
-        const v = Math.max(yMin, Math.min(yMax, Number(val) || 0));
+      const getY = (p) => {
+        const raw = getVal(p);
+        const v = Math.max(yMin, Math.min(yMax, raw));
         return padT + plotH - ((v - yMin) / yRange) * plotH;
       };
 
       // Background grid lines (yMin, mid, yMax)
       const midVal = Math.round((yMin + yMax) / 2);
+      const yLabelHtml = options.yLabel
+        ? '<text x="' + padL + '" y="' + (padT - 6) + '" font-size="8" fill="var(--ink-3)" font-family="var(--font-ui)" text-anchor="middle" font-weight="600">' + esc(options.yLabel) + '</text>'
+        : '';
+
       const gridHtml =
         '<g class="ch-grid" stroke="var(--line-2)" stroke-width="1">' +
           '<line x1="' + padL + '" y1="' + getY(yMax) + '" x2="' + (w - padR) + '" y2="' + getY(yMax) + '"/>' +
@@ -177,6 +192,7 @@
           '<text x="' + (padL - 6) + '" y="' + (getY(yMax) + 3) + '">' + yMax + '%</text>' +
           '<text x="' + (padL - 6) + '" y="' + (getY(midVal) + 3) + '">' + midVal + '%</text>' +
           '<text x="' + (padL - 6) + '" y="' + (getY(yMin) + 3) + '">' + yMin + '%</text>' +
+          yLabelHtml +
         '</g>';
 
       // Optional reference line (e.g. 70% passing threshold)
@@ -204,13 +220,13 @@
       if (n === 1) {
         const singleY = getY(points[0]);
         const singleX = padL + plotW / 2;
-        dotCoords.push({ x: singleX, y: singleY, val: points[0], idx: 0 });
-        dataHtml += '<circle cx="' + singleX + '" cy="' + singleY + '" r="5" fill="' + toneColor + '" stroke="var(--surface)" stroke-width="2"/>';
+        dotCoords.push({ x: singleX, y: singleY, p: points[0], idx: 0 });
+        dataHtml += '<circle cx="' + singleX.toFixed(1) + '" cy="' + singleY.toFixed(1) + '" r="5" fill="' + strokeColor + '" stroke="var(--surface)" stroke-width="2"/>';
       } else {
         const pts = points.map((p, i) => {
           const x = padL + (i / (n - 1)) * plotW;
           const y = getY(p);
-          dotCoords.push({ x, y, val: p, idx: i });
+          dotCoords.push({ x, y, p, idx: i });
           return x.toFixed(1) + ',' + y.toFixed(1);
         });
 
@@ -220,23 +236,31 @@
         const baseY = getY(yMin).toFixed(1);
         const areaPoints = pts.join(' ') + ' ' + lastX + ',' + baseY + ' ' + firstX + ',' + baseY;
 
-        dataHtml += '<polygon points="' + areaPoints + '" fill="' + toneColor + '" fill-opacity="0.10"/>' +
-          '<polyline points="' + pts.join(' ') + '" fill="none" stroke="' + toneColor + '" stroke-width="2.5"' +
+        dataHtml += '<polygon points="' + areaPoints + '" fill="' + strokeColor + '" fill-opacity="0.10"/>' +
+          '<polyline points="' + pts.join(' ') + '" fill="none" stroke="' + strokeColor + '" stroke-width="2.5"' +
             ' stroke-linecap="round" stroke-linejoin="round"/>';
       }
 
       // Dots with hover titles
       const dotsHtml = dotCoords.map(d => {
-        const labelText = options.labels && options.labels[d.idx] ? options.labels[d.idx] : ('Quiz #' + (d.idx + 1));
-        const valText = Math.round(Number(d.val) || 0) + '%';
-        return '<circle cx="' + d.x.toFixed(1) + '" cy="' + d.y.toFixed(1) + '" r="4" fill="' + toneColor + '" stroke="var(--surface)" stroke-width="2">' +
-          '<title>' + esc(labelText) + ': ' + valText + '</title>' +
+        const rawVal = getVal(d.p);
+        let tooltipText;
+        if (d.p && typeof d.p === 'object' && d.p.label) {
+          tooltipText = d.p.label;
+        } else if (options.labels && options.labels[d.idx]) {
+          tooltipText = options.labels[d.idx] + ': ' + Math.round(rawVal) + '%';
+        } else {
+          tooltipText = 'Attempt #' + (d.idx + 1) + ': ' + Math.round(rawVal) + '%';
+        }
+        return '<circle cx="' + d.x.toFixed(1) + '" cy="' + d.y.toFixed(1) + '" r="4" fill="' + strokeColor + '" stroke="var(--surface)" stroke-width="2">' +
+          '<title>' + esc(tooltipText) + '</title>' +
         '</circle>';
       }).join('');
 
       // X-axis label row
       let xLabelsHtml = '';
-      if (options.labels && Array.isArray(options.labels) && options.labels.length > 0) {
+      const hasLabels = options.labels && Array.isArray(options.labels) && options.labels.length > 0;
+      if (hasLabels) {
         const step = n > 8 ? Math.ceil(n / 6) : 1;
         xLabelsHtml = '<g class="ch-x-labels" font-size="9" fill="var(--ink-3)" font-family="var(--font-ui)" text-anchor="middle">';
         dotCoords.forEach((d, i) => {
@@ -244,11 +268,27 @@
             xLabelsHtml += '<text x="' + d.x.toFixed(1) + '" y="' + (h - 6) + '">' + esc(options.labels[i]) + '</text>';
           }
         });
+        if (options.xLabel) {
+          xLabelsHtml += '<text x="' + (w - padR) + '" y="' + (h - 6) + '" text-anchor="end" font-size="8" fill="var(--ink-4)" font-weight="600">' + esc(options.xLabel) + '</text>';
+        }
+        xLabelsHtml += '</g>';
+      } else if (n > 1) {
+        const step = n > 8 ? Math.ceil(n / 6) : 1;
+        xLabelsHtml = '<g class="ch-x-labels" font-size="9" fill="var(--ink-3)" font-family="var(--font-ui)" text-anchor="middle">';
+        dotCoords.forEach((d, i) => {
+          if (i === 0 || i === n - 1 || i % step === 0) {
+            const xText = (d.p && typeof d.p === 'object' && d.p.x !== undefined) ? d.p.x : (i + 1);
+            xLabelsHtml += '<text x="' + d.x.toFixed(1) + '" y="' + (h - 6) + '">' + esc(xText) + '</text>';
+          }
+        });
+        if (options.xLabel) {
+          xLabelsHtml += '<text x="' + (w - padR) + '" y="' + (h - 6) + '" text-anchor="end" font-size="8" fill="var(--ink-4)" font-weight="600">' + esc(options.xLabel) + '</text>';
+        }
         xLabelsHtml += '</g>';
       }
 
       return '<div class="ch-line" role="img" aria-label="Performance trend over time">' +
-        '<svg class="ch-line-svg" width="100%" height="100%" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">' +
+        '<svg class="ch-line-svg" width="100%" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' +
           gridHtml +
           refHtml +
           dataHtml +

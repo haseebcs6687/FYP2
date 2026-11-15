@@ -156,16 +156,17 @@ function renderSnapshot(r, h, p) {
   const moderateCount = (r.moderate_topics || []).length;
   const weakCount = (r.weak_topics || []).length;
   const assessedCount = strongCount + moderateCount + weakCount;
-  const unassessedCount = Math.max(0, 44 - assessedCount);
+  const unassessedCount = (r.insufficient_data && Array.isArray(r.insufficient_data))
+    ? r.insufficient_data.length
+    : Math.max(0, 44 - assessedCount);
 
-  // Card 1: Overall accuracy
+  // Card 1: Overall accuracy (show percentage once in ring center)
   const cardAcc = '<div class="stat" style="display:flex;align-items:center;justify-content:space-between;gap:12px">' +
     '<div>' +
-      '<div class="stat-value">' + acc + '%</div>' +
-      '<div class="stat-label">Overall accuracy</div>' +
+      '<div class="stat-label" style="font-size:0.95rem;font-weight:600;margin-bottom:4px">Overall accuracy</div>' +
       '<div class="stat-sub">' + r.total_questions_correct + ' of ' + r.total_questions_attempted + ' questions</div>' +
     '</div>' +
-    '<div style="flex-shrink:0">' +
+    '<div class="stat-value" style="flex-shrink:0;font-size:inherit;line-height:normal">' +
       EGCharts.ring(acc, 100, {size: 52, stroke: 6, label: acc + '%', color: accColor}) +
     '</div>' +
   '</div>';
@@ -189,7 +190,7 @@ function renderSnapshot(r, h, p) {
     {label: 'Mastered', value: strongCount, color: 'var(--good)'},
     {label: 'Progressing', value: moderateCount, color: 'var(--signal)'},
     {label: 'Weak', value: weakCount, color: 'var(--attn)'},
-    {label: 'Not assessed yet', value: unassessedCount, color: 'var(--ink-4)'}
+    {label: 'Not enough data yet', value: unassessedCount, color: 'var(--ink-4)'}
   ], {total: 44, height: 6});
 
   const cardMastered = '<div class="stat" style="display:flex;flex-direction:column;justify-content:space-between">' +
@@ -201,32 +202,38 @@ function renderSnapshot(r, h, p) {
     '<div style="margin-top:8px">' + miniBar + '</div>' +
   '</div>';
 
-  // Card 4: Study plan or weak topics
-  let cardPlan = '';
-  const progress = p && p.progress ? p.progress : null;
-  if (progress && progress.steps_total > 0) {
-    const done = progress.steps_done;
-    const total = progress.steps_total;
-    const pct = Math.round(100 * done / total);
-    cardPlan = '<div class="stat" style="display:flex;align-items:center;justify-content:space-between;gap:12px">' +
-      '<div>' +
-        '<div class="stat-value">' + done + ' / ' + total + '</div>' +
-        '<div class="stat-label">Study plan steps</div>' +
-        '<div class="stat-sub">' + (done === total ? 'All steps complete' : 'Step ' + (done + 1) + ' next') + '</div>' +
-      '</div>' +
-      '<div style="flex-shrink:0">' +
-        EGCharts.ring(done, total, {size: 52, stroke: 6, label: pct + '%', color: 'var(--agent)'}) +
-      '</div>' +
+  // Card 4: Weak concepts (top 3 weakest concepts with amber meters, or "Nothing failing right now")
+  const weakItems = (r.weak_topics || []).slice(0, 3);
+  let weakMeters = '';
+  if (weakItems.length > 0) {
+    weakMeters = '<div style="margin-top:8px;display:flex;flex-direction:column;gap:5px">' +
+      weakItems.map(w => {
+        const mVal = Math.round(w.mastery || 0);
+        const title = w.concept_title || w.concept_tag || 'Concept';
+        return '<div style="font-size:0.75rem">' +
+          '<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:2px">' +
+            '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2);max-width:130px" title="' + EG.esc(title) + '">' + EG.esc(title) + '</span>' +
+            '<span class="mono" style="font-weight:600;color:var(--attn);flex-shrink:0">' + mVal + '%</span>' +
+          '</div>' +
+          '<div style="height:4px;background:var(--line-2);border-radius:999px;overflow:hidden">' +
+            '<div style="width:' + Math.max(4, mVal) + '%;height:100%;background:var(--attn);border-radius:999px"></div>' +
+          '</div>' +
+        '</div>';
+      }).join('') +
     '</div>';
   } else {
-    cardPlan = '<div class="stat">' +
-      '<div class="stat-value">' + weakCount + '</div>' +
-      '<div class="stat-label">Weak concepts</div>' +
-      '<div class="stat-sub">' + (weakCount ? 'Shown in your analysis' : 'Nothing failing right now') + '</div>' +
-    '</div>';
+    weakMeters = '<div class="stat-sub" style="margin-top:6px">Nothing failing right now</div>';
   }
 
-  EG.$('#stats').innerHTML = cardAcc + cardQuizzes + cardMastered + cardPlan;
+  const cardWeak = '<div class="stat" style="display:flex;flex-direction:column;justify-content:space-between">' +
+    '<div>' +
+      '<div class="stat-value">' + weakCount + '</div>' +
+      '<div class="stat-label">Weak concepts</div>' +
+    '</div>' +
+    weakMeters +
+  '</div>';
+
+  EG.$('#stats').innerHTML = cardAcc + cardQuizzes + cardMastered + cardWeak;
 }
 
 function renderTrendChart(h) {
@@ -275,7 +282,9 @@ function renderConceptDistribution(r) {
   const moderateCount = (r.moderate_topics || []).length;
   const weakCount = (r.weak_topics || []).length;
   const assessedCount = strongCount + moderateCount + weakCount;
-  const unassessedCount = Math.max(0, 44 - assessedCount);
+  const unassessedCount = (r.insufficient_data && Array.isArray(r.insufficient_data))
+    ? r.insufficient_data.length
+    : Math.max(0, 44 - assessedCount);
 
   if (badge) {
     badge.textContent = assessedCount + ' of 44 assessed';
@@ -285,10 +294,11 @@ function renderConceptDistribution(r) {
     { label: 'Mastered', value: strongCount, color: 'var(--good)' },
     { label: 'Progressing', value: moderateCount, color: 'var(--signal)' },
     { label: 'Weak', value: weakCount, color: 'var(--attn)' },
-    { label: 'Not assessed yet', value: unassessedCount, color: 'var(--ink-4)' }
+    { label: 'Not enough data yet', value: unassessedCount, color: 'var(--ink-4)' }
   ];
 
-  const barHtml = EGCharts.stacked(parts, { total: 44, height: 22 });
+  // Disable legend in stacked() so we only render ONE legend (the square legend below with counts and %)
+  const barHtml = EGCharts.stacked(parts, { total: 44, height: 22, legend: false });
 
   const legendHtml = '<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:10px;margin-top:16px">' +
     parts.map(p => {
@@ -296,7 +306,7 @@ function renderConceptDistribution(r) {
       return '<div style="display:flex;align-items:center;gap:8px;font-size:0.82rem">' +
         '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + p.color + ';flex-shrink:0"></span>' +
         '<span style="color:var(--ink-2);flex:1">' + EG.esc(p.label) + '</span>' +
-        '<span class="mono" style="font-weight:600;color:var(--ink-1)">' + p.value + ' <span class="muted small">(' + pct + '%)</span></span>' +
+        '<span class="mono ch-legend-val" style="font-weight:600;color:var(--ink-1)">' + p.value + ' <span class="muted small">(' + pct + '%)</span></span>' +
       '</div>';
     }).join('') +
   '</div>';

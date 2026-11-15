@@ -190,6 +190,32 @@ class TestBrowserSmoke(unittest.TestCase):
         self.page.wait_for_selector("#dist-chart-slot .ch-stacked", timeout=5000)
         self.assertTrue(self.page.locator("#dist-chart-slot .ch-stacked").is_visible())
 
+        # Verify line chart regression for demo student on dashboard:
+        # scores vary 42..80 -> dashboard chart has >= 3 distinct circle cy values and none equals 0% baseline
+        cy_values = self.page.evaluate("""() => {
+            const circles = document.querySelectorAll('#trend-chart-slot svg circle');
+            return Array.from(circles).map(c => parseFloat(c.getAttribute('cy'))).filter(n => !isNaN(n));
+        }""")
+        self.assertGreaterEqual(len(cy_values), 3, f"Expected >= 3 dots on dashboard trend chart, found {len(cy_values)}")
+        distinct_cy = set(cy_values)
+        self.assertGreaterEqual(len(distinct_cy), 3, f"Expected >= 3 distinct cy values on dashboard chart, got {distinct_cy}")
+        baseline_0 = self.page.evaluate("""() => {
+            const svg = document.querySelector('#trend-chart-slot svg');
+            const h = parseFloat(svg.getAttribute('height')) || 180;
+            return 16 + (h - 16 - 26);
+        }""")
+        for cy in cy_values:
+            self.assertNotAlmostEqual(cy, baseline_0, places=1, msg=f"Circle cy {cy} equals the 0% baseline {baseline_0}")
+
+        # Verify Accuracy card shows percentage exactly once
+        card_acc_text = self.page.locator("#stats .stat:first-child").inner_text()
+        matches_pct = re.findall(r"\d+%", card_acc_text)
+        self.assertEqual(len(matches_pct), 1, f"Expected percentage to appear exactly once on accuracy card, found: {matches_pct}")
+
+        # Verify Curriculum mastery card has only one legend (no duplicate lists)
+        dist_html = self.page.locator("#dist-chart-slot").inner_html()
+        self.assertNotIn('class="ch-legend"', dist_html, "Found duplicate dot legend from ch-legend in dist-chart-slot")
+
         # Verify Course Textbooks showcase loaded 3 book cards without skeletons
         self.page.wait_for_selector("#textbooks-slot .card:not(:has(.skeleton))", timeout=5000)
         book_cards = self.page.locator("#textbooks-slot .card").count()
@@ -366,6 +392,29 @@ class TestBrowserSmoke(unittest.TestCase):
         self.assertTrue(self.page.locator("#card-history-trend").is_visible())
         self.assertEqual(self.page.locator("#stats .stat-value").count(), 4)
 
+        # Verify line chart regression for demo student on /history:
+        # scores vary 42..80 -> history chart has >= 3 distinct circle cy values and none equals 0% baseline unless score is 0
+        hist_circles = self.page.evaluate("""() => {
+            const circles = document.querySelectorAll('#card-history-trend svg circle');
+            return Array.from(circles).map(c => {
+                const title = c.querySelector('title') ? c.querySelector('title').textContent : '';
+                const m = title.match(/:\\s*(\\d+)%/);
+                const score = m ? parseInt(m[1], 10) : null;
+                return { cy: parseFloat(c.getAttribute('cy')), score };
+            }).filter(item => !isNaN(item.cy));
+        }""")
+        self.assertGreaterEqual(len(hist_circles), 3, f"Expected >= 3 dots on history trend chart, found {len(hist_circles)}")
+        hist_distinct_cy = set(c["cy"] for c in hist_circles)
+        self.assertGreaterEqual(len(hist_distinct_cy), 3, f"Expected >= 3 distinct cy values on history chart, got {hist_distinct_cy}")
+        hist_baseline_0 = self.page.evaluate("""() => {
+            const svg = document.querySelector('#card-history-trend svg');
+            const h = parseFloat(svg.getAttribute('height')) || 200;
+            return 16 + (h - 16 - 26);
+        }""")
+        for item in hist_circles:
+            if item["score"] is not None and item["score"] > 0:
+                self.assertNotAlmostEqual(item["cy"], hist_baseline_0, places=1, msg=f"History circle cy {item['cy']} for score {item['score']}% equals the 0% baseline {hist_baseline_0}")
+
         # Capsule is visible
         self.assertTrue(self.page.locator("#evaluator-pill").is_visible())
 
@@ -467,6 +516,16 @@ class TestBrowserSmoke(unittest.TestCase):
         body_text = self.page.inner_text("body")
         self.assertTrue("0" in body_text)
 
+        # Check line chart empty state on fresh dashboard
+        self.page.wait_for_selector("#trend-chart-slot .ch-empty", timeout=5000)
+        self.assertTrue(self.page.locator("#trend-chart-slot .ch-empty").is_visible())
+        self.assertIn("Nothing failing right now", body_text)
+
+        # Check Accuracy card shows 0% exactly once
+        fresh_acc_text = self.page.locator("#stats .stat:first-child").inner_text()
+        fresh_acc_matches = re.findall(r"\d+%", fresh_acc_text)
+        self.assertEqual(len(fresh_acc_matches), 1, f"0% should appear exactly once, got: {fresh_acc_text}")
+
         # 3. Check /analysis empty state
         self.__class__.current_page_name = "/analysis [fresh]"
         self.page.goto(f"{self.base_url}/analysis")
@@ -478,6 +537,8 @@ class TestBrowserSmoke(unittest.TestCase):
         self.page.goto(f"{self.base_url}/history")
         self.page.wait_for_load_state("networkidle", timeout=5000)
         self._assert_no_nan_or_undefined("/history [fresh]")
+        hist_body = self.page.inner_text("body")
+        self.assertTrue(any(t in hist_body for t in ["No attempts recorded yet", "No quiz attempts", "take a quiz", "0 attempts", "0"]))
 
         # 5. Check /plan empty state
         self.__class__.current_page_name = "/plan [fresh]"

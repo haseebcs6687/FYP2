@@ -9,6 +9,7 @@ Also verifies that the syntax-check engine correctly detects injected syntax err
 =============================================================================
 """
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -178,6 +179,66 @@ class TestJavaScriptSyntax(unittest.TestCase):
         )
         self.assertEqual(res.returncode, 0, f"Node script execution failed:\n{res.stderr}")
         self.assertIn("ALL_EDGE_CASES_OK", res.stdout)
+
+    def test_line_chart_points_object_and_number_regression(self):
+        """Regression test for BUG 1:
+        line([{y:20},{y:60},{y:80}]) produces polyline points with 3 DISTINCT y coordinates
+        and the 80 point is higher (smaller y) than the 20 point;
+        line([20,60,80]) produces the exact same result.
+        """
+        node_path = shutil.which("node")
+        if not node_path:
+            self.skipTest("Node.js not available for JS chart regression test.")
+
+        node_script = """
+        const EGCharts = require('./static/js/charts.js');
+        const htmlObj = EGCharts.line([{y: 20}, {y: 60}, {y: 80}]);
+        const htmlNum = EGCharts.line([20, 60, 80]);
+
+        function extractPolylineY(html) {
+            const m = html.match(/<polyline points="([^"]+)"/);
+            if (!m) throw new Error('polyline not found in HTML: ' + html);
+            const pairs = m[1].trim().split(/\\s+/);
+            return pairs.map(p => parseFloat(p.split(',')[1]));
+        }
+
+        const yObj = extractPolylineY(htmlObj);
+        const yNum = extractPolylineY(htmlNum);
+
+        console.log(JSON.stringify({ yObj, yNum, htmlObj, htmlNum }));
+        """
+
+        res = subprocess.run(
+            [node_path, "-e", node_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(BASE_DIR),
+        )
+        self.assertEqual(res.returncode, 0, f"Node execution failed: {res.stderr}")
+        data = json.loads(res.stdout)
+        y_obj = data["yObj"]
+        y_num = data["yNum"]
+
+        # 1. Must produce exactly 3 points
+        self.assertEqual(len(y_obj), 3)
+        self.assertEqual(len(y_num), 3)
+
+        # 2. 3 DISTINCT y coordinates
+        self.assertEqual(len(set(y_obj)), 3, f"Expected 3 distinct y coordinates, got: {y_obj}")
+        self.assertEqual(len(set(y_num)), 3, f"Expected 3 distinct y coordinates, got: {y_num}")
+
+        # 3. 80 point is higher (smaller SVG y) than 20 point
+        self.assertLess(y_obj[2], y_obj[0], f"y coordinate for 80 ({y_obj[2]}) must be smaller (higher) than for 20 ({y_obj[0]})")
+        self.assertLess(y_num[2], y_num[0], f"y coordinate for 80 ({y_num[2]}) must be smaller (higher) than for 20 ({y_num[0]})")
+
+        # 4. Object points and number points produce identical y coordinates
+        for yo, yn in zip(y_obj, y_num):
+            self.assertAlmostEqual(yo, yn, places=2)
+
+        # 5. Must not contain preserveAspectRatio="none"
+        self.assertNotIn('preserveAspectRatio="none"', data["htmlObj"])
+        self.assertNotIn('preserveAspectRatio="none"', data["htmlNum"])
 
 
 if __name__ == "__main__":
