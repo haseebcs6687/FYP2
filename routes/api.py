@@ -1048,48 +1048,126 @@ def api_rag_status():
 
 @bp.get("/corpus/sources")
 def api_corpus_sources():
-    """Return grounding textbook sources for dashboard showcase and evaluator inspection."""
-    sources = [
-        {
-            "id": "javanotes",
-            "title": "Introduction to Programming Using Java, v9 (D. J. Eck)",
+    """Return grounding textbook sources computed from the RAG retriever status and question bank CSV."""
+    import csv
+    from pathlib import Path
+
+    try:
+        retriever_status = agents()["retriever"].status()
+    except Exception:
+        retriever_status = {}
+
+    raw_sources = retriever_status.get("sources", {}) or {}
+    ready = bool(retriever_status.get("ready", False))
+    total_passages = int(retriever_status.get("chunk_count", 0) or 0)
+
+    # Read question bank by PDF CSV if available
+    csv_path = Path(current_app.root_path) / "docs" / "report_assets" / "question_bank_by_pdf.csv"
+    bank_questions_map = {}
+    if csv_path.exists():
+        try:
+            with open(csv_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    bank_questions_map[row["pdf_key"]] = int(row["raw_questions"])
+        except Exception:
+            pass
+
+    # Static registry for metadata
+    sources_md = Path(current_app.root_path) / "rag" / "corpus" / "books" / "SOURCES.md"
+    goalkicker_author = "GoalKicker"
+    if sources_md.exists():
+        try:
+            txt = sources_md.read_text(encoding="utf-8")
+            if "Stack Overflow" in txt:
+                goalkicker_author = "GoalKicker / Stack Overflow contributors"
+        except Exception:
+            pass
+
+    BOOK_METADATA_REGISTRY = {
+        "javanotes9": {
+            "title": "Introduction to Programming Using Java, v9",
             "author": "David J. Eck",
-            "passages": 2827,
-            "total_passages": 7333,
-            "share_pct": 38.5,
-            "concepts_covered": 44,
-            "raw_questions": 276,
-            "focus": "Core Java Syntax, OOP Architecture & Foundations",
+            "role": "Textbook",
         },
-        {
-            "id": "gonotes",
+        "JavaNotesForProfessionals": {
             "title": "Java Notes for Professionals",
-            "author": "GoalKicker / Stack Overflow contributors",
-            "passages": 2746,
-            "total_passages": 7333,
-            "share_pct": 37.4,
-            "concepts_covered": 44,
-            "raw_questions": 420,
-            "focus": "Professional Best Practices & Idiomatic OOP Patterns",
+            "author": goalkicker_author,
+            "role": "Textbook",
+        },
+        "thinkjava2": {
+            "title": "Think Java, 2nd ed.",
+            "author": "Allen B. Downey & Chris Mayfield",
+            "role": "Textbook",
+        },
+    }
+
+    # Discover books from raw_sources (handling known and unknown keys)
+    book_keys = list(BOOK_METADATA_REGISTRY.keys())
+    for k in raw_sources.keys():
+        if k.endswith(".pdf"):
+            clean_k = k[:-4]
+            if clean_k not in book_keys:
+                book_keys.append(clean_k)
+
+    books = []
+    for key in book_keys:
+        meta = BOOK_METADATA_REGISTRY.get(key)
+        if meta:
+            title = meta["title"]
+            author = meta["author"]
+        else:
+            title = key.replace("-", " ").replace("_", " ").title()
+            author = ""
+
+        passages = raw_sources.get(f"{key}.pdf", raw_sources.get(key, 0))
+        share = round((passages / total_passages * 100), 1) if total_passages > 0 else 0.0
+        q_count = bank_questions_map.get(key)
+        books.append({
+            "key": key,
+            "title": title,
+            "author": author,
+            "passages": passages,
+            "share_pct": share,
+            "bank_questions": q_count,
+        })
+
+    notes_passages = sum(v for k, v in raw_sources.items() if k.endswith(".md"))
+    qbank_passages = sum(v for k, v in raw_sources.items() if not k.endswith(".md") and not k.endswith(".pdf"))
+
+    other_sources = [
+        {
+            "label": "Authored concept notes",
+            "passages": notes_passages,
+            "share_pct": round((notes_passages / total_passages * 100), 1) if total_passages > 0 else 0.0,
         },
         {
-            "id": "thinkjava",
-            "title": "Think Java, 2nd ed. (A. Downey & C. Mayfield)",
-            "author": "Allen B. Downey & Chris Mayfield",
-            "passages": 1760,
-            "total_passages": 7333,
-            "share_pct": 24.0,
-            "concepts_covered": 44,
-            "raw_questions": 192,
-            "focus": "Computer Science Thinking, Object Modeling & Semantics",
+            "label": "Question bank (textbook-derived MCQs)",
+            "passages": qbank_passages,
+            "share_pct": round((qbank_passages / total_passages * 100), 1) if total_passages > 0 else 0.0,
         },
     ]
+
+    has_q = any(b["bank_questions"] is not None for b in books)
+    bank_questions_total = sum(b["bank_questions"] for b in books if b["bank_questions"] is not None) if has_q else None
+
+    try:
+        conn = get_db()
+        row = conn.execute("SELECT COUNT(*) as cnt FROM questions WHERE pool_status = 'active'").fetchone()
+        active_pool_questions = row["cnt"] if row else 0
+        conn.close()
+    except Exception:
+        active_pool_questions = 0
+
     return jsonify({
-        "total_passages": 7333,
-        "total_concepts": 44,
-        "raw_bank_questions": 888,
-        "active_pool_questions": 703,
-        "sources": sources,
+        "books": books,
+        "other_sources": other_sources,
+        "total_passages": total_passages,
+        "total_concepts": len(CONCEPTS),
+        "bank_questions_total": bank_questions_total,
+        "active_pool_questions": active_pool_questions,
+        "ready": ready,
+        "sources": books,
     })
 
 

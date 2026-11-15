@@ -82,13 +82,14 @@
       <h2 style="font-size:1.15rem;margin:0 0 2px 0">Course Textbooks</h2>
       <p class="muted small" style="margin:0">Authoritative sources grounding curriculum passages and concept retrieval.</p>
     </div>
-    <span class="badge badge-agent" style="font-size:0.75rem">7,333 passages &bull; 888 questions</span>
+    <span class="badge badge-agent" id="textbooks-summary-badge" style="font-size:0.75rem"></span>
   </div>
-  <div class="grid grid-3" id="textbooks-slot" style="margin-bottom:34px">
+  <div class="grid grid-3" id="textbooks-slot" style="margin-bottom:16px">
     <div class="card"><div class="skeleton" style="height:120px"></div></div>
     <div class="card"><div class="skeleton" style="height:120px"></div></div>
     <div class="card"><div class="skeleton" style="height:120px"></div></div>
   </div>
+  <div id="other-sources-slot" style="margin-bottom:34px"></div>
 
 </div>
 {% endblock %}
@@ -303,11 +304,28 @@ function renderConceptDistribution(r) {
   slot.innerHTML = barHtml + legendHtml;
 }
 
-function renderTextbooks(sources) {
+function renderTextbooks(s) {
   const slot = EG.$('#textbooks-slot');
-  if (!slot || !sources || !sources.length) return;
+  const badge = EG.$('#textbooks-summary-badge');
+  const otherSlot = EG.$('#other-sources-slot');
+  if (!slot) return;
 
-  slot.innerHTML = sources.map(src => {
+  if (!s || !s.books || !s.books.length) {
+    slot.innerHTML = '<div class="card" style="grid-column:1/-1"><p class="muted small" style="margin:0">Source list unavailable.</p></div>';
+    if (otherSlot) otherSlot.innerHTML = '';
+    return;
+  }
+
+  const totalPassages = s.total_passages || 0;
+  const bookPassagesSum = s.books.reduce((acc, b) => acc + (b.passages || 0), 0);
+  if (badge) {
+    badge.textContent = '3 textbooks \u2022 ' + bookPassagesSum.toLocaleString() + ' passages \u2022 Total index: ' + totalPassages.toLocaleString() + ' passages';
+  }
+
+  slot.innerHTML = s.books.map(src => {
+    const qBadge = (typeof src.bank_questions === 'number')
+      ? '<span class="badge">' + src.bank_questions + ' questions written for the bank</span>'
+      : '';
     return '<div class="card" style="display:flex;flex-direction:column;justify-content:space-between">' +
       '<div>' +
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">' +
@@ -316,9 +334,8 @@ function renderTextbooks(sources) {
         '</div>' +
         '<p class="muted tiny" style="margin:0 0 12px 0">' + EG.esc(src.author) + '</p>' +
         '<div class="row" style="flex-wrap:wrap;gap:6px;margin-bottom:12px">' +
-          '<span class="badge">' + src.concepts_covered + ' concepts covered</span>' +
           '<span class="badge">' + src.passages.toLocaleString() + ' passages</span>' +
-          '<span class="badge">' + src.raw_questions + ' questions</span>' +
+          qBadge +
         '</div>' +
       '</div>' +
       '<div>' +
@@ -326,13 +343,29 @@ function renderTextbooks(sources) {
           '<div style="width:' + src.share_pct + '%;height:100%;background:var(--agent);border-radius:3px"></div>' +
         '</div>' +
         '<div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--ink-3)">' +
-          '<span>Corpus share</span>' +
-          '<span class="mono">' + src.passages.toLocaleString() + ' / 7,333</span>' +
+          '<span>Index share</span>' +
+          '<span class="mono">' + src.passages.toLocaleString() + ' / ' + totalPassages.toLocaleString() + '</span>' +
         '</div>' +
-        '<p class="muted tiny" style="margin:8px 0 0 0;line-height:1.3">' + EG.esc(src.focus) + '</p>' +
       '</div>' +
     '</div>';
   }).join('');
+
+  if (otherSlot && s.other_sources && s.other_sources.length) {
+    otherSlot.innerHTML = '<div class="card" style="padding:14px 18px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
+        '<strong class="small">Additional Index Sources</strong>' +
+        '<span class="muted tiny">Total index: ' + totalPassages.toLocaleString() + ' passages \u2022 Active pool: ' + s.active_pool_questions + ' questions</span>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:12px">' +
+        s.other_sources.map(os =>
+          '<div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg-2);padding:8px 12px;border-radius:var(--radius-sm)">' +
+            '<span class="small">' + EG.esc(os.label) + '</span>' +
+            '<span class="mono small" style="font-weight:600">' + os.passages.toLocaleString() + ' passages <span class="muted tiny">(' + os.share_pct + '%)</span></span>' +
+          '</div>'
+        ).join('') +
+      '</div>' +
+    '</div>';
+  }
 }
 
 async function loadDashboardData() {
@@ -358,8 +391,10 @@ async function loadDashboardData() {
         '<p class="muted small" style="margin:0">Take one quiz and your numbers will appear here.</p></div>';
     }
 
-    if (s && s.sources) {
-      renderTextbooks(s.sources);
+    if (s && s.books) {
+      renderTextbooks(s);
+    } else {
+      renderTextbooks(null);
     }
   } catch (e) {
     EG.$('#stats').innerHTML = '<div class="card" style="grid-column:1/-1">' +

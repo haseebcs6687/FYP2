@@ -55,25 +55,35 @@ async function loadStatus() {
       return;
     }
 
-    const sources = (cRes && cRes.sources) ? cRes.sources : [
-      { id: 'javanotes', title: 'Introduction to Programming Using Java, v9 (D. J. Eck)', author: 'David J. Eck', passages: 2827, share_pct: 38.5, concepts_covered: 44, raw_questions: 276, focus: 'Core Java Syntax, OOP Architecture & Foundations' },
-      { id: 'gonotes', title: 'Java Notes for Professionals', author: 'GoalKicker / Stack Overflow contributors', passages: 2746, share_pct: 37.4, concepts_covered: 44, raw_questions: 420, focus: 'Professional Best Practices & Idiomatic OOP Patterns' },
-      { id: 'thinkjava', title: 'Think Java, 2nd ed. (A. Downey & C. Mayfield)', author: 'Allen B. Downey & Chris Mayfield', passages: 1760, share_pct: 24.0, concepts_covered: 44, raw_questions: 192, focus: 'Computer Science Thinking, Object Modeling & Semantics' }
-    ];
+    if (!cRes || !cRes.books || !cRes.books.length) {
+      EG.$('#status').innerHTML = '<div class="card"><p class="muted small" style="margin:0">Source list unavailable.</p></div>';
+      return;
+    }
 
-    const distParts = sources.map((src, i) => {
-      const colors = ['var(--signal)', 'var(--agent)', 'var(--good)'];
-      return {
-        label: src.title,
-        value: src.passages,
-        color: colors[i % colors.length]
-      };
-    });
+    const books = cRes.books;
+    const colors = ['var(--signal)', 'var(--agent)', 'var(--good)'];
+    const distParts = books.map((src, i) => ({
+      label: src.title,
+      value: src.passages,
+      color: colors[i % colors.length]
+    }));
+    if (cRes.other_sources) {
+      cRes.other_sources.forEach(os => {
+        distParts.push({
+          label: os.label,
+          value: os.passages,
+          color: 'var(--ink-4)'
+        });
+      });
+    }
+
+    const bookPassagesSum = books.reduce((acc, b) => acc + (b.passages || 0), 0);
+    const totalPassages = s.chunk_count || cRes.total_passages || 0;
 
     const statusHtml = '<div class="card" style="margin-bottom:20px">' +
       '<div class="grid grid-4" style="margin-bottom:18px">' +
-        '<div><div class="stat-value" style="font-size:1.4rem">' + s.chunk_count + '</div><div class="stat-label">passages</div><div class="stat-sub">Grounding corpus</div></div>' +
-        '<div><div class="stat-value" style="font-size:1.4rem">' + sources.length + '</div><div class="stat-label">textbooks</div><div class="stat-sub">Authoritative sources</div></div>' +
+        '<div><div class="stat-value" style="font-size:1.4rem">' + totalPassages.toLocaleString() + '</div><div class="stat-label">passages</div><div class="stat-sub">Grounding corpus</div></div>' +
+        '<div><div class="stat-value" style="font-size:1.4rem">' + books.length + '</div><div class="stat-label">textbooks</div><div class="stat-sub">Authoritative sources</div></div>' +
         '<div><div class="stat-value" style="font-size:1.4rem">' + s.covered_concepts + '/{{ concept_count }}</div><div class="stat-label">concepts covered</div><div class="stat-sub">100% syllabus reach</div></div>' +
         '<div><div class="stat-value" style="font-size:1.4rem">' + s.dimension + '</div><div class="stat-label">vector dimensions</div><div class="stat-sub">Dense retrieval</div></div>' +
       '</div>' +
@@ -81,18 +91,26 @@ async function loadStatus() {
       '<div style="margin-bottom:16px">' +
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
           '<strong class="small">Corpus passage distribution</strong>' +
-          '<span class="muted tiny">7,333 total passages</span>' +
+          '<span class="muted tiny">Total index: ' + totalPassages.toLocaleString() + ' passages</span>' +
         '</div>' +
-        EGCharts.stacked(distParts, { total: 7333, height: 16 }) +
+        EGCharts.stacked(distParts, { total: totalPassages, height: 16 }) +
       '</div>' +
     '</div>';
 
     const booksHtml = '<div style="margin-bottom:12px">' +
-      '<h2 style="font-size:1.15rem;margin:0 0 4px 0">Authoritative Sources</h2>' +
-      '<p class="muted small" style="margin:0 0 16px 0">Grounding textbooks indexed for concept retrieval and clarification.</p>' +
-      '<div class="grid grid-3" style="margin-bottom:24px">' +
-        sources.map(src =>
-          '<div class="card" style="display:flex;flex-direction:column;justify-content:space-between">' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px">' +
+        '<div>' +
+          '<h2 style="font-size:1.15rem;margin:0 0 4px 0">Authoritative Sources</h2>' +
+          '<p class="muted small" style="margin:0">Grounding textbooks indexed for concept retrieval and clarification.</p>' +
+        '</div>' +
+        '<span class="badge badge-agent" style="font-size:0.75rem">3 textbooks \u2022 ' + bookPassagesSum.toLocaleString() + ' passages \u2022 Total index: ' + totalPassages.toLocaleString() + ' passages</span>' +
+      '</div>' +
+      '<div class="grid grid-3" style="margin-bottom:18px">' +
+        books.map(src => {
+          const qBadge = (typeof src.bank_questions === 'number')
+            ? '<span class="badge">' + src.bank_questions + ' questions written for the bank</span>'
+            : '';
+          return '<div class="card" style="display:flex;flex-direction:column;justify-content:space-between">' +
             '<div>' +
               '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">' +
                 '<h3 style="font-size:1rem;margin:0;line-height:1.35">' + EG.esc(src.title) + '</h3>' +
@@ -101,8 +119,7 @@ async function loadStatus() {
               '<p class="muted tiny" style="margin:0 0 10px 0">' + EG.esc(src.author) + '</p>' +
               '<div class="row" style="flex-wrap:wrap;gap:6px;margin-bottom:12px">' +
                 '<span class="badge">' + src.passages.toLocaleString() + ' passages</span>' +
-                '<span class="badge">' + src.raw_questions + ' questions</span>' +
-                '<span class="badge">' + src.concepts_covered + ' concepts</span>' +
+                qBadge +
               '</div>' +
             '</div>' +
             '<div>' +
@@ -110,14 +127,28 @@ async function loadStatus() {
                 '<div style="width:' + src.share_pct + '%;height:100%;background:var(--agent);border-radius:3px"></div>' +
               '</div>' +
               '<div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--ink-3)">' +
-                '<span>Corpus share</span>' +
-                '<span class="mono">' + src.passages.toLocaleString() + ' / 7,333</span>' +
+                '<span>Index share</span>' +
+                '<span class="mono">' + src.passages.toLocaleString() + ' / ' + totalPassages.toLocaleString() + '</span>' +
               '</div>' +
-              '<p class="muted tiny" style="margin:8px 0 0 0;line-height:1.3">' + EG.esc(src.focus || '') + '</p>' +
             '</div>' +
-          '</div>'
-        ).join('') +
+          '</div>';
+        }).join('') +
       '</div>' +
+      (cRes.other_sources && cRes.other_sources.length ?
+        '<div class="card" style="margin-bottom:24px;padding:14px 18px">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
+            '<strong class="small">Additional Index Sources</strong>' +
+            '<span class="muted tiny">Active pool: ' + cRes.active_pool_questions + ' questions</span>' +
+          '</div>' +
+          '<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));gap:12px">' +
+            cRes.other_sources.map(os =>
+              '<div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg-2);padding:8px 12px;border-radius:var(--radius-sm)">' +
+                '<span class="small">' + EG.esc(os.label) + '</span>' +
+                '<span class="mono small" style="font-weight:600">' + os.passages.toLocaleString() + ' passages <span class="muted tiny">(' + os.share_pct + '%)</span></span>' +
+              '</div>'
+            ).join('') +
+          '</div>' +
+        '</div>' : '') +
     '</div>';
 
     EG.$('#status').innerHTML = statusHtml + booksHtml;

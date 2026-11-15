@@ -195,8 +195,13 @@ class TestBrowserSmoke(unittest.TestCase):
         book_cards = self.page.locator("#textbooks-slot .card").count()
         self.assertEqual(book_cards, 3, f"Expected 3 textbook cards on dashboard, found {book_cards}.")
 
-        # Save screenshot
+        # Save desktop screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "dashboard.png"), full_page=True)
+
+        # Save 360px mobile screenshot
+        self.page.set_viewport_size({"width": 360, "height": 800})
+        self.page.screenshot(path=str(UI_CHECK_DIR / "mobile_dashboard.png"), full_page=True)
+        self.page.set_viewport_size({"width": 1280, "height": 800})
 
         # Assert no NaN or undefined rendered in charts or stats
         self._assert_no_nan_or_undefined("/dashboard")
@@ -413,8 +418,13 @@ class TestBrowserSmoke(unittest.TestCase):
         # Capsule is visible
         self.assertTrue(self.page.locator("#evaluator-pill").is_visible())
 
-        # Save screenshot
+        # Save desktop screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "library.png"), full_page=True)
+
+        # Save 360px mobile screenshot
+        self.page.set_viewport_size({"width": 360, "height": 800})
+        self.page.screenshot(path=str(UI_CHECK_DIR / "mobile_library.png"), full_page=True)
+        self.page.set_viewport_size({"width": 1280, "height": 800})
 
         # Assert no NaN or undefined rendered in charts or stats
         self._assert_no_nan_or_undefined("/library")
@@ -437,6 +447,48 @@ class TestBrowserSmoke(unittest.TestCase):
         # Attempt to access /analysis -> redirects to /login
         self.page.goto(f"{self.base_url}/analysis")
         self.page.wait_for_url(re.compile(r".*/login.*"), timeout=5000)
+
+    def test_11_fresh_signup_empty_state(self):
+        """Fresh signup: 0 quizzes, rings show 0%, empty state text appears, no NaN or undefined, zero errors."""
+        self.__class__.current_page_name = "fresh_signup"
+        # 1. Sign up a fresh user
+        self.page.goto(f"{self.base_url}/signup")
+        fresh_email = f"fresh_{int(time.time())}@edugen.local"
+        fresh_pass = "FreshPass123!"
+        self.page.fill("#name", "Fresh Student")
+        self.page.fill("#email", fresh_email)
+        self.page.fill("#password", fresh_pass)
+        self.page.click("#submit")
+        self.page.wait_for_url(f"{self.base_url}/dashboard", timeout=8000)
+
+        # 2. Check /dashboard empty state
+        self.page.wait_for_selector("#stats .stat-value:not(.skeleton)", timeout=5000)
+        self._assert_no_nan_or_undefined("/dashboard [fresh]")
+        body_text = self.page.inner_text("body")
+        self.assertTrue("0" in body_text)
+
+        # 3. Check /analysis empty state
+        self.__class__.current_page_name = "/analysis [fresh]"
+        self.page.goto(f"{self.base_url}/analysis")
+        self.page.wait_for_load_state("networkidle", timeout=5000)
+        self._assert_no_nan_or_undefined("/analysis [fresh]")
+
+        # 4. Check /history empty state
+        self.__class__.current_page_name = "/history [fresh]"
+        self.page.goto(f"{self.base_url}/history")
+        self.page.wait_for_load_state("networkidle", timeout=5000)
+        self._assert_no_nan_or_undefined("/history [fresh]")
+
+        # 5. Check /plan empty state
+        self.__class__.current_page_name = "/plan [fresh]"
+        self.page.goto(f"{self.base_url}/plan")
+        self.page.wait_for_load_state("networkidle", timeout=5000)
+        self._assert_no_nan_or_undefined("/plan [fresh]")
+
+        # Assert zero errors during fresh user session
+        for page_name in ["fresh_signup", "/analysis [fresh]", "/history [fresh]", "/plan [fresh]"]:
+            self.assertEqual(len(self.console_errors_by_page.get(page_name, [])), 0)
+            self.assertEqual(len(self.page_errors_by_page.get(page_name, [])), 0)
 
 
 if __name__ == "__main__":

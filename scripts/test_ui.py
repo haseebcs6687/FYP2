@@ -164,22 +164,72 @@ class TestStudentModePurity(unittest.TestCase):
 
     def test_corpus_sources_and_dashboard_structure(self):
         self._login()
-        # Verify /api/corpus/sources
+        from unittest.mock import patch
+        from routes.api import agents
+
+        # 1. Real index matching against /api/rag/status
+        rag_res = self.client.get("/api/rag/status")
+        rag_data = rag_res.get_json()
+        rag_sources = rag_data.get("sources", {})
+
         res = self.client.get("/api/corpus/sources")
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
-        self.assertEqual(data["total_passages"], 7333)
+        self.assertTrue(data["ready"])
         self.assertEqual(data["total_concepts"], 44)
-        self.assertEqual(data["raw_bank_questions"], 888)
-        self.assertEqual(data["active_pool_questions"], 703)
-        self.assertEqual(len(data["sources"]), 3)
+        self.assertEqual(data["total_passages"], rag_data.get("chunk_count", 0))
+        self.assertEqual(data["bank_questions_total"], 888)
+        self.assertIsInstance(data["active_pool_questions"], int)
+        self.assertGreaterEqual(data["active_pool_questions"], 700)
 
-        titles = [s["title"] for s in data["sources"]]
-        self.assertIn("Java Notes for Professionals", titles)
-        self.assertIn("Introduction to Programming Using Java, v9 (D. J. Eck)", titles)
-        self.assertIn("Think Java, 2nd ed. (A. Downey & C. Mayfield)", titles)
+        # Assert per-book passages equal the values in /api/rag/status sources
+        book_map = {b["key"]: b for b in data["books"]}
+        for b in data["books"]:
+            expected = rag_sources.get(f"{b['key']}.pdf", rag_sources.get(b["key"], 0))
+            self.assertEqual(b["passages"], expected, f"Passages mismatch for {b['key']}")
 
-        # Verify /dashboard page elements
+        # Assert exact question bank counts per book (not swapped)
+        self.assertEqual(book_map["JavaNotesForProfessionals"]["bank_questions"], 420)
+        self.assertEqual(book_map["javanotes9"]["bank_questions"], 276)
+        self.assertEqual(book_map["thinkjava2"]["bank_questions"], 192)
+
+        # Assert shares sum with other_sources to ~100%
+        total_share = sum(b["share_pct"] for b in data["books"]) + sum(os["share_pct"] for os in data["other_sources"])
+        self.assertAlmostEqual(total_share, 100.0, delta=0.5)
+
+        # Assert no response string contains .pdf
+        self.assertNotIn(".pdf", res.get_data(as_text=True))
+
+        # 2. Unknown key path: discovers new book, strips .pdf, humanises title
+        mock_unknown = {
+            "ready": True,
+            "chunk_count": 100,
+            "sources": {"custom_reader_advanced.pdf": 100},
+        }
+        with self.app.app_context():
+            retriever = agents()["retriever"]
+
+        with patch.object(retriever, "status", return_value=mock_unknown):
+            res_unk = self.client.get("/api/corpus/sources")
+            self.assertEqual(res_unk.status_code, 200)
+            unk_data = res_unk.get_json()
+            unk_book = next((b for b in unk_data["books"] if b["key"] == "custom_reader_advanced"), None)
+            self.assertIsNotNone(unk_book)
+            self.assertEqual(unk_book["title"], "Custom Reader Advanced")
+            self.assertEqual(unk_book["passages"], 100)
+            self.assertNotIn(".pdf", res_unk.get_data(as_text=True))
+
+        # 3. Ready=false path
+        mock_unready = {"ready": False, "chunk_count": 0, "sources": {}}
+        with patch.object(retriever, "status", return_value=mock_unready):
+            res_unr = self.client.get("/api/corpus/sources")
+            self.assertEqual(res_unr.status_code, 200)
+            unr_data = res_unr.get_json()
+            self.assertFalse(unr_data["ready"])
+            self.assertEqual(unr_data["total_passages"], 0)
+            self.assertNotIn(".pdf", res_unr.get_data(as_text=True))
+
+        # 4. Verify /dashboard page elements
         dash_res = self.client.get("/dashboard")
         self.assertEqual(dash_res.status_code, 200)
         html = dash_res.get_data(as_text=True)
@@ -187,6 +237,7 @@ class TestStudentModePurity(unittest.TestCase):
         self.assertIn('id="card-concept-dist"', html)
         self.assertIn('id="textbooks-slot"', html)
         self.assertIn("Course Textbooks", html)
+        self.assertNotIn(".pdf", html.replace("/report.pdf", ""))
 
 
 class TestEvaluatorActivityWindow(unittest.TestCase):

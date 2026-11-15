@@ -30,7 +30,7 @@ Complete these 7 checks prior to starting the viva demonstration:
 7. **Reset Browser Evaluator Capsule State**:
    - If the browser previously retained a stale UI state, open Developer Tools Console and run:
      ```javascript
-     localStorage.setItem('edugen_evaluator_capsule_state', 'minimized');
+     localStorage.setItem('eg:eval_state', 'minimized');
      ```
    - This ensures the floating Evaluator capsule pill is neatly displayed in the bottom-right corner without blocking the screen.
 
