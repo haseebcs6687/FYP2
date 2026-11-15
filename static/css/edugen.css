@@ -623,3 +623,211 @@ details.payload pre {
   padding: 12px 14px; border-radius: var(--r-sm);
   font-size: .76rem; overflow-x: auto; line-height: 1.55;
 }
+
+/* ==========================================================================
+   EGCharts component styles (.ch-*)
+   Scoped lightweight SVG visualization classes.
+   ========================================================================== */
+
+.ch-stat-val,
+.ch-ring-val,
+.ch-bar-val,
+.ch-legend-val {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Ring ── */
+.ch-ring {
+  position: relative;
+  width: 108px;
+  height: 108px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.ch-ring-svg {
+  transform: rotate(-90deg);
+  display: block;
+}
+.ch-ring-inner {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+.ch-ring-val {
+  font-family: var(--font-ui);
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1.1;
+}
+.ch-ring-sub {
+  font-size: 0.72rem;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+
+/* ── Horizontal Bars ── */
+.ch-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+.ch-bar-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ch-bar-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.85rem;
+}
+.ch-bar-label {
+  font-family: var(--font-ui);
+  font-weight: 500;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ch-bar-val {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  color: var(--ink-2);
+  flex: none;
+  margin-left: 8px;
+}
+.ch-bar-sub {
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: var(--ink-3);
+}
+.ch-bar-track {
+  width: 100%;
+  height: 8px;
+  background: var(--line-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.ch-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+/* ── Line Chart ── */
+.ch-line {
+  width: 100%;
+  min-height: 120px;
+  position: relative;
+}
+.ch-line-svg {
+  display: block;
+  overflow: visible;
+}
+
+/* ── Stacked Segmented Bar ── */
+.ch-stacked-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+.ch-stacked-bar {
+  display: flex;
+  width: 100%;
+  height: 14px;
+  background: var(--line-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.ch-stacked-seg {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+.ch-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  font-size: 0.82rem;
+}
+.ch-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2);
+}
+.ch-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.ch-legend-val {
+  color: var(--ink);
+}
+
+/* ── Sparkline ── */
+.ch-spark {
+  display: inline-block;
+  vertical-align: middle;
+  overflow: visible;
+}
+
+/* ── Stat Card with Chart ── */
+.ch-stat-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.ch-stat-unit {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--ink-3);
+  margin-left: 2px;
+}
+.ch-stat-chart {
+  flex: none;
+}
+.ch-empty {
+  padding: 18px 12px;
+  text-align: center;
+}
+
+/* ── Reduced motion and responsive down to 360px ── */
+@media (prefers-reduced-motion: reduce) {
+  .ch-bar-fill,
+  .ch-stacked-seg,
+  .ch-ring-svg circle {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .ch-legend {
+    gap: 8px 12px;
+    font-size: 0.78rem;
+  }
+  .ch-ring {
+    width: 90px;
+    height: 90px;
+  }
+  .ch-ring-svg {
+    width: 90px;
+    height: 90px;
+  }
+  .ch-ring-val {
+    font-size: 1.1rem;
+  }
+}

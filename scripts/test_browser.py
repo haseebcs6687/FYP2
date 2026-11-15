@@ -162,6 +162,10 @@ class TestBrowserSmoke(unittest.TestCase):
         pill = self.page.locator("#evaluator-pill")
         self.assertTrue(pill.is_visible(), "Evaluator capsule pill is not visible on /dashboard.")
 
+        # Verify EGCharts library is loaded in browser context
+        has_charts = self.page.evaluate("() => typeof window.EGCharts !== 'undefined' && typeof window.EGCharts.ring === 'function'")
+        self.assertTrue(has_charts, "EGCharts library failed to load in browser context.")
+
         # Verify Download report button is present
         btn_report = self.page.locator("#btn-download-report")
         self.assertTrue(btn_report.is_visible(), "Download report button is missing on /dashboard.")
