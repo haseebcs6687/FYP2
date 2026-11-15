@@ -7,7 +7,8 @@
     <h1>Quiz history</h1>
     <p>Every attempt, newest first. This is the evidence the Performance Analysis Agent works from.</p>
   </div>
-  <div id="stats" class="grid grid-3" style="margin-bottom:24px"></div>
+  <div id="stats" class="grid grid-4" style="margin-bottom:24px"></div>
+  <div id="chart-slot" style="margin-bottom:24px"></div>
   <div id="body"></div>
 </div>
 {% endblock %}
@@ -23,22 +24,74 @@
     ]);
 
     if (!h.total) {
+      EG.$('#stats').innerHTML = '';
+      EG.$('#chart-slot').innerHTML = '';
       EG.$('#body').innerHTML = '<div class="empty"><h3>No attempts yet</h3>' +
         '<p>Once you take a quiz it shows up here with the concept, level and score.</p>' +
         '<a class="btn" href="/quiz">Take a quiz</a></div>';
       return;
     }
 
-    const avg = h.history.reduce((a, x) => a + x.percentage, 0) / h.total;
-    EG.$('#stats').innerHTML =
-      '<div class="stat"><div class="stat-value">' + h.total + '</div><div class="stat-label">Quizzes taken</div></div>' +
-      '<div class="stat"><div class="stat-value">' + avg.toFixed(0) + '%</div><div class="stat-label">Average score</div></div>' +
-      (rec && rec.acceptance_rate !== null
-        ? '<div class="stat"><div class="stat-value">' + rec.acceptance_rate + '%</div>' +
-          '<div class="stat-label">Agent suggestions accepted</div>' +
-          '<div class="stat-sub">' + rec.accepted + ' accepted, ' + rec.overridden + ' overridden</div></div>'
-        : '<div class="stat"><div class="stat-value">&mdash;</div><div class="stat-label">Agent suggestions accepted</div></div>');
+    const historyList = (h.history || []).slice().reverse();
+    const scores = historyList.map(x => Math.round(x.percentage || 0));
+    const avg = scores.reduce((a, b) => a + b, 0) / (scores.length || 1);
+    const best = Math.max(...scores);
 
+    // Calculate trend from last 3 vs previous 3
+    let trendText = 'Steady';
+    let trendCls = '';
+    let trendSub = 'Consistent results';
+    if (scores.length >= 2) {
+      const last = scores[scores.length - 1];
+      const prev = scores[scores.length - 2];
+      if (last > prev) {
+        trendText = 'Improving';
+        trendCls = 'badge-good';
+        trendSub = '+' + (last - prev) + '% on last quiz';
+      } else if (last < prev) {
+        trendText = 'Needs attention';
+        trendCls = 'badge-attn';
+        trendSub = (last - prev) + '% on last quiz';
+      }
+    }
+
+    // Summary Stat Strip (4 cards)
+    EG.$('#stats').innerHTML =
+      '<div class="stat"><div class="stat-value">' + h.total + '</div><div class="stat-label">Total attempts</div><div class="stat-sub">Across curriculum</div></div>' +
+      '<div class="stat"><div class="stat-value">' + Math.round(avg) + '%</div><div class="stat-label">Average score</div><div class="stat-sub">Mean accuracy</div></div>' +
+      '<div class="stat"><div class="stat-value">' + best + '%</div><div class="stat-label">Best score</div><div class="stat-sub">Top performance</div></div>' +
+      '<div class="stat"><div class="stat-value"><span class="badge ' + trendCls + '">' + EG.esc(trendText) + '</span></div><div class="stat-label">Recent trend</div><div class="stat-sub">' + EG.esc(trendSub) + '</div></div>';
+
+    // Chronological Line Chart
+    const points = historyList.map((q, idx) => ({
+      x: idx + 1,
+      y: Math.round(q.percentage || 0),
+      label: 'Attempt ' + (idx + 1) + ' (' + (q.concept_title || q.topic || 'General') + '): ' + Math.round(q.percentage || 0) + '%'
+    }));
+
+    EG.$('#chart-slot').innerHTML =
+      '<div class="card" id="card-history-trend">' +
+        '<div class="card-head" style="margin-bottom:12px">' +
+          '<div>' +
+            '<h3 style="font-size:1.05rem;margin:0 0 2px 0">Score trajectory over time</h3>' +
+            '<p class="muted small" style="margin:0">Chronological quiz performance with 70% mastery reference line</p>' +
+          '</div>' +
+          '<span class="badge badge-signal" style="font-size:0.75rem">' + h.total + ' attempts</span>' +
+        '</div>' +
+        '<div id="history-chart-body">' +
+          EGCharts.line(points, {
+            height: 200,
+            yMin: 0,
+            yMax: 100,
+            stroke: 'var(--signal)',
+            xLabel: 'Attempt #',
+            yLabel: '%',
+            refLine: 70
+          }) +
+        '</div>' +
+      '</div>';
+
+    // Data Table
     EG.$('#body').innerHTML = '<div class="table-wrap"><table class="data">' +
       '<thead><tr><th>#</th><th>Concept</th><th>Level</th><th>Score</th><th>Attempt</th><th>Source</th><th>When</th><th></th></tr></thead><tbody>' +
       h.history.map((row, i) => {

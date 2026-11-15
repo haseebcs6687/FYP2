@@ -18,6 +18,9 @@
   <div id="plan-loading" class="muted" style="padding: 20px 0;">Loading your study plan...</div>
   <div id="plan-container" style="display:none;">
 
+    <!-- Plan Progress Slot -->
+    <div id="plan-progress-slot"></div>
+
     <!-- Plan Check Panel -->
     <div id="coverage-panel" class="card" style="margin-bottom: 24px; padding: 16px;">
       <h3 style="margin-top:0;">Plan Check &amp; Verification</h3>
@@ -136,6 +139,50 @@ function renderPlan(data) {
       '<p>' + escHtml(data.message || (plan && plan.summary) || 'Take a diagnostic quiz first to generate your personalized plan.') + '</p>' +
       '<button class="btn" onclick="buildOrReplan()">Generate Plan</button></div>';
     return;
+  }
+
+  // 0. Plan Progress Ring and Step Breakdown
+  const progressSlot = document.getElementById('plan-progress-slot');
+  if (progressSlot) {
+    const done = (data.progress && typeof data.progress.steps_done === 'number')
+      ? data.progress.steps_done
+      : plan.steps.filter(s => s.status === 'done').length;
+    const total = (data.progress && typeof data.progress.steps_total === 'number')
+      ? data.progress.steps_total
+      : plan.steps.length;
+    const pct = total > 0 ? Math.round(100 * done / total) : 0;
+
+    const quizzesCount = plan.steps.filter(s => ['probe', 'reevaluation', 'check', 'quiz'].includes(s.kind)).length;
+    const lessonsCount = Math.max(0, total - quizzesCount);
+
+    progressSlot.innerHTML =
+      '<div class="card" id="card-plan-progress" style="margin-bottom:24px;padding:20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:20px">' +
+        '<div style="display:flex;align-items:center;gap:20px;flex:1;min-width:260px">' +
+          '<div style="flex-shrink:0">' +
+            EGCharts.ring(done, total, { size: 68, stroke: 7, label: pct + '%', color: 'var(--agent)' }) +
+          '</div>' +
+          '<div>' +
+            '<h3 style="margin:0 0 4px 0;font-size:1.15rem">Plan Progression</h3>' +
+            '<p class="muted small" style="margin:0 0 10px 0">' + done + ' of ' + total + ' steps completed (' + pct + '%)</p>' +
+            '<div style="display:flex;flex-wrap:wrap;gap:8px">' +
+              '<span class="badge badge-signal">' + lessonsCount + ' lesson' + (lessonsCount === 1 ? '' : 's') + '</span>' +
+              '<span class="badge badge-agent">' + quizzesCount + ' quiz' + (quizzesCount === 1 ? '' : 'zes') + '</span>' +
+              '<span class="badge badge-good">' + done + ' completed</span>' +
+              '<span class="badge">' + (total - done) + ' remaining</span>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="min-width:200px;flex:1;max-width:320px">' +
+          '<div style="display:flex;justify-content:space-between;font-size:0.78rem;color:var(--ink-2);margin-bottom:6px">' +
+            '<span>Step mix</span>' +
+            '<span class="mono">' + lessonsCount + ' Lessons &bull; ' + quizzesCount + ' Quizzes</span>' +
+          '</div>' +
+          EGCharts.stacked([
+            { label: 'Lessons', value: lessonsCount, color: 'var(--signal)' },
+            { label: 'Quizzes', value: quizzesCount, color: 'var(--agent)' }
+          ], { total: total, height: 10, legend: false }) +
+        '</div>' +
+      '</div>';
   }
 
   // 1. Coverage Panel

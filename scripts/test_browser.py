@@ -328,8 +328,11 @@ class TestBrowserSmoke(unittest.TestCase):
         self.page.goto(f"{self.base_url}/history")
         self.page.wait_for_load_state("networkidle", timeout=5000)
 
-        # Verify history rows are present
+        # Verify history rows and chart are present
         self.page.wait_for_selector("table, .quiz-row, .card", timeout=5000)
+        self.page.wait_for_selector("#card-history-trend svg", timeout=5000)
+        self.assertTrue(self.page.locator("#card-history-trend").is_visible())
+        self.assertEqual(self.page.locator("#stats .stat-value").count(), 4)
 
         # Capsule is visible
         self.assertTrue(self.page.locator("#evaluator-pill").is_visible())
@@ -347,6 +350,10 @@ class TestBrowserSmoke(unittest.TestCase):
 
         # Wait for plan container to load
         self.page.wait_for_selector("#plan-container", state="visible", timeout=5000)
+        self.page.wait_for_selector("#card-plan-progress .ch-ring", timeout=5000)
+        self.assertTrue(self.page.locator("#card-plan-progress").is_visible())
+        self.assertTrue(self.page.locator("#card-plan-progress .ch-ring").is_visible())
+        self.assertTrue(self.page.locator("#card-plan-progress .ch-stacked").is_visible())
         self.assertTrue(self.page.locator("#steps-list").is_visible(), "Steps list not visible on /plan.")
 
         # Capsule is visible
