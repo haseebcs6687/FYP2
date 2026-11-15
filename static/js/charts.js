@@ -121,7 +121,7 @@
         const val = Number(it.value) || 0;
         const clamped = Math.max(0, Math.min(max, val));
         const pct = (clamped / max) * 100;
-        const toneColor = resolveTone(it.tone || fallbackTone, TONES.student);
+        const toneColor = it.color || resolveTone(it.tone || fallbackTone, TONES.student);
         const subText = it.sub ? '<span class="ch-bar-sub">' + esc(it.sub) + '</span>' : '';
         const titleText = esc(it.label) + ': ' + val + unit + (it.sub ? ' (' + it.sub + ')' : '');
 

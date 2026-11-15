@@ -47,6 +47,46 @@ function conceptRow(s) {
   '</div>';
 }
 
+function extractMisconceptions(r) {
+  const topLevel = [];
+  if (r.misconceptions) {
+    ['active', 'suspected', 'resolved'].forEach(status => {
+      const arr = r.misconceptions[status] || [];
+      arr.forEach(m => {
+        topLevel.push({
+          label: m.answer || m.misconception || m.description || 'Misconception',
+          times: Number(m.times || m.count || 1),
+          status: status,
+          concept: m.concept_tag || m.concept || ''
+        });
+      });
+    });
+  }
+
+  if (topLevel.length > 0) {
+    topLevel.sort((a, b) => b.times - a.times);
+    return topLevel.slice(0, 5);
+  }
+
+  // Fallback to concept_stats
+  const fallback = [];
+  if (r.concept_stats) {
+    Object.keys(r.concept_stats).forEach(c => {
+      const s = r.concept_stats[c];
+      (s.misconceptions || []).forEach(m => {
+        fallback.push({
+          label: m.answer || 'Misconception',
+          times: Number(m.times) || 1,
+          concept: s.title || c
+        });
+      });
+    });
+  }
+
+  fallback.sort((a, b) => b.times - a.times);
+  return fallback.slice(0, 5);
+}
+
 function render(r) {
   if (!r.total_quizzes_taken) {
     return '<div class="empty"><h3>Nothing to analyse yet</h3>' +
@@ -55,16 +95,123 @@ function render(r) {
       '<a class="btn" href="/quiz">Take your first quiz</a></div>';
   }
 
+  const strongCount = (r.strong_topics || []).length;
+  const moderateCount = (r.moderate_topics || []).length;
+  const weakCount = (r.weak_topics || []).length;
+  const assessedCount = strongCount + moderateCount + weakCount;
+  const unassessedCount = Math.max(0, 44 - assessedCount);
+
+  // Top snapshot cards
   let html = '<div class="grid grid-4" style="margin-bottom:28px">' +
     ['Overall accuracy|' + r.overall_performance + '%|' + r.total_questions_correct + ' of ' + r.total_questions_attempted,
      'Quizzes taken|' + r.total_quizzes_taken + '|across all concepts',
-     'Concepts assessed|' + Object.keys(r.concept_stats).length + '|of {{ concept_count }}',
-     'Weak concepts|' + r.weak_topics.length + '|mastery below 50%']
+     'Concepts assessed|' + assessedCount + ' / 44|across 8 modules',
+     'Weak concepts|' + weakCount + '|mastery below 50%']
       .map(s => { const [l, v, sub] = s.split('|');
         return '<div class="stat"><div class="stat-value">' + v + '</div>' +
           '<div class="stat-label">' + l + '</div><div class="stat-sub">' + sub + '</div></div>'; })
       .join('') + '</div>';
 
+  // Visual Charts: Concept status distribution + Module mastery comparison
+  const distParts = [
+    { label: 'Mastered', value: strongCount, color: 'var(--good)' },
+    { label: 'Progressing', value: moderateCount, color: 'var(--signal)' },
+    { label: 'Weak', value: weakCount, color: 'var(--attn)' },
+    { label: 'Not assessed yet', value: unassessedCount, color: 'var(--ink-4)' }
+  ];
+
+  const allModules = [
+    { key: 'classes-objects', title: 'Classes & Objects' },
+    { key: 'constructors', title: 'Constructors' },
+    { key: 'inheritance', title: 'Inheritance' },
+    { key: 'polymorphism', title: 'Polymorphism' },
+    { key: 'encapsulation', title: 'Encapsulation' },
+    { key: 'abstraction', title: 'Abstraction' },
+    { key: 'interfaces', title: 'Interfaces' },
+    { key: 'exceptions', title: 'Exception Handling' }
+  ];
+
+  const breakdownMap = {};
+  (r.module_breakdown || []).forEach(m => { breakdownMap[m.module] = m; });
+
+  const moduleItems = allModules.map(mod => {
+    const m = breakdownMap[mod.key];
+    if (m) {
+      const val = Math.round(m.mastery || 0);
+      const tone = val >= 70 ? 'strong' : (val >= 50 ? 'student' : 'weak');
+      return {
+        label: mod.title,
+        value: val,
+        tone: tone,
+        sub: m.attempts + ' q'
+      };
+    } else {
+      return {
+        label: mod.title,
+        value: 0,
+        tone: 'muted',
+        sub: 'unassessed'
+      };
+    }
+  });
+
+  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(340px, 1fr));gap:20px;margin-bottom:28px">' +
+    '<div class="card" id="card-analysis-dist">' +
+      '<div class="card-head" style="margin-bottom:12px">' +
+        '<div>' +
+          '<h3 style="font-size:1.05rem;margin:0 0 2px 0">Concept status breakdown</h3>' +
+          '<p class="muted small" style="margin:0">44 syllabus concepts across 4 mastery tiers</p>' +
+        '</div>' +
+        '<span class="badge badge-signal" style="font-size:0.75rem">' + assessedCount + ' / 44 assessed</span>' +
+      '</div>' +
+      '<div style="min-height:160px;display:flex;flex-direction:column;justify-content:center">' +
+        EGCharts.stacked(distParts, { total: 44, height: 22 }) +
+      '</div>' +
+    '</div>' +
+
+    '<div class="card" id="card-analysis-modules">' +
+      '<div class="card-head" style="margin-bottom:12px">' +
+        '<div>' +
+          '<h3 style="font-size:1.05rem;margin:0 0 2px 0">Module mastery comparison</h3>' +
+          '<p class="muted small" style="margin:0">Recency-weighted score across all 8 modules</p>' +
+        '</div>' +
+        '<span class="badge badge-agent" style="font-size:0.75rem">8 modules</span>' +
+      '</div>' +
+      '<div>' +
+        EGCharts.bars(moduleItems, { max: 100, unit: '%' }) +
+      '</div>' +
+    '</div>' +
+  '</div>';
+
+  // Misconceptions Chart (if any captured)
+  const misconceptions = extractMisconceptions(r);
+  if (misconceptions.length > 0) {
+    const maxMisTimes = misconceptions.reduce((max, m) => Math.max(max, m.times), 1);
+    const misconceptionBars = misconceptions.map(m => {
+      const shortLabel = m.label.length > 55 ? m.label.substring(0, 52) + '...' : m.label;
+      return {
+        label: shortLabel,
+        value: m.times,
+        tone: 'weak',
+        sub: m.concept ? m.concept : ''
+      };
+    });
+
+    html += '<div class="card" id="card-analysis-misconceptions" style="margin-bottom:28px">' +
+      '<div class="card-head" style="margin-bottom:12px">' +
+        '<div>' +
+          '<h3 style="font-size:1.05rem;margin:0 0 2px 0">Captured misconceptions</h3>' +
+          '<p class="muted small" style="margin:0">Distractor choices repeatedly selected during quizzes</p>' +
+        '</div>' +
+        '<span class="badge badge-attn" style="font-size:0.75rem">' + misconceptions.length + ' identified</span>' +
+      '</div>' +
+      '<div>' +
+        EGCharts.bars(misconceptionBars, { max: maxMisTimes, tone: 'weak', unit: 'x' }) +
+      '</div>' +
+    '</div>';
+  }
+
+  // Root causes
   if (r.root_causes && r.root_causes.length) {
     html += '<div class="card card-agent" style="margin-bottom:26px">' +
       '<div class="row" style="margin-bottom:10px">' +
@@ -79,6 +226,7 @@ function render(r) {
       '</div>';
   }
 
+  // Due for review
   if (r.due_for_review && r.due_for_review.length) {
     html += '<div class="card" style="margin-bottom:26px">' +
       '<h3 style="margin-bottom:8px">Due for review</h3>' +
@@ -88,13 +236,7 @@ function render(r) {
         EG.esc(d.title) + ' &middot; ' + d.days_since + 'd ago</a>').join('') + '</div></div>';
   }
 
-  if (r.module_breakdown && r.module_breakdown.length) {
-    html += '<div class="card" style="margin-bottom:26px"><h3>By module</h3>' +
-      r.module_breakdown.map(m =>
-        EG.meter(m.title, m.mastery, Math.round(m.mastery) + '% over ' + m.attempts + ' question(s)')).join('') +
-      '</div>';
-  }
-
+  // Concept groups breakdown
   const groups = [
     ['Weak', r.weak_topics, 'Mastery under 50%. These drive your recommendations.'],
     ['Needs consolidation', r.moderate_topics, 'Between 50% and 80%.'],

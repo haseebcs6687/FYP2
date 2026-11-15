@@ -307,6 +307,12 @@ class TestBrowserSmoke(unittest.TestCase):
         btn_report = self.page.locator("#btn-download-report")
         self.assertTrue(btn_report.is_visible(), "Download report button missing on /analysis.")
 
+        # Verify charts are rendered on /analysis
+        self.page.wait_for_selector("#card-analysis-dist .ch-stacked", timeout=5000)
+        self.assertTrue(self.page.locator("#card-analysis-dist").is_visible())
+        self.assertTrue(self.page.locator("#card-analysis-modules").is_visible())
+        self.assertTrue(self.page.locator("#card-analysis-misconceptions").is_visible())
+
         # Capsule is visible
         self.assertTrue(self.page.locator("#evaluator-pill").is_visible())
 
