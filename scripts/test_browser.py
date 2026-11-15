@@ -170,6 +170,17 @@ class TestBrowserSmoke(unittest.TestCase):
         btn_report = self.page.locator("#btn-download-report")
         self.assertTrue(btn_report.is_visible(), "Download report button is missing on /dashboard.")
 
+        # Verify Trend and Curriculum charts rendered without skeletons
+        self.page.wait_for_selector("#trend-chart-slot svg", timeout=5000)
+        self.assertTrue(self.page.locator("#trend-chart-slot svg").is_visible())
+        self.page.wait_for_selector("#dist-chart-slot .ch-stacked", timeout=5000)
+        self.assertTrue(self.page.locator("#dist-chart-slot .ch-stacked").is_visible())
+
+        # Verify Course Textbooks showcase loaded 3 book cards without skeletons
+        self.page.wait_for_selector("#textbooks-slot .card:not(:has(.skeleton))", timeout=5000)
+        book_cards = self.page.locator("#textbooks-slot .card").count()
+        self.assertEqual(book_cards, 3, f"Expected 3 textbook cards on dashboard, found {book_cards}.")
+
         # Save screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "dashboard.png"), full_page=True)
 

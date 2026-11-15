@@ -267,28 +267,30 @@
       const sum = parts.reduce((acc, p) => acc + (Number(p.value) || 0), 0);
       const total = typeof options.total === 'number' && options.total > 0 ? options.total : Math.max(1, sum);
 
+      const barHeight = typeof options.height === 'number' ? options.height : (options.compact ? 6 : 14);
       const segments = parts.map(p => {
         const val = Number(p.value) || 0;
         const pct = (val / total) * 100;
         if (pct <= 0) return '';
-        const color = resolveTone(p.tone, TONES.muted);
+        const color = p.color || resolveTone(p.tone, TONES.muted);
         const titleText = esc(p.label) + ': ' + val + ' (' + Math.round(pct) + '%)';
         return '<span class="ch-stacked-seg" style="width:' + pct.toFixed(2) + '%;background:' + color + ';" title="' + titleText + '"></span>';
       }).join('');
 
-      const legend = parts.map(p => {
+      const showLegend = options.legend !== false && !options.compact;
+      const legend = showLegend ? parts.map(p => {
         const val = Number(p.value) || 0;
-        const color = resolveTone(p.tone, TONES.muted);
+        const color = p.color || resolveTone(p.tone, TONES.muted);
         return '<span class="ch-legend-item">' +
           '<span class="ch-legend-dot" style="background:' + color + '"></span>' +
           '<span class="ch-legend-label">' + esc(p.label) + '</span>' +
           '<strong class="ch-legend-val">' + val + '</strong>' +
         '</span>';
-      }).join('');
+      }).join('') : '';
 
-      return '<div class="ch-stacked-wrap" role="img" aria-label="Segmented distribution">' +
-        '<div class="ch-stacked-bar">' + (segments || '<span class="ch-stacked-seg" style="width:100%;background:var(--line-2);"></span>') + '</div>' +
-        '<div class="ch-legend">' + legend + '</div>' +
+      return '<div class="ch-stacked ch-stacked-wrap" role="img" aria-label="Segmented distribution">' +
+        '<div class="ch-stacked-bar" style="height:' + barHeight + 'px">' + (segments || '<span class="ch-stacked-seg" style="width:100%;background:var(--line-2);"></span>') + '</div>' +
+        (showLegend ? '<div class="ch-legend">' + legend + '</div>' : '') +
       '</div>';
     },
 

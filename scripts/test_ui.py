@@ -149,6 +149,7 @@ class TestStudentModePurity(unittest.TestCase):
             "/api/analysis",
             "/api/lesson/class-definition/Easy",
             "/api/plan",
+            "/api/corpus/sources",
         ]
         for endpoint in json_endpoints:
             res = self.client.get(endpoint)
@@ -160,6 +161,32 @@ class TestStudentModePurity(unittest.TestCase):
                     data.lower(),
                     f"Banned string '{banned}' found in JSON endpoint {endpoint}",
                 )
+
+    def test_corpus_sources_and_dashboard_structure(self):
+        self._login()
+        # Verify /api/corpus/sources
+        res = self.client.get("/api/corpus/sources")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data["total_passages"], 7333)
+        self.assertEqual(data["total_concepts"], 44)
+        self.assertEqual(data["raw_bank_questions"], 888)
+        self.assertEqual(data["active_pool_questions"], 703)
+        self.assertEqual(len(data["sources"]), 3)
+
+        titles = [s["title"] for s in data["sources"]]
+        self.assertIn("Java Notes for Professionals", titles)
+        self.assertIn("Introduction to Programming Using Java, v9 (D. J. Eck)", titles)
+        self.assertIn("Think Java, 2nd ed. (A. Downey & C. Mayfield)", titles)
+
+        # Verify /dashboard page elements
+        dash_res = self.client.get("/dashboard")
+        self.assertEqual(dash_res.status_code, 200)
+        html = dash_res.get_data(as_text=True)
+        self.assertIn('id="card-accuracy-trend"', html)
+        self.assertIn('id="card-concept-dist"', html)
+        self.assertIn('id="textbooks-slot"', html)
+        self.assertIn("Course Textbooks", html)
 
 
 class TestEvaluatorActivityWindow(unittest.TestCase):

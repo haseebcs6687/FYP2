@@ -19,11 +19,40 @@
 
   <!-- Snapshot -->
   <h2 style="font-size:1.15rem;margin-bottom:12px">Your snapshot</h2>
-  <div class="grid grid-4" id="stats" style="margin-bottom:34px">
+  <div class="grid grid-4" id="stats" style="margin-bottom:28px">
     <div class="stat"><div class="stat-value skeleton" style="width:60px;height:30px"></div><div class="stat-label">Overall accuracy</div></div>
     <div class="stat"><div class="stat-value skeleton" style="width:40px;height:30px"></div><div class="stat-label">Quizzes taken</div></div>
     <div class="stat"><div class="stat-value skeleton" style="width:40px;height:30px"></div><div class="stat-label">Concepts assessed</div></div>
     <div class="stat"><div class="stat-value skeleton" style="width:40px;height:30px"></div><div class="stat-label">Weak concepts</div></div>
+  </div>
+
+  <!-- Charts Row: Trend & Curriculum Progress -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(340px, 1fr));gap:20px;margin-bottom:34px">
+    <div class="card" id="card-accuracy-trend">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px">
+        <div>
+          <h3 style="font-size:1.05rem;margin:0 0 2px 0">Accuracy trend</h3>
+          <p class="muted small" style="margin:0">Recent quiz scores with 70% mastery reference line</p>
+        </div>
+        <span class="badge badge-signal" id="trend-summary-badge" style="font-size:0.75rem">Loading...</span>
+      </div>
+      <div id="trend-chart-slot" style="min-height:180px">
+        <div class="skeleton" style="height:180px;border-radius:var(--radius-sm)"></div>
+      </div>
+    </div>
+
+    <div class="card" id="card-concept-dist">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px">
+        <div>
+          <h3 style="font-size:1.05rem;margin:0 0 2px 0">Curriculum mastery</h3>
+          <p class="muted small" style="margin:0">Coverage across all 44 Java / OOP concepts</p>
+        </div>
+        <span class="badge" id="dist-summary-badge" style="font-size:0.75rem">44 concepts</span>
+      </div>
+      <div id="dist-chart-slot" style="min-height:180px;display:flex;flex-direction:column;justify-content:center">
+        <div class="skeleton" style="height:180px;border-radius:var(--radius-sm)"></div>
+      </div>
+    </div>
   </div>
 
   <!-- Quick actions -->
@@ -45,6 +74,20 @@
       <h3 style="font-size:1rem">Study plan</h3>
       <p class="small muted" style="margin:0">Your prerequisite-ordered learning path.</p>
     </a>
+  </div>
+
+  <!-- Course Textbooks -->
+  <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px">
+    <div>
+      <h2 style="font-size:1.15rem;margin:0 0 2px 0">Course Textbooks</h2>
+      <p class="muted small" style="margin:0">Authoritative sources grounding curriculum passages and concept retrieval.</p>
+    </div>
+    <span class="badge badge-agent" style="font-size:0.75rem">7,333 passages &bull; 888 questions</span>
+  </div>
+  <div class="grid grid-3" id="textbooks-slot" style="margin-bottom:34px">
+    <div class="card"><div class="skeleton" style="height:120px"></div></div>
+    <div class="card"><div class="skeleton" style="height:120px"></div></div>
+    <div class="card"><div class="skeleton" style="height:120px"></div></div>
   </div>
 
 </div>
@@ -101,26 +144,230 @@ function wireRecommendation(s) {
   });
 }
 
-async function loadStats() {
+function renderSnapshot(r, h, p) {
+  const acc = Math.round(r.overall_performance || 0);
+  const accColor = acc >= 70 ? 'var(--good)' : 'var(--attn)';
+
+  const historyList = (h && h.history) ? h.history.slice().reverse() : [];
+  const recentScores = historyList.map(q => Math.round(q.percentage || 0));
+
+  const strongCount = (r.strong_topics || []).length;
+  const moderateCount = (r.moderate_topics || []).length;
+  const weakCount = (r.weak_topics || []).length;
+  const assessedCount = strongCount + moderateCount + weakCount;
+  const unassessedCount = Math.max(0, 44 - assessedCount);
+
+  // Card 1: Overall accuracy
+  const cardAcc = '<div class="stat" style="display:flex;align-items:center;justify-content:space-between;gap:12px">' +
+    '<div>' +
+      '<div class="stat-value">' + acc + '%</div>' +
+      '<div class="stat-label">Overall accuracy</div>' +
+      '<div class="stat-sub">' + r.total_questions_correct + ' of ' + r.total_questions_attempted + ' questions</div>' +
+    '</div>' +
+    '<div style="flex-shrink:0">' +
+      EGCharts.ring(acc, 100, {size: 52, stroke: 6, label: acc + '%', color: accColor}) +
+    '</div>' +
+  '</div>';
+
+  // Card 2: Quizzes taken
+  const sparkHtml = recentScores.length >= 2
+    ? EGCharts.spark(recentScores, {width: 105, height: 26, stroke: 'var(--signal)'})
+    : '<span class="muted tiny">' + (recentScores.length === 1 ? '1 quiz completed' : 'No quizzes yet') + '</span>';
+
+  const cardQuizzes = '<div class="stat" style="display:flex;flex-direction:column;justify-content:space-between">' +
+    '<div>' +
+      '<div class="stat-value">' + r.total_quizzes_taken + '</div>' +
+      '<div class="stat-label">Quizzes taken</div>' +
+      '<div class="stat-sub">' + (r.total_quizzes_taken ? 'Score trend' : 'Take your first quiz') + '</div>' +
+    '</div>' +
+    '<div style="margin-top:6px">' + sparkHtml + '</div>' +
+  '</div>';
+
+  // Card 3: Concepts mastered
+  const miniBar = EGCharts.stacked([
+    {label: 'Mastered', value: strongCount, color: 'var(--good)'},
+    {label: 'Progressing', value: moderateCount, color: 'var(--signal)'},
+    {label: 'Weak', value: weakCount, color: 'var(--attn)'},
+    {label: 'Not assessed yet', value: unassessedCount, color: 'var(--ink-4)'}
+  ], {total: 44, height: 6});
+
+  const cardMastered = '<div class="stat" style="display:flex;flex-direction:column;justify-content:space-between">' +
+    '<div>' +
+      '<div class="stat-value">' + strongCount + ' / 44</div>' +
+      '<div class="stat-label">Concepts mastered</div>' +
+      '<div class="stat-sub">' + moderateCount + ' progressing &bull; ' + weakCount + ' need review</div>' +
+    '</div>' +
+    '<div style="margin-top:8px">' + miniBar + '</div>' +
+  '</div>';
+
+  // Card 4: Study plan or weak topics
+  let cardPlan = '';
+  const progress = p && p.progress ? p.progress : null;
+  if (progress && progress.steps_total > 0) {
+    const done = progress.steps_done;
+    const total = progress.steps_total;
+    const pct = Math.round(100 * done / total);
+    cardPlan = '<div class="stat" style="display:flex;align-items:center;justify-content:space-between;gap:12px">' +
+      '<div>' +
+        '<div class="stat-value">' + done + ' / ' + total + '</div>' +
+        '<div class="stat-label">Study plan steps</div>' +
+        '<div class="stat-sub">' + (done === total ? 'All steps complete' : 'Step ' + (done + 1) + ' next') + '</div>' +
+      '</div>' +
+      '<div style="flex-shrink:0">' +
+        EGCharts.ring(done, total, {size: 52, stroke: 6, label: pct + '%', color: 'var(--agent)'}) +
+      '</div>' +
+    '</div>';
+  } else {
+    cardPlan = '<div class="stat">' +
+      '<div class="stat-value">' + weakCount + '</div>' +
+      '<div class="stat-label">Weak concepts</div>' +
+      '<div class="stat-sub">' + (weakCount ? 'Shown in your analysis' : 'Nothing failing right now') + '</div>' +
+    '</div>';
+  }
+
+  EG.$('#stats').innerHTML = cardAcc + cardQuizzes + cardMastered + cardPlan;
+}
+
+function renderTrendChart(h) {
+  const slot = EG.$('#trend-chart-slot');
+  const badge = EG.$('#trend-summary-badge');
+  if (!slot) return;
+
+  const historyList = (h && h.history) ? h.history.slice().reverse() : [];
+  if (historyList.length === 0) {
+    if (badge) badge.textContent = '0 quizzes';
+    slot.innerHTML = EGCharts.line([], {
+      height: 180,
+      emptyText: 'No quiz attempts recorded yet. Take a quiz to see your trend.'
+    });
+    return;
+  }
+
+  if (badge) {
+    const latest = historyList[historyList.length - 1];
+    badge.textContent = historyList.length + ' quizzes \u2022 Latest ' + Math.round(latest.percentage) + '%';
+  }
+
+  const points = historyList.map((q, idx) => ({
+    x: idx + 1,
+    y: Math.round(q.percentage || 0),
+    label: 'Quiz ' + (idx + 1) + ' (' + (q.concept_title || q.topic || 'General') + '): ' + Math.round(q.percentage || 0) + '%'
+  }));
+
+  slot.innerHTML = EGCharts.line(points, {
+    height: 180,
+    yMin: 0,
+    yMax: 100,
+    stroke: 'var(--signal)',
+    xLabel: 'Quiz #',
+    yLabel: '%',
+    refLine: 70
+  });
+}
+
+function renderConceptDistribution(r) {
+  const slot = EG.$('#dist-chart-slot');
+  const badge = EG.$('#dist-summary-badge');
+  if (!slot) return;
+
+  const strongCount = (r.strong_topics || []).length;
+  const moderateCount = (r.moderate_topics || []).length;
+  const weakCount = (r.weak_topics || []).length;
+  const assessedCount = strongCount + moderateCount + weakCount;
+  const unassessedCount = Math.max(0, 44 - assessedCount);
+
+  if (badge) {
+    badge.textContent = assessedCount + ' of 44 assessed';
+  }
+
+  const parts = [
+    { label: 'Mastered', value: strongCount, color: 'var(--good)' },
+    { label: 'Progressing', value: moderateCount, color: 'var(--signal)' },
+    { label: 'Weak', value: weakCount, color: 'var(--attn)' },
+    { label: 'Not assessed yet', value: unassessedCount, color: 'var(--ink-4)' }
+  ];
+
+  const barHtml = EGCharts.stacked(parts, { total: 44, height: 22 });
+
+  const legendHtml = '<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:10px;margin-top:16px">' +
+    parts.map(p => {
+      const pct = Math.round(100 * p.value / 44);
+      return '<div style="display:flex;align-items:center;gap:8px;font-size:0.82rem">' +
+        '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + p.color + ';flex-shrink:0"></span>' +
+        '<span style="color:var(--ink-2);flex:1">' + EG.esc(p.label) + '</span>' +
+        '<span class="mono" style="font-weight:600;color:var(--ink-1)">' + p.value + ' <span class="muted small">(' + pct + '%)</span></span>' +
+      '</div>';
+    }).join('') +
+  '</div>';
+
+  slot.innerHTML = barHtml + legendHtml;
+}
+
+function renderTextbooks(sources) {
+  const slot = EG.$('#textbooks-slot');
+  if (!slot || !sources || !sources.length) return;
+
+  slot.innerHTML = sources.map(src => {
+    return '<div class="card" style="display:flex;flex-direction:column;justify-content:space-between">' +
+      '<div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">' +
+          '<h3 style="font-size:1rem;margin:0;line-height:1.35">' + EG.esc(src.title) + '</h3>' +
+          '<span class="badge badge-signal" style="flex-shrink:0;font-size:0.72rem">' + src.share_pct + '% share</span>' +
+        '</div>' +
+        '<p class="muted tiny" style="margin:0 0 12px 0">' + EG.esc(src.author) + '</p>' +
+        '<div class="row" style="flex-wrap:wrap;gap:6px;margin-bottom:12px">' +
+          '<span class="badge">' + src.concepts_covered + ' concepts covered</span>' +
+          '<span class="badge">' + src.passages.toLocaleString() + ' passages</span>' +
+          '<span class="badge">' + src.raw_questions + ' questions</span>' +
+        '</div>' +
+      '</div>' +
+      '<div>' +
+        '<div style="background:var(--bg-3);height:6px;border-radius:3px;overflow:hidden;margin-bottom:6px">' +
+          '<div style="width:' + src.share_pct + '%;height:100%;background:var(--agent);border-radius:3px"></div>' +
+        '</div>' +
+        '<div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--ink-3)">' +
+          '<span>Corpus share</span>' +
+          '<span class="mono">' + src.passages.toLocaleString() + ' / 7,333</span>' +
+        '</div>' +
+        '<p class="muted tiny" style="margin:8px 0 0 0;line-height:1.3">' + EG.esc(src.focus) + '</p>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function loadDashboardData() {
   try {
-    const r = await EG.get('/api/analysis');
-    const weak = r.weak_topics.length;
-    EG.$('#stats').innerHTML = [
-      ['Overall accuracy', r.overall_performance + '%', r.total_questions_correct + ' of ' + r.total_questions_attempted + ' questions'],
-      ['Quizzes taken', r.total_quizzes_taken, r.total_quizzes_taken ? 'keep going' : 'take your first quiz'],
-      ['Concepts assessed', Object.keys(r.concept_stats).length + ' / {{ concept_count }}', 'across 8 modules'],
-      ['Weak concepts', weak, weak ? 'shown in your analysis' : 'nothing failing right now']
-    ].map(([label, value, sub]) =>
-      '<div class="stat"><div class="stat-value">' + EG.esc(value) + '</div>' +
-      '<div class="stat-label">' + EG.esc(label) + '</div>' +
-      '<div class="stat-sub">' + EG.esc(sub) + '</div></div>').join('');
+    const [analysisRes, historyRes, planRes, sourcesRes] = await Promise.allSettled([
+      EG.get('/api/analysis'),
+      EG.get('/api/history'),
+      EG.get('/api/plan'),
+      EG.get('/api/corpus/sources')
+    ]);
+
+    const r = analysisRes.status === 'fulfilled' ? analysisRes.value : null;
+    const h = historyRes.status === 'fulfilled' ? historyRes.value : { history: [] };
+    const p = planRes.status === 'fulfilled' ? planRes.value : null;
+    const s = sourcesRes.status === 'fulfilled' ? sourcesRes.value : null;
+
+    if (r) {
+      renderSnapshot(r, h, p);
+      renderTrendChart(h);
+      renderConceptDistribution(r);
+    } else {
+      EG.$('#stats').innerHTML = '<div class="card" style="grid-column:1/-1">' +
+        '<p class="muted small" style="margin:0">Take one quiz and your numbers will appear here.</p></div>';
+    }
+
+    if (s && s.sources) {
+      renderTextbooks(s.sources);
+    }
   } catch (e) {
     EG.$('#stats').innerHTML = '<div class="card" style="grid-column:1/-1">' +
-      '<p class="muted small" style="margin:0">Take one quiz and your numbers will appear here.</p></div>';
+      '<p class="muted small" style="margin:0">Unable to load dashboard data.</p></div>';
   }
 }
 
 loadRecommendation();
-loadStats();
+loadDashboardData();
 </script>
 {% endblock %}

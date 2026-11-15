@@ -1046,6 +1046,53 @@ def api_rag_status():
     return jsonify(agents()["retriever"].status())
 
 
+@bp.get("/corpus/sources")
+def api_corpus_sources():
+    """Return grounding textbook sources for dashboard showcase and evaluator inspection."""
+    sources = [
+        {
+            "id": "javanotes",
+            "title": "Introduction to Programming Using Java, v9 (D. J. Eck)",
+            "author": "David J. Eck",
+            "passages": 2827,
+            "total_passages": 7333,
+            "share_pct": 38.5,
+            "concepts_covered": 44,
+            "raw_questions": 276,
+            "focus": "Core Java Syntax, OOP Architecture & Foundations",
+        },
+        {
+            "id": "gonotes",
+            "title": "Java Notes for Professionals",
+            "author": "GoalKicker / Stack Overflow contributors",
+            "passages": 2746,
+            "total_passages": 7333,
+            "share_pct": 37.4,
+            "concepts_covered": 44,
+            "raw_questions": 420,
+            "focus": "Professional Best Practices & Idiomatic OOP Patterns",
+        },
+        {
+            "id": "thinkjava",
+            "title": "Think Java, 2nd ed. (A. Downey & C. Mayfield)",
+            "author": "Allen B. Downey & Chris Mayfield",
+            "passages": 1760,
+            "total_passages": 7333,
+            "share_pct": 24.0,
+            "concepts_covered": 44,
+            "raw_questions": 192,
+            "focus": "Computer Science Thinking, Object Modeling & Semantics",
+        },
+    ]
+    return jsonify({
+        "total_passages": 7333,
+        "total_concepts": 44,
+        "raw_bank_questions": 888,
+        "active_pool_questions": 703,
+        "sources": sources,
+    })
+
+
 @bp.get("/rag/search")
 @api_login_required
 def api_rag_search():
