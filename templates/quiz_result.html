@@ -17,11 +17,26 @@ const RESULT_ID = {{ result_id }};
 function summaryHtml(r) {
   const pct = r.percentage;
   const verdict = pct >= 80 ? 'Solid.' : pct >= 50 ? 'Getting there.' : 'This one needs another pass.';
+
+  const review = r.review || [];
+  const strip = review.length > 0
+    ? '<div class="ch-outcome-strip" style="display:flex;gap:6px;margin:12px 0 12px 0;align-items:center" role="img" aria-label="Question by question outcome">' +
+        review.map((item, idx) => {
+          const col = item.is_correct ? 'var(--good, #0E8C63)' : 'var(--crit, #B42318)';
+          const text = item.is_correct ? 'Correct' : 'Wrong';
+          return '<span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:4px;background:' + col + ';color:#fff;font-size:0.75rem;font-weight:600;font-family:var(--font-mono)" title="Question ' + (idx + 1) + ': ' + text + '">' +
+            (idx + 1) +
+          '</span>';
+        }).join('') +
+      '</div>'
+    : '';
+
   return '<div class="card"><div class="score-ring">' +
     EG.ring(pct) +
     '<div><h1 style="font-size:1.6rem;margin-bottom:4px">' + verdict + '</h1>' +
-    '<p style="margin-bottom:10px;color:var(--ink-2)">' + r.score + ' of ' + r.total +
+    '<p style="margin-bottom:6px;color:var(--ink-2)">' + r.score + ' of ' + r.total +
       ' correct on <strong>' + EG.esc(r.concept_title) + '</strong> at ' + EG.esc(r.difficulty) + '.</p>' +
+    strip +
     '<div class="row"><span class="badge">Attempt #' + r.attempt_number + '</span>' +
     '<span class="badge badge-agent badge-dot">Recorded &mdash; your mastery has been recomputed</span></div>' +
     '</div></div></div>';

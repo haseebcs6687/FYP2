@@ -138,6 +138,20 @@ class TestBrowserSmoke(unittest.TestCase):
             if hasattr(cls, "tmp_dir") and os.path.exists(cls.tmp_dir):
                 shutil.rmtree(cls.tmp_dir, ignore_errors=True)
 
+    def _assert_no_nan_or_undefined(self, page_name):
+        bad_val = self.page.evaluate("""() => {
+            const bad = ['NaN', 'undefined', 'null%'];
+            const targets = document.querySelectorAll('.ch-ring-val, .ch-bar-val, .stat-value, .stat-sub, .ch-legend-val');
+            for (const el of targets) {
+                const text = el.textContent || '';
+                for (const b of bad) {
+                    if (text.includes(b)) return b + ' found in ' + (el.className || el.tagName);
+                }
+            }
+            return null;
+        }""")
+        self.assertIsNone(bad_val, f"Chart or stat value contained invalid data on {page_name}: {bad_val}")
+
     def test_01_dashboard(self):
         """Dashboard: zero errors, seeded stats loaded, plan card visible, capsule visible, screenshot."""
         self.__class__.current_page_name = "/dashboard"
@@ -183,6 +197,9 @@ class TestBrowserSmoke(unittest.TestCase):
 
         # Save screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "dashboard.png"), full_page=True)
+
+        # Assert no NaN or undefined rendered in charts or stats
+        self._assert_no_nan_or_undefined("/dashboard")
 
         # Assert zero errors
         self.assertEqual(len(self.console_errors_by_page.get("/dashboard", [])), 0)
@@ -239,11 +256,18 @@ class TestBrowserSmoke(unittest.TestCase):
             "Result page did not display score or completion text.",
         )
 
+        # Verify question outcome strip is visible on result page
+        self.page.wait_for_selector(".ch-outcome-strip", timeout=5000)
+        self.assertTrue(self.page.locator(".ch-outcome-strip").is_visible(), "Outcome strip not visible on result page.")
+
         # Evaluator capsule present
         self.assertTrue(self.page.locator("#evaluator-pill").is_visible())
 
         # Screenshot result
         self.page.screenshot(path=str(UI_CHECK_DIR / "quiz_result.png"), full_page=True)
+
+        # Assert no NaN or undefined rendered in charts or stats
+        self._assert_no_nan_or_undefined("/quiz/result")
 
         self.assertEqual(len(self.console_errors_by_page.get("/quiz_flow", [])), 0)
 
@@ -319,6 +343,9 @@ class TestBrowserSmoke(unittest.TestCase):
         # Save screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "analysis.png"), full_page=True)
 
+        # Assert no NaN or undefined rendered in charts or stats
+        self._assert_no_nan_or_undefined("/analysis")
+
         self.assertEqual(len(self.console_errors_by_page.get("/analysis", [])), 0)
         self.assertEqual(len(self.page_errors_by_page.get("/analysis", [])), 0)
 
@@ -339,6 +366,9 @@ class TestBrowserSmoke(unittest.TestCase):
 
         # Save screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "history.png"), full_page=True)
+
+        # Assert no NaN or undefined rendered in charts or stats
+        self._assert_no_nan_or_undefined("/history")
 
         self.assertEqual(len(self.console_errors_by_page.get("/history", [])), 0)
         self.assertEqual(len(self.page_errors_by_page.get("/history", [])), 0)
@@ -362,10 +392,37 @@ class TestBrowserSmoke(unittest.TestCase):
         # Save screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "plan.png"), full_page=True)
 
+        # Assert no NaN or undefined rendered in charts or stats
+        self._assert_no_nan_or_undefined("/plan")
+
         self.assertEqual(len(self.console_errors_by_page.get("/plan", [])), 0)
         self.assertEqual(len(self.page_errors_by_page.get("/plan", [])), 0)
 
-    def test_09_logout_and_protection(self):
+    def test_09_library_page(self):
+        """Library page: zero errors, status loaded, corpus chart and 3 books rendered, screenshot."""
+        self.__class__.current_page_name = "/library"
+        self.page.goto(f"{self.base_url}/library")
+        self.page.wait_for_load_state("networkidle", timeout=5000)
+
+        # Verify corpus distribution chart and source cards
+        self.page.wait_for_selector("#status .ch-stacked", timeout=5000)
+        self.assertTrue(self.page.locator("#status .ch-stacked").is_visible())
+        book_cards = self.page.locator("#status .grid-3 .card").count()
+        self.assertEqual(book_cards, 3, f"Expected 3 textbook cards on /library, found {book_cards}.")
+
+        # Capsule is visible
+        self.assertTrue(self.page.locator("#evaluator-pill").is_visible())
+
+        # Save screenshot
+        self.page.screenshot(path=str(UI_CHECK_DIR / "library.png"), full_page=True)
+
+        # Assert no NaN or undefined rendered in charts or stats
+        self._assert_no_nan_or_undefined("/library")
+
+        self.assertEqual(len(self.console_errors_by_page.get("/library", [])), 0)
+        self.assertEqual(len(self.page_errors_by_page.get("/library", [])), 0)
+
+    def test_10_logout_and_protection(self):
         """Log out via UI, verify redirect to /, and assert protected pages redirect to /login."""
         self.__class__.current_page_name = "logout"
 
