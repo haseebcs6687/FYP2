@@ -260,29 +260,33 @@
       // X-axis label row
       let xLabelsHtml = '';
       const hasLabels = options.labels && Array.isArray(options.labels) && options.labels.length > 0;
+      const tickY = options.xLabel ? (h - 14) : (h - 6);
+      const xLabelY = h - 3;
+      const xLabelPos = Math.round(padL + plotW / 2);
+
       if (hasLabels) {
         const step = n > 8 ? Math.ceil(n / 6) : 1;
         xLabelsHtml = '<g class="ch-x-labels" font-size="9" fill="var(--ink-3)" font-family="var(--font-ui)" text-anchor="middle">';
         dotCoords.forEach((d, i) => {
-          if (i === 0 || i === n - 1 || i % step === 0) {
-            xLabelsHtml += '<text x="' + d.x.toFixed(1) + '" y="' + (h - 6) + '">' + esc(options.labels[i]) + '</text>';
+          if (n === 1 || i === 0 || i === n - 1 || i % step === 0) {
+            xLabelsHtml += '<text x="' + d.x.toFixed(1) + '" y="' + tickY + '">' + esc(options.labels[i]) + '</text>';
           }
         });
         if (options.xLabel) {
-          xLabelsHtml += '<text x="' + (w - padR) + '" y="' + (h - 6) + '" text-anchor="end" font-size="8" fill="var(--ink-4)" font-weight="600">' + esc(options.xLabel) + '</text>';
+          xLabelsHtml += '<text x="' + xLabelPos + '" y="' + xLabelY + '" text-anchor="middle" font-size="8" fill="var(--ink-4)" font-weight="600">' + esc(options.xLabel) + '</text>';
         }
         xLabelsHtml += '</g>';
-      } else if (n > 1) {
+      } else if (n >= 1) {
         const step = n > 8 ? Math.ceil(n / 6) : 1;
         xLabelsHtml = '<g class="ch-x-labels" font-size="9" fill="var(--ink-3)" font-family="var(--font-ui)" text-anchor="middle">';
         dotCoords.forEach((d, i) => {
-          if (i === 0 || i === n - 1 || i % step === 0) {
+          if (n === 1 || i === 0 || i === n - 1 || i % step === 0) {
             const xText = (d.p && typeof d.p === 'object' && d.p.x !== undefined) ? d.p.x : (i + 1);
-            xLabelsHtml += '<text x="' + d.x.toFixed(1) + '" y="' + (h - 6) + '">' + esc(xText) + '</text>';
+            xLabelsHtml += '<text x="' + d.x.toFixed(1) + '" y="' + tickY + '">' + esc(xText) + '</text>';
           }
         });
         if (options.xLabel) {
-          xLabelsHtml += '<text x="' + (w - padR) + '" y="' + (h - 6) + '" text-anchor="end" font-size="8" fill="var(--ink-4)" font-weight="600">' + esc(options.xLabel) + '</text>';
+          xLabelsHtml += '<text x="' + xLabelPos + '" y="' + xLabelY + '" text-anchor="middle" font-size="8" fill="var(--ink-4)" font-weight="600">' + esc(options.xLabel) + '</text>';
         }
         xLabelsHtml += '</g>';
       }

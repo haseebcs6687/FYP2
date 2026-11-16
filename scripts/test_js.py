@@ -240,6 +240,94 @@ class TestJavaScriptSyntax(unittest.TestCase):
         self.assertNotIn('preserveAspectRatio="none"', data["htmlObj"])
         self.assertNotIn('preserveAspectRatio="none"', data["htmlNum"])
 
+    def test_line_chart_x_axis_label_no_overlap(self):
+        """Verify that options.xLabel and the last tick in EGCharts.line do not overlap.
+        Tick labels sit on an upper baseline (h - 14) and xLabel sits on a distinct lower baseline (h - 3).
+        """
+        node_path = shutil.which("node")
+        if not node_path:
+            self.skipTest("Node.js not available for JS chart x-label overlap test.")
+
+        node_script = """
+        const EGCharts = require('./static/js/charts.js');
+        const htmlWithXLabel = EGCharts.line([20, 50, 80], { height: 140, xLabel: 'Quiz #' });
+        const htmlWithLabels = EGCharts.line([20, 50, 80], { height: 140, labels: ['Q1', 'Q2', 'Q3'], xLabel: 'Quizzes' });
+        const htmlWithoutXLabel = EGCharts.line([20, 50, 80], { height: 140 });
+
+        function parseTexts(html) {
+            const texts = [];
+            const re = /<text\\s+([^>]+)>([^<]+)<\\/text>/g;
+            let m;
+            while ((m = re.exec(html)) !== null) {
+                const attrs = m[1];
+                const content = m[2];
+                const xM = attrs.match(/x="([^"]+)"/);
+                const yM = attrs.match(/y="([^"]+)"/);
+                const anchorM = attrs.match(/text-anchor="([^"]+)"/);
+                texts.push({
+                    content,
+                    x: xM ? parseFloat(xM[1]) : null,
+                    y: yM ? parseFloat(yM[1]) : null,
+                    anchor: anchorM ? anchorM[1] : null,
+                    rawAttrs: attrs
+                });
+            }
+            return texts;
+        }
+
+        console.log(JSON.stringify({
+            textsWithXLabel: parseTexts(htmlWithXLabel),
+            textsWithLabels: parseTexts(htmlWithLabels),
+            textsWithoutXLabel: parseTexts(htmlWithoutXLabel)
+        }));
+        """
+
+        res = subprocess.run(
+            [node_path, "-e", node_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(BASE_DIR),
+        )
+        self.assertEqual(res.returncode, 0, f"Node execution failed: {res.stderr}")
+        data = json.loads(res.stdout)
+
+        # 1. Chart with xLabel: 'Quiz #'
+        texts_x = data["textsWithXLabel"]
+        x_label_el = next((t for t in texts_x if t["content"] == "Quiz #"), None)
+        self.assertIsNotNone(x_label_el, "xLabel 'Quiz #' element not found in SVG text elements")
+
+        last_tick_el = next((t for t in texts_x if t["content"] == "3"), None)
+        self.assertIsNotNone(last_tick_el, "Last tick element '3' not found in SVG text elements")
+
+        # Must have distinct Y coordinates (no vertical baseline collision)
+        self.assertNotEqual(x_label_el["y"], last_tick_el["y"],
+                            f"xLabel and last tick share the same y baseline ({x_label_el['y']})")
+        # xLabel must sit strictly below the tick
+        self.assertGreater(x_label_el["y"], last_tick_el["y"],
+                           f"xLabel y ({x_label_el['y']}) should be below tick y ({last_tick_el['y']})")
+        # Must not share same (x, y) coordinates
+        self.assertNotEqual((x_label_el["x"], x_label_el["y"]), (last_tick_el["x"], last_tick_el["y"]),
+                            "xLabel and last tick share identical coordinates")
+
+        # 2. Chart with custom labels and xLabel: 'Quizzes'
+        texts_l = data["textsWithLabels"]
+        x_label_l = next((t for t in texts_l if t["content"] == "Quizzes"), None)
+        self.assertIsNotNone(x_label_l, "xLabel 'Quizzes' element not found in SVG text elements")
+
+        last_tick_l = next((t for t in texts_l if t["content"] == "Q3"), None)
+        self.assertIsNotNone(last_tick_l, "Last tick element 'Q3' not found in SVG text elements")
+
+        self.assertNotEqual(x_label_l["y"], last_tick_l["y"])
+        self.assertGreater(x_label_l["y"], last_tick_l["y"])
+
+        # 3. Chart without xLabel: ticks sit on default baseline h - 6 = 134
+        texts_no_x = data["textsWithoutXLabel"]
+        self.assertIsNone(next((t for t in texts_no_x if t["content"] in ("Quiz #", "Quizzes")), None))
+        tick_3_no_x = next((t for t in texts_no_x if t["content"] == "3"), None)
+        self.assertIsNotNone(tick_3_no_x)
+        self.assertEqual(tick_3_no_x["y"], 134)  # 140 - 6
+
 
 if __name__ == "__main__":
     unittest.main()

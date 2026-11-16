@@ -221,6 +221,33 @@ class TestBrowserSmoke(unittest.TestCase):
         book_cards = self.page.locator("#textbooks-slot .card").count()
         self.assertEqual(book_cards, 3, f"Expected 3 textbook cards on dashboard, found {book_cards}.")
 
+        # Verify Weak concepts card shows human title (no raw hyphens and words capitalized)
+        weak_spans = self.page.locator("#stats .stat:nth-child(4) span[title]").all_inner_texts()
+        for title in weak_spans:
+            if title and title != "Concept":
+                self.assertFalse("-" in title and title.islower(), f"Weak concept '{title}' appears to be a raw tag.")
+                self.assertTrue(title[0].isupper(), f"Weak concept '{title}' is not capitalized.")
+
+        # Verify trend chart x-axis label does not overlap with last tick
+        chart_texts = self.page.evaluate("""() => {
+            const texts = document.querySelectorAll('#trend-chart-slot .ch-x-labels text');
+            return Array.from(texts).map(t => ({
+                text: t.textContent.trim(),
+                x: parseFloat(t.getAttribute('x')),
+                y: parseFloat(t.getAttribute('y'))
+            }));
+        }""")
+        if len(chart_texts) >= 2:
+            x_label_el = next((t for t in chart_texts if t["text"] == "Quiz #"), None)
+            if x_label_el:
+                ticks = [t for t in chart_texts if t["text"] != "Quiz #"]
+                if ticks:
+                    last_tick = ticks[-1]
+                    self.assertNotEqual((x_label_el["x"], x_label_el["y"]), (last_tick["x"], last_tick["y"]),
+                                        f"Quiz # label overlaps with last tick {last_tick}")
+                    self.assertNotEqual(x_label_el["y"], last_tick["y"],
+                                        f"Quiz # and last tick share the same y baseline: {last_tick['y']}")
+
         # Save desktop screenshot
         self.page.screenshot(path=str(UI_CHECK_DIR / "dashboard.png"), full_page=True)
 

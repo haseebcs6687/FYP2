@@ -208,8 +208,10 @@ function renderSnapshot(r, h, p) {
   if (weakItems.length > 0) {
     weakMeters = '<div style="margin-top:8px;display:flex;flex-direction:column;gap:5px">' +
       weakItems.map(w => {
-        const mVal = Math.round(w.mastery || 0);
-        const title = w.concept_title || w.concept_tag || 'Concept';
+        const mVal = Math.round((typeof w === 'object' && w.mastery !== undefined) ? w.mastery : 0);
+        const rawTag = typeof w === 'string' ? w : (w.concept_tag || w.tag || w.concept || '');
+        const humanTag = (rawTag || '').replace(/[_-]+/g, ' ').trim().split(/\s+/).map(p => p ? p.charAt(0).toUpperCase() + p.slice(1) : '').join(' ');
+        const title = (w && typeof w === 'object' && w.title) ? w.title : (humanTag || 'Concept');
         return '<div style="font-size:0.75rem">' +
           '<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:2px">' +
             '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2);max-width:130px" title="' + EG.esc(title) + '">' + EG.esc(title) + '</span>' +
